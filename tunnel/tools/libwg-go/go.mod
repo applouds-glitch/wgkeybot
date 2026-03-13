@@ -16,11 +16,8 @@ require (
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/stun/v3 v3.1.1 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
-	github.com/wlynxg/anet v0.0.3 // indirect
+	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/crypto v0.38.0 // indirect
 	golang.org/x/net v0.40.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
-
-// Patch anet to avoid net.zoneCache issue on Go 1.23+
-replace github.com/wlynxg/anet => github.com/wlynxg/anet v0.0.0-20231011030043-94c65751950e
