@@ -1,6 +1,8 @@
 module golang.zx2c4.com/wireguard/android
 
-go 1.25
+go 1.22
+
+toolchain go1.22.12
 
 require (
 	github.com/cbeuw/connutil v1.0.1
@@ -16,7 +18,7 @@ require (
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/stun/v3 v3.1.1 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
-	github.com/wlynxg/anet v0.0.5 // indirect
+	github.com/wlynxg/anet v0.0.3 // indirect
 	golang.org/x/crypto v0.38.0 // indirect
 	golang.org/x/net v0.40.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
