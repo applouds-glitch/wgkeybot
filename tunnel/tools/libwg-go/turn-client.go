@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"github.com/cbeuw/connutil"
+	"github.com/google/uuid"
+	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/pion/logging"
 	"github.com/pion/turn/v5"
@@ -55,7 +57,7 @@ func getProtectedClient() *http.Client {
 			}).DialContext,
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 100,
-			IdleConnsTimeout:    90 * time.Second,
+			IdleConnTimeout:     90 * time.Second,
 		},
 	}
 }
