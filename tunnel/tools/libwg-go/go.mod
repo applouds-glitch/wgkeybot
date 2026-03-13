@@ -1,6 +1,6 @@
 module golang.zx2c4.com/wireguard/android
 
-go 1.23.1
+go 1.25
 
 require (
 	github.com/cbeuw/connutil v1.0.1
