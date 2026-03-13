@@ -28,6 +28,11 @@ jobs:
       with:
         go-version: '1.22'
 
+    - name: Debug versions
+      run: |
+        java -version
+        go version
+
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 
