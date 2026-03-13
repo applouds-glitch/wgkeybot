@@ -1,8 +1,6 @@
 module golang.zx2c4.com/wireguard/android
 
-go 1.22
-
-toolchain go1.22.12
+go 1.23.1
 
 require (
 	github.com/cbeuw/connutil v1.0.1
@@ -23,3 +21,6 @@ require (
 	golang.org/x/net v0.40.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
+
+// Patch anet to avoid net.zoneCache issue on Go 1.23+
+replace github.com/wlynxg/anet => github.com/wlynxg/anet v0.0.0-20231011030043-94c65751950e
