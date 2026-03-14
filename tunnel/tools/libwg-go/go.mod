@@ -1,6 +1,6 @@
 module golang.zx2c4.com/wireguard/android
 
-go 1.25.6
+go 1.25
 
 require (
 	github.com/cbeuw/connutil v1.0.1
@@ -21,5 +21,3 @@ require (
 	golang.org/x/net v0.40.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
-
-replace github.com/wlynxg/anet => ./anet-stub
