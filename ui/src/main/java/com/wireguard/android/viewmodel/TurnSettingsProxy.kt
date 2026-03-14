@@ -95,24 +95,24 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         }
 
         val parsedStreams = streams.toIntOrNull()
-            ?: throw BadConfigException("streams", streams, "Invalid number of streams")
+            ?: throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, streams)
         if (parsedStreams !in 1..16) {
-            throw BadConfigException("streams", streams, "Streams must be between 1 and 16")
+            throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, streams)
         }
 
         val parsedPort = localPort.toIntOrNull() ?: 9000
         if (parsedPort !in 1..65535) {
-            throw BadConfigException("local_port", localPort, "Local port must be between 1 and 65535")
+            throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.LISTEN_PORT, BadConfigException.Reason.INVALID_VALUE, localPort)
         }
 
         if (peer.isBlank()) {
-            throw BadConfigException("peer", peer, "TURN peer must be specified")
+            throw BadConfigException(BadConfigException.Section.PEER, BadConfigException.Location.ENDPOINT, BadConfigException.Reason.MISSING_ATTRIBUTE, peer)
         }
         if (!peer.contains(':')) {
-            throw BadConfigException("peer", peer, "TURN peer must be in host:port format")
+            throw BadConfigException(BadConfigException.Section.PEER, BadConfigException.Location.ENDPOINT, BadConfigException.Reason.INVALID_VALUE, peer)
         }
         if (vkLink.isBlank()) {
-            throw BadConfigException("vk_link", vkLink, "VK Calls link must be specified")
+            throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.MISSING_ATTRIBUTE, vkLink)
         }
 
         val settings = TurnSettings(
