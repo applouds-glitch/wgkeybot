@@ -18,7 +18,7 @@ android {
         dataBinding = true
         viewBinding = true
     }
-    namespace = pkg
+    namespace = "com.wireguard.android"
     defaultConfig {
         applicationId = pkg
         minSdk = 24
