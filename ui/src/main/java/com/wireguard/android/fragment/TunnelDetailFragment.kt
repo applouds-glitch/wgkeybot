@@ -34,9 +34,13 @@ class TunnelDetailFragment : BaseFragment(), MenuProvider {
     private var lastState = Tunnel.State.TOGGLE
     private var timerActive = true
 
+    override fun onCreateMenu(menu: Menu, menuInflater: MenuInflater) {
+        menuInflater.inflate(R.menu.tunnel_detail, menu)
+    }
+
     override fun onMenuItemSelected(menuItem: MenuItem): Boolean {
         return when (menuItem.itemId) {
-            R.id.menu_action_turn_log -> {
+            R.id.menu_action_edit -> {
                 val activity = activity ?: return true
                 val containerId = if (activity.findViewById<View?>(R.id.detail_container) != null) {
                     R.id.detail_container
@@ -44,18 +48,14 @@ class TunnelDetailFragment : BaseFragment(), MenuProvider {
                     R.id.list_detail_container
                 }
                 activity.supportFragmentManager.commit {
-                    replace(containerId, TurnLogFragment())
-                    setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
+                    replace(containerId, TunnelEditorFragment())
+                    setTransition(androidx.fragment.app.FragmentTransaction.TRANSIT_FRAGMENT_FADE)
                     addToBackStack(null)
                 }
                 true
             }
             else -> false
         }
-    }
-
-    override fun onCreateMenu(menu: Menu, menuInflater: MenuInflater) {
-        menuInflater.inflate(R.menu.tunnel_detail, menu)
     }
 
     override fun onCreateView(

@@ -268,7 +268,4 @@
     <string name="turn_streams_hint">1-16 (default 4)</string>
     <string name="turn_local_port">Local port</string>
     <string name="turn_use_udp">Use UDP (-udp)</string>
-    <string name="turn_log_title">TURN log</string>
-    <string name="turn_log_clear">Clear log</string>
-    <string name="turn_log_menu">TURN log</string>
 </resources>
