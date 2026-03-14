@@ -17,7 +17,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    namespace = "${pkg}.tunnel"
+    namespace = "com.wireguard.android.tunnel"
     defaultConfig {
         minSdk = 24
     }
