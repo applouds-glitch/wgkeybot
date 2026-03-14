@@ -245,12 +245,10 @@ class TunnelManager(
         var throwable: Throwable? = null
         try {
             var configToUse = tunnel.getConfigAsync()
+            var turnStarted = false
             if (state == Tunnel.State.UP) {
                 val turn = tunnel.turnSettings
                 if (turn != null && turn.enabled) {
-                    withContext(Dispatchers.IO) {
-                        getTurnProxyManager().startForTunnel(tunnel.name, turn)
-                    }
                     configToUse = modifyConfigForTurn(configToUse, turn.localPort)
                 }
             } else if (state == Tunnel.State.DOWN) {
@@ -262,8 +260,20 @@ class TunnelManager(
                 }
             }
             newState = withContext(Dispatchers.IO) { getBackend().setState(tunnel, state, configToUse) }
-            if (newState == Tunnel.State.UP)
+            // Start TURN proxy AFTER the tunnel is up and VpnService is registered
+            if (newState == Tunnel.State.UP) {
+                val turn = tunnel.turnSettings
+                if (turn != null && turn.enabled) {
+                    withContext(Dispatchers.IO) {
+                        turnStarted = getTurnProxyManager().startForTunnel(tunnel.name, turn)
+                    }
+                }
                 lastUsedTunnel = tunnel
+            }
+            // If TURN failed to start, bring tunnel down
+            if (newState == Tunnel.State.UP && !turnStarted && tunnel.turnSettings?.enabled == true) {
+                throw IllegalStateException("Failed to start TURN proxy")
+            }
         } catch (e: Throwable) {
             throwable = e
         }
