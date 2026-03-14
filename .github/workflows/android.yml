@@ -40,10 +40,10 @@ jobs:
       run: chmod +x gradlew
 
     - name: Build with Gradle
-      run: ./gradlew :ui:assembleDebug --stacktrace
+      run: ./gradlew :ui:assembleRelease --stacktrace
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: wireguard-turn-debug
-        path: ui/build/outputs/apk/debug/ui-debug.apk
+        name: wireguard-turn-release
+        path: ui/build/outputs/apk/release/ui-release.apk
