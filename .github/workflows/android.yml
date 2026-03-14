@@ -46,4 +46,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: wireguard-turn-release
-        path: ui/build/outputs/apk/release/ui-release.apk
+        path: ui/build/outputs/apk/release/*.apk
