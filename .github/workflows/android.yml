@@ -40,7 +40,8 @@ jobs:
       run: chmod +x gradlew
 
     - name: Build with Gradle
-      run: go version && ./gradlew :ui:assembleDebug --stacktrace
+      run: export PATH=$GOROOT/bin:$PATH 
+      go version && ./gradlew :ui:assembleDebug --stacktrace
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
