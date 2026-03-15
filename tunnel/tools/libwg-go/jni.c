@@ -4,6 +4,7 @@
  */
 
 #include <jni.h>
+#include <android/log.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -15,7 +16,7 @@ extern int wgGetSocketV4(int handle);
 extern int wgGetSocketV6(int handle);
 extern char *wgGetConfig(int handle);
 extern char *wgVersion();
-extern int wgTurnProxyStart(struct go_string peer_addr, struct go_string vklink, int n, int udp, struct go_string listen_addr);
+extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, int n, int udp, const char *listen_addr);
 extern void wgTurnProxyStop();
 
 static JavaVM *java_vm;
@@ -47,8 +48,12 @@ int wgProtectSocket(int fd)
 	JNIEnv *env;
 	int ret = 0;
 	int attached = 0;
-	if (!vpn_service_global || !protect_method)
-		return -1;
+	if (!vpn_service_global || !protect_method) {
+		// Log that we are skipping protection because service is not yet registered
+		// This is expected during early proxy startup
+		__android_log_print(ANDROID_LOG_DEBUG, "WireGuard/JNI", "wgProtectSocket(%d): vpn_service_global is NULL, skipping", fd);
+		return 0;
+	}
 	if ((*java_vm)->GetEnv(java_vm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
 		if ((*java_vm)->AttachCurrentThread(java_vm, &env, NULL) != 0)
 			return -1;
@@ -56,8 +61,10 @@ int wgProtectSocket(int fd)
 	}
 	if ((*env)->CallBooleanMethod(env, vpn_service_global, protect_method, (jint)fd))
 		ret = 0;
-	else
+	else {
+		__android_log_print(ANDROID_LOG_WARN, "WireGuard/JNI", "VpnService.protect(%d) failed", fd);
 		ret = -1;
+	}
 	if (attached)
 		(*java_vm)->DetachCurrentThread(java_vm);
 	return ret;
@@ -121,21 +128,9 @@ JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_GoBackend_wgVersion
 JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_GoBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jint n, jboolean udp, jstring listen_addr)
 {
 	const char *peer_addr_str = (*env)->GetStringUTFChars(env, peer_addr, 0);
-	size_t peer_addr_len = (*env)->GetStringUTFLength(env, peer_addr);
 	const char *vklink_str = (*env)->GetStringUTFChars(env, vklink, 0);
-	size_t vklink_len = (*env)->GetStringUTFLength(env, vklink);
 	const char *listen_addr_str = (*env)->GetStringUTFChars(env, listen_addr, 0);
-	size_t listen_addr_len = (*env)->GetStringUTFLength(env, listen_addr);
-	int ret = wgTurnProxyStart((struct go_string){
-		.str = peer_addr_str,
-		.n = peer_addr_len
-	}, (struct go_string){
-		.str = vklink_str,
-		.n = vklink_len
-	}, n, udp, (struct go_string){
-		.str = listen_addr_str,
-		.n = listen_addr_len
-	});
+	int ret = wgTurnProxyStart(peer_addr_str, vklink_str, (int)n, (int)udp, listen_addr_str);
 	(*env)->ReleaseStringUTFChars(env, peer_addr, peer_addr_str);
 	(*env)->ReleaseStringUTFChars(env, vklink, vklink_str);
 	(*env)->ReleaseStringUTFChars(env, listen_addr, listen_addr_str);

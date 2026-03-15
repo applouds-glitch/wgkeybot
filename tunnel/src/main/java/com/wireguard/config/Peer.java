@@ -12,9 +12,11 @@ import com.wireguard.crypto.Key;
 import com.wireguard.crypto.KeyFormatException;
 import com.wireguard.util.NonNullForAll;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -35,6 +37,7 @@ public final class Peer {
     private final Optional<Integer> persistentKeepalive;
     private final Optional<Key> preSharedKey;
     private final Key publicKey;
+    private final List<String> extraLines;
 
     private Peer(final Builder builder) {
         // Defensively copy to ensure immutability even if the Builder is reused.
@@ -43,6 +46,7 @@ public final class Peer {
         persistentKeepalive = builder.persistentKeepalive;
         preSharedKey = builder.preSharedKey;
         publicKey = Objects.requireNonNull(builder.publicKey, "Peers must have a public key");
+        extraLines = Collections.unmodifiableList(new ArrayList<>(builder.extraLines));
     }
 
     /**
@@ -56,6 +60,11 @@ public final class Peer {
             throws BadConfigException {
         final Builder builder = new Builder();
         for (final CharSequence line : lines) {
+            final String trimmed = line.toString().trim();
+            if (trimmed.startsWith("#@")) {
+                builder.addExtraLine(trimmed);
+                continue;
+            }
             final Attribute attribute = Attribute.parse(line).orElseThrow(() ->
                     new BadConfigException(Section.PEER, Location.TOP_LEVEL,
                             Reason.SYNTAX_ERROR, line));
@@ -92,7 +101,8 @@ public final class Peer {
                 && endpoint.equals(other.endpoint)
                 && persistentKeepalive.equals(other.persistentKeepalive)
                 && preSharedKey.equals(other.preSharedKey)
-                && publicKey.equals(other.publicKey);
+                && publicKey.equals(other.publicKey)
+                && extraLines.equals(other.extraLines);
     }
 
     /**
@@ -141,6 +151,15 @@ public final class Peer {
         return publicKey;
     }
 
+    /**
+     * Returns the peer's extra lines (comments starting with #@).
+     *
+     * @return a list of extra lines
+     */
+    public List<String> getExtraLines() {
+        return extraLines;
+    }
+
     @Override
     public int hashCode() {
         int hash = 1;
@@ -149,6 +168,7 @@ public final class Peer {
         hash = 31 * hash + persistentKeepalive.hashCode();
         hash = 31 * hash + preSharedKey.hashCode();
         hash = 31 * hash + publicKey.hashCode();
+        hash = 31 * hash + extraLines.hashCode();
         return hash;
     }
 
@@ -181,6 +201,8 @@ public final class Peer {
         persistentKeepalive.ifPresent(pk -> sb.append("PersistentKeepalive = ").append(pk).append('\n'));
         preSharedKey.ifPresent(psk -> sb.append("PreSharedKey = ").append(psk.toBase64()).append('\n'));
         sb.append("PublicKey = ").append(publicKey.toBase64()).append('\n');
+        for (final String line : extraLines)
+            sb.append(line).append('\n');
         return sb.toString();
     }
 
@@ -217,6 +239,7 @@ public final class Peer {
         private Optional<Key> preSharedKey = Optional.empty();
         // No default; must be provided before building.
         @Nullable private Key publicKey;
+        private final List<String> extraLines = new ArrayList<>();
 
         public Builder addAllowedIp(final InetNetwork allowedIp) {
             allowedIps.add(allowedIp);
@@ -225,6 +248,16 @@ public final class Peer {
 
         public Builder addAllowedIps(final Collection<InetNetwork> allowedIps) {
             this.allowedIps.addAll(allowedIps);
+            return this;
+        }
+
+        public Builder addExtraLine(final String line) {
+            extraLines.add(line);
+            return this;
+        }
+
+        public Builder addExtraLines(final Collection<String> lines) {
+            extraLines.addAll(lines);
             return this;
         }
 

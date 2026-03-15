@@ -307,6 +307,93 @@
                 </androidx.constraintlayout.widget.ConstraintLayout>
             </com.google.android.material.card.MaterialCardView>
 
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/turn_detail_card"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_marginTop="8dp"
+                android:layout_marginEnd="8dp"
+                android:layout_marginBottom="8dp"
+                android:visibility="@{tunnel.turnSettings.enabled ? android.view.View.VISIBLE : android.view.View.GONE}"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/tunnel_detail_card">
+
+                <androidx.constraintlayout.widget.ConstraintLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content">
+
+                    <com.google.android.material.textview.MaterialTextView
+                        android:id="@+id/turn_title"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/turn_title"
+                        android:textAppearance="?attr/textAppearanceTitleMedium"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toTopOf="parent" />
+
+                    <TextView
+                        android:id="@+id/turn_peer_label"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/turn_peer"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toBottomOf="@+id/turn_title" />
+
+                    <TextView
+                        android:id="@+id/turn_peer_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@{tunnel.turnSettings.peer}"
+                        android:textAppearance="?attr/textAppearanceBodyLarge"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toBottomOf="@+id/turn_peer_label"
+                        tools:text="1.2.3.4:56000" />
+
+                    <TextView
+                        android:id="@+id/turn_vk_link_label"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/turn_vk_link"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toBottomOf="@+id/turn_peer_text" />
+
+                    <TextView
+                        android:id="@+id/turn_vk_link_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="middle"
+                        android:singleLine="true"
+                        android:text="@{tunnel.turnSettings.vkLink}"
+                        android:textAppearance="?attr/textAppearanceBodyLarge"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toBottomOf="@+id/turn_vk_link_label"
+                        tools:text="https://vk.ru/call/join/..." />
+
+                    <TextView
+                        android:id="@+id/turn_options_label"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="Options"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toBottomOf="@+id/turn_vk_link_text" />
+
+                    <TextView
+                        android:id="@+id/turn_options_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text='@{String.format("UDP: %b, Streams: %d, Local Port: %d", tunnel.turnSettings.useUdp, tunnel.turnSettings.streams, tunnel.turnSettings.localPort)}'
+                        android:textAppearance="?attr/textAppearanceBodyLarge"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toBottomOf="@+id/turn_options_label"
+                        tools:text="UDP: false, Streams: 4, Local Port: 9000" />
+
+                </androidx.constraintlayout.widget.ConstraintLayout>
+            </com.google.android.material.card.MaterialCardView>
+
             <LinearLayout
                 android:id="@+id/peers_layout"
                 android:layout_width="match_parent"
@@ -317,7 +404,7 @@
                 app:items="@{config.peers}"
                 app:layout="@{@layout/tunnel_detail_peer}"
                 app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/tunnel_detail_card"
+                app:layout_constraintTop_toBottomOf="@+id/turn_detail_card"
                 tools:ignore="UselessLeaf" />
         </androidx.constraintlayout.widget.ConstraintLayout>
     </ScrollView>

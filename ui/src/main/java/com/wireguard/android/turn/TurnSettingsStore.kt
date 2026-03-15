@@ -47,27 +47,20 @@ class TurnSettingsStore(private val context: Context) {
 
     fun save(name: String, settings: TurnSettings?) {
         val file = fileFor(name)
-        if (settings == null || !settings.enabled) {
+        if (settings == null) {
             if (file.isFile && !file.delete()) {
                 Log.w(TAG, "Failed to delete TURN settings file for $name")
             }
             return
         }
 
-        val validated = try {
-            TurnSettings.validate(settings)
-        } catch (iae: IllegalArgumentException) {
-            Log.e(TAG, "Refusing to save invalid TURN settings for tunnel $name: ${iae.message}")
-            return
-        }
-
         val json = JSONObject()
-            .put("enabled", validated.enabled)
-            .put("peer", validated.peer)
-            .put("vkLink", validated.vkLink)
-            .put("streams", validated.streams)
-            .put("useUdp", validated.useUdp)
-            .put("localPort", validated.localPort)
+            .put("enabled", settings.enabled)
+            .put("peer", settings.peer)
+            .put("vkLink", settings.vkLink)
+            .put("streams", settings.streams)
+            .put("useUdp", settings.useUdp)
+            .put("localPort", settings.localPort)
 
         file.parentFile?.mkdirs()
         FileOutputStream(file, false).use { stream ->

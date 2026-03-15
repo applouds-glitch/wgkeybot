@@ -52,7 +52,14 @@ class TunnelManager(
 
     private fun addToList(name: String, config: Config?, state: Tunnel.State): ObservableTunnel {
         val tunnel = ObservableTunnel(this, name, config, state)
-        tunnel.onTurnSettingsChanged(turnSettingsStore.load(name))
+        var turnSettings = turnSettingsStore.load(name)
+        if (turnSettings == null && config != null) {
+            turnSettings = extractTurnSettingsFromConfig(config)
+            if (turnSettings != null) {
+                turnSettingsStore.save(name, turnSettings)
+            }
+        }
+        tunnel.onTurnSettingsChanged(turnSettings)
         tunnelMap.add(tunnel)
         return tunnel
     }
@@ -68,7 +75,8 @@ class TunnelManager(
             throw IllegalArgumentException(context.getString(R.string.tunnel_error_invalid_name))
         if (tunnelMap.containsKey(name))
             throw IllegalArgumentException(context.getString(R.string.tunnel_error_already_exists, name))
-        val savedConfig = withContext(Dispatchers.IO) { configStore.create(name, config!!) }
+        val configWithTurn = injectTurnSettingsIntoConfig(config!!, turnSettings)
+        val savedConfig = withContext(Dispatchers.IO) { configStore.create(name, configWithTurn) }
         withContext(Dispatchers.IO) { turnSettingsStore.save(name, turnSettings) }
         addToList(name, savedConfig, Tunnel.State.DOWN)
     }
@@ -112,7 +120,15 @@ class TunnelManager(
         }
 
     suspend fun getTunnelConfig(tunnel: ObservableTunnel): Config = withContext(Dispatchers.Main.immediate) {
-        tunnel.onConfigChanged(withContext(Dispatchers.IO) { configStore.load(tunnel.name) })!!
+        val config = withContext(Dispatchers.IO) { configStore.load(tunnel.name) }
+        val extractedTurn = extractTurnSettingsFromConfig(config)
+        if (extractedTurn != null) {
+            withContext(Dispatchers.IO) {
+                turnSettingsStore.save(tunnel.name, extractedTurn)
+            }
+            tunnel.onTurnSettingsChanged(extractedTurn)
+        }
+        tunnel.onConfigChanged(config)!!
     }
 
     fun onCreate() {
@@ -177,21 +193,16 @@ class TunnelManager(
         config: Config,
         turnSettings: TurnSettings? = null,
     ): Config = withContext(Dispatchers.Main.immediate) {
-        tunnel.onConfigChanged(
+        val originalState = tunnel.state
+        if (originalState == Tunnel.State.UP) {
+            setTunnelState(tunnel, Tunnel.State.DOWN)
+        }
+        
+        val configWithTurn = injectTurnSettingsIntoConfig(config, turnSettings)
+        val result = tunnel.onConfigChanged(
             withContext(Dispatchers.IO) {
-                var configToUse = config
-                if (tunnel.state == Tunnel.State.UP) {
-                    val oldTurn = tunnel.turnSettings
-                    if (oldTurn != null && oldTurn.enabled) {
-                        getTurnProxyManager().stopForTunnel(tunnel.name)
-                    }
-                    if (turnSettings != null && turnSettings.enabled) {
-                        getTurnProxyManager().startForTunnel(tunnel.name, turnSettings)
-                        configToUse = modifyConfigForTurn(config, turnSettings.localPort)
-                    }
-                }
-                getBackend().setState(tunnel, tunnel.state, configToUse)
-                configStore.save(tunnel.name, config)
+                configStore.save(tunnel.name, configWithTurn)
+                configWithTurn
             },
         )!!
             .also {
@@ -200,6 +211,54 @@ class TunnelManager(
                     tunnel.onTurnSettingsChanged(turnSettingsStore.load(tunnel.name))
                 }
             }
+        
+        if (originalState == Tunnel.State.UP) {
+            setTunnelState(tunnel, Tunnel.State.UP)
+        }
+        
+        result
+    }
+
+    private fun injectTurnSettingsIntoConfig(config: Config, turnSettings: TurnSettings?): Config {
+        if (turnSettings == null) return config
+        val peers = config.peers
+        if (peers.isEmpty()) return config
+
+        val newPeers = ArrayList<Peer>()
+        for (i in peers.indices) {
+            val peer = peers[i]
+            if (i == 0) {
+                val builder = Peer.Builder()
+                builder.addAllowedIps(peer.allowedIps)
+                builder.setPublicKey(peer.publicKey)
+                peer.endpoint.ifPresent { builder.setEndpoint(it) }
+                peer.persistentKeepalive.ifPresent { builder.setPersistentKeepalive(it) }
+                peer.preSharedKey.ifPresent { builder.setPreSharedKey(it) }
+
+                // Add existing extra lines (excluding our own to avoid duplicates)
+                val filteredLines = peer.extraLines.filter { !it.startsWith("#@wgt:") && !it.contains("TURN extensions") }
+                builder.addExtraLines(filteredLines)
+
+                // Add TURN settings as comments
+                builder.addExtraLines(turnSettings.toComments())
+                newPeers.add(builder.build())
+            } else {
+                newPeers.add(peer)
+            }
+        }
+
+        return Config.Builder()
+            .setInterface(config.`interface`)
+            .addPeers(newPeers)
+            .build()
+    }
+
+    private fun extractTurnSettingsFromConfig(config: Config): TurnSettings? {
+        for (peer in config.peers) {
+            val settings = TurnSettings.fromComments(peer.extraLines)
+            if (settings != null) return settings
+        }
+        return null
     }
 
     suspend fun setTunnelName(tunnel: ObservableTunnel, name: String): String = withContext(Dispatchers.Main.immediate) {
@@ -245,11 +304,32 @@ class TunnelManager(
         var throwable: Throwable? = null
         try {
             var configToUse = tunnel.getConfigAsync()
-            var turnStarted = false
             if (state == Tunnel.State.UP) {
+                // If any tunnel is running, bring it down first to ensure clean DNS for TURN
+                withContext(Dispatchers.IO) {
+                    val runningNames = getBackend().runningTunnelNames
+                    if (runningNames.isNotEmpty()) {
+                        for (name in runningNames) {
+                            val runningTunnel = getTunnels()[name]
+                            if (runningTunnel != null) {
+                                withContext(Dispatchers.Main) {
+                                    setTunnelState(runningTunnel, Tunnel.State.DOWN)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 val turn = tunnel.turnSettings
                 if (turn != null && turn.enabled) {
                     configToUse = modifyConfigForTurn(configToUse, turn.localPort)
+                    // Start TURN proxy BEFORE tunnel is up
+                    val turnStarted = withContext(Dispatchers.IO) {
+                        getTurnProxyManager().startForTunnel(tunnel.name, turn)
+                    }
+                    if (!turnStarted) {
+                        throw Exception("Failed to start TURN proxy")
+                    }
                 }
             } else if (state == Tunnel.State.DOWN) {
                 val turn = tunnel.turnSettings
@@ -260,19 +340,9 @@ class TunnelManager(
                 }
             }
             newState = withContext(Dispatchers.IO) { getBackend().setState(tunnel, state, configToUse) }
-            // Start TURN proxy AFTER the tunnel is up and VpnService is registered
+            
             if (newState == Tunnel.State.UP) {
-                val turn = tunnel.turnSettings
-                if (turn != null && turn.enabled) {
-                    withContext(Dispatchers.IO) {
-                        turnStarted = getTurnProxyManager().startForTunnel(tunnel.name, turn)
-                    }
-                }
                 lastUsedTunnel = tunnel
-            }
-            // If TURN failed to start, bring tunnel down
-            if (newState == Tunnel.State.UP && !turnStarted && tunnel.turnSettings?.enabled == true) {
-                throw IllegalStateException("Failed to start TURN proxy")
             }
         } catch (e: Throwable) {
             throwable = e

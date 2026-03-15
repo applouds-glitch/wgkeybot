@@ -70,6 +70,14 @@ public final class Config {
         boolean seenInterfaceSection = false;
         @Nullable String line;
         while ((line = reader.readLine()) != null) {
+            final String trimmed = line.trim();
+            if (trimmed.startsWith("#@")) {
+                if (inInterfaceSection)
+                    interfaceLines.add(trimmed);
+                else if (inPeerSection)
+                    peerLines.add(trimmed);
+                continue;
+            }
             final int commentIndex = line.indexOf('#');
             if (commentIndex != -1)
                 line = line.substring(0, commentIndex);

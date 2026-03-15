@@ -27,6 +27,9 @@ class TurnProxyManager(private val context: Context) {
         withContext(Dispatchers.IO) {
             val instance = instances.getOrPut(tunnelName) { Instance() }
             
+            // Force stop any existing proxy before starting a new one
+            GoBackend.wgTurnProxyStop()
+            
             val listenAddr = "127.0.0.1:${settings.localPort}"
             val ret = GoBackend.wgTurnProxyStart(
                 settings.peer,

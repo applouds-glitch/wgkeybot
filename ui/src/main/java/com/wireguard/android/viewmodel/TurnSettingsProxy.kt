@@ -89,29 +89,28 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
     }
 
     @Throws(BadConfigException::class)
-    fun resolve(): TurnSettings? {
-        if (!enabled) {
-            return null
-        }
-
+    fun resolve(): TurnSettings {
         val parsedStreams = streams.toIntOrNull() ?: 4
-        if (parsedStreams !in 1..16) {
-            throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, streams)
-        }
-
         val parsedPort = localPort.toIntOrNull() ?: 9000
-        if (parsedPort !in 1..65535) {
-            throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.LISTEN_PORT, BadConfigException.Reason.INVALID_VALUE, localPort)
-        }
 
-        if (peer.isBlank()) {
-            throw BadConfigException(BadConfigException.Section.PEER, BadConfigException.Location.ENDPOINT, BadConfigException.Reason.MISSING_ATTRIBUTE, peer)
-        }
-        if (!peer.contains(':')) {
-            throw BadConfigException(BadConfigException.Section.PEER, BadConfigException.Location.ENDPOINT, BadConfigException.Reason.INVALID_VALUE, peer)
-        }
-        if (vkLink.isBlank()) {
-            throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.MISSING_ATTRIBUTE, vkLink)
+        if (enabled) {
+            if (parsedStreams !in 1..16) {
+                throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, streams)
+            }
+
+            if (parsedPort !in 1..65535) {
+                throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.LISTEN_PORT, BadConfigException.Reason.INVALID_VALUE, localPort)
+            }
+
+            if (peer.isBlank()) {
+                throw BadConfigException(BadConfigException.Section.PEER, BadConfigException.Location.ENDPOINT, BadConfigException.Reason.MISSING_ATTRIBUTE, peer)
+            }
+            if (!peer.contains(':')) {
+                throw BadConfigException(BadConfigException.Section.PEER, BadConfigException.Location.ENDPOINT, BadConfigException.Reason.INVALID_VALUE, peer)
+            }
+            if (vkLink.isBlank()) {
+                throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.MISSING_ATTRIBUTE, vkLink)
+            }
         }
 
         val settings = TurnSettings(
@@ -122,7 +121,9 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             useUdp = useUdp,
             localPort = parsedPort,
         )
-        TurnSettings.validate(settings)
+        if (enabled) {
+            TurnSettings.validate(settings)
+        }
         return settings
     }
 
