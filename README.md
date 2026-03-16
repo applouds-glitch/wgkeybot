@@ -1,25 +1,27 @@
-# WireGuard Android with VK TURN Proxy
+# WireGuard Android с VK TURN Proxy
 
-This is a specialized fork of the official [WireGuard Android](https://git.zx2c4.com/wireguard-android) client with integrated support for **VK TURN Proxy**. 
+[English version (README.en.md)](README.en.md)
 
-It allows WireGuard traffic to be encapsulated within DTLS/TURN streams using the VK Calls infrastructure, providing a robust way to bypass network restrictions while maintaining high performance and stability.
+Это специализированный форк официального клиента [WireGuard Android](https://git.zx2c4.com/wireguard-android) с интегрированной поддержкой **VK TURN Proxy**.
 
-## Key Features
+Проект позволяет инкапсулировать трафик WireGuard в потоки DTLS/TURN, используя инфраструктуру VK Calls. Это обеспечивает надежный способ обхода сетевых ограничений при сохранении высокой производительности и стабильности.
 
-- **Native Integration**: The TURN client is integrated directly into `libwg-go.so` for maximum performance and minimal battery impact.
-- **VK Authentication**: Automated retrieval of TURN credentials via VK Calls anonymous tokens.
-- **Sticky Stream Failover**: High reliability with multiple parallel DTLS streams and "sticky" routing to ensure WireGuard session consistency.
-- **Smart DNS**: Built-in DNS bypass for restricted environments to ensure TURN connectivity even when system DNS is hijacked.
-- **Seamless Configuration**: TURN settings are stored directly inside standard WireGuard `.conf` files as special metadata comments (`#@wgt:`).
-- **VpnService Protection**: All proxy traffic is automatically protected from being looped back into the VPN tunnel.
+## Ключевые особенности
 
-## Technical Credits
+- **Нативная интеграция**: TURN-клиент встроен напрямую в `libwg-go.so` для максимальной производительности и минимального расхода заряда батареи.
+- **Авторизация VK**: Автоматическое получение учетных данных TURN через анонимные токены VK Calls.
+- **Sticky Stream Failover**: Высокая надежность за счет нескольких параллельных потоков DTLS с «липкой» маршрутизацией для обеспечения стабильности сессии WireGuard.
+- **Умный DNS**: Встроенный обход системного DNS для работы в ограниченных сетях, гарантирующий подключение к TURN даже при подмене DNS-запросов.
+- **Удобная настройка**: Параметры TURN хранятся прямо в стандартных `.conf` файлах WireGuard в виде специальных комментариев-метаданных (`#@wgt:`).
+- **Защита VpnService**: Весь трафик прокси автоматически защищен от попадания в VPN-петлю.
 
-This project is built upon the foundations laid by:
-1. **[Official WireGuard Android](https://git.zx2c4.com/wireguard-android)** — The core VPN application and user interface.
-2. **[vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy)** — The original concept and Go implementation of the VK TURN proxy.
+## Благодарности
 
-## Building
+Этот проект построен на базе:
+1. **[Official WireGuard Android](https://git.zx2c4.com/wireguard-android)** — основное приложение VPN и пользовательский интерфейс.
+2. **[vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy)** — оригинальная концепция и реализация прокси на языке Go.
+
+## Сборка
 
 ```bash
 $ git clone --recurse-submodules https://github.com/your-repo/wireguard-turn-android
@@ -27,9 +29,9 @@ $ cd wireguard-turn-android
 $ ./gradlew assembleRelease
 ```
 
-## Configuration
+## Настройка
 
-You can enable the proxy in the Tunnel Editor. The settings are appended to the Peer section of your configuration:
+Вы можете включить прокси в редакторе туннеля. Настройки будут добавлены в секцию Peer вашей конфигурации:
 
 ```ini
 [Peer]
@@ -44,8 +46,8 @@ AllowedIPs = 0.0.0.0/0
 #@wgt:StreamNum = 4
 ```
 
-For more technical details, see [info/TURN_INTEGRATION_DETAILS.md](info/TURN_INTEGRATION_DETAILS.md).
+Для получения подробной технической информации см. [info/TURN_INTEGRATION_DETAILS.md](info/TURN_INTEGRATION_DETAILS.md).
 
-## Contributing
+## Участие в проекте
 
-For UI translations, please refer to the original [WireGuard Crowdin](https://crowdin.com/project/WireGuard). For technical bugs related to the TURN integration, please open an issue in this repository.
+Для перевода интерфейса используйте оригинальный [WireGuard Crowdin](https://crowdin.com/project/WireGuard). При обнаружении технических ошибок, связанных с интеграцией TURN, пожалуйста, создавайте Issue в этом репозитории.
