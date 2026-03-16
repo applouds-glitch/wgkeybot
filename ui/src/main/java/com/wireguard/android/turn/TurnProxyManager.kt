@@ -41,13 +41,14 @@ class TurnProxyManager(private val context: Context) {
 
             if (ret == 0) {
                 instance.running = true
-                appendLogLine(
-                    tunnelName,
-                    "TURN started for tunnel \"$tunnelName\" listening on $listenAddr",
-                )
+                val msg = "TURN started for tunnel \"$tunnelName\" listening on $listenAddr"
+                Log.d(TAG, msg)
+                appendLogLine(tunnelName, msg)
                 true
             } else {
-                appendLogLine(tunnelName, "Failed to start TURN proxy (error $ret)")
+                val msg = "Failed to start TURN proxy (error $ret)"
+                Log.e(TAG, msg)
+                appendLogLine(tunnelName, msg)
                 false
             }
         }
@@ -57,7 +58,9 @@ class TurnProxyManager(private val context: Context) {
             val instance = instances[tunnelName] ?: return@withContext
             TurnBackend.wgTurnProxyStop()
             instance.running = false
-            appendLogLine(tunnelName, "TURN stopped for tunnel \"$tunnelName\"")
+            val msg = "TURN stopped for tunnel \"$tunnelName\""
+            Log.d(TAG, msg)
+            appendLogLine(tunnelName, msg)
         }
 
     fun isRunning(tunnelName: String): Boolean {
