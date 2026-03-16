@@ -37,7 +37,8 @@ import (
 	"github.com/pion/turn/v5"
 )
 
-var turnLogger = &AndroidLogger{level: C.ANDROID_LOG_WARN, tag: cstring("WireGuard/TurnClient")}
+// Use DEBUG level to see logs in standard logcat output
+var turnLogger = &AndroidLogger{level: C.ANDROID_LOG_DEBUG, tag: cstring("WireGuard/TurnClient")}
 
 func turnLog(format string, args ...interface{}) {
 	turnLogger.Printf(format, args...)
@@ -379,6 +380,7 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 		for {
 			n, addr1, err1 := relayConn.ReadFrom(buf)
 			if err1 != nil {
+				err = fmt.Errorf("read from relay failed: %w", err1)
 				return
 			}
 
@@ -388,6 +390,7 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 
 			_, err1 = conn2.WriteTo(buf[:n], peer)
 			if err1 != nil {
+				err = fmt.Errorf("write to conn2 failed: %w", err1)
 				return
 			}
 		}
@@ -399,11 +402,13 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 		for {
 			n, _, err1 := conn2.ReadFrom(buf)
 			if err1 != nil {
+				err = fmt.Errorf("read from conn2 failed: %w", err1)
 				return
 			}
 
 			_, err1 = relayConn.WriteTo(buf[:n], peer)
 			if err1 != nil {
+				err = fmt.Errorf("write to relay failed: %w", err1)
 				return
 			}
 		}
@@ -475,6 +480,7 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 			}
 			n, addr1, err1 := listenConn.ReadFrom(buf)
 			if err1 != nil {
+				err = fmt.Errorf("read from listenConn failed: %w", err1)
 				return
 			}
 
@@ -482,6 +488,7 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 
 			_, err1 = dtlsConn.Write(buf[:n])
 			if err1 != nil {
+				err = fmt.Errorf("write to dtlsConn failed: %w", err1)
 				return
 			}
 		}
@@ -500,6 +507,7 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 			}
 			n, err1 := dtlsConn.Read(buf)
 			if err1 != nil {
+				err = fmt.Errorf("read from dtlsConn failed: %w", err1)
 				return
 			}
 			addr1, ok := addr.Load().(net.Addr)
@@ -509,6 +517,7 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 
 			_, err1 = listenConn.WriteTo(buf[:n], addr1)
 			if err1 != nil {
+				err = fmt.Errorf("write to listenConn failed: %w", err1)
 				return
 			}
 		}
