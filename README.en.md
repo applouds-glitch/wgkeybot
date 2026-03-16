@@ -15,7 +15,7 @@ Unauthorized use of the VK Calls infrastructure (TURN servers) without explicit 
 - **Native Integration**: The TURN client is integrated directly into `libwg-go.so` for maximum performance and minimal battery impact.
 - **VK Authentication**: Automated retrieval of TURN credentials via VK Calls anonymous tokens.
 - **Sticky Stream Failover**: High reliability with multiple parallel DTLS streams and "sticky" routing to ensure WireGuard session consistency.
-- **Smart DNS**: Built-in DNS bypass for restricted environments to ensure TURN connectivity even when system DNS is hijacked.
+- **MTU Optimization**: Automatic MTU adjustment to 1280 when using TURN to ensure encapsulated packets fit standard network limits.
 - **Seamless Configuration**: TURN settings are stored directly inside standard WireGuard `.conf` files as special metadata comments (`#@wgt:`).
 - **VpnService Protection**: All proxy traffic is automatically protected from being looped back into the VPN tunnel.
 
