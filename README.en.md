@@ -4,6 +4,12 @@ This is a specialized fork of the official [WireGuard Android](https://git.zx2c4
 
 It allows WireGuard traffic to be encapsulated within DTLS/TURN streams using the VK Calls infrastructure, providing a robust way to bypass network restrictions while maintaining high performance and stability.
 
+## Important Disclaimer
+
+**This project is created solely for educational and research purposes.**
+
+Unauthorized use of the VK Calls infrastructure (TURN servers) without explicit permission from the rights holder may violate the Terms of Service and VK platform rules. The project author is not responsible for any damage or policy violations resulting from the use of this software. This project serves as a demonstration of protocol integration technical feasibility and is not intended for the misuse of third-party service resources.
+
 ## Key Features
 
 - **Native Integration**: The TURN client is integrated directly into `libwg-go.so` for maximum performance and minimal battery impact.
