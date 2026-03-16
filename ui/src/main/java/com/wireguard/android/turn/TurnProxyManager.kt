@@ -6,7 +6,7 @@ package com.wireguard.android.turn
 
 import android.content.Context
 import android.util.Log
-import com.wireguard.android.backend.GoBackend
+import com.wireguard.android.backend.TurnBackend
 import com.wireguard.android.util.applicationScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -28,10 +28,10 @@ class TurnProxyManager(private val context: Context) {
             val instance = instances.getOrPut(tunnelName) { Instance() }
             
             // Force stop any existing proxy before starting a new one
-            GoBackend.wgTurnProxyStop()
+            TurnBackend.wgTurnProxyStop()
             
             val listenAddr = "127.0.0.1:${settings.localPort}"
-            val ret = GoBackend.wgTurnProxyStart(
+            val ret = TurnBackend.wgTurnProxyStart(
                 settings.peer,
                 settings.vkLink,
                 settings.streams,
@@ -55,7 +55,7 @@ class TurnProxyManager(private val context: Context) {
     suspend fun stopForTunnel(tunnelName: String) =
         withContext(Dispatchers.IO) {
             val instance = instances[tunnelName] ?: return@withContext
-            GoBackend.wgTurnProxyStop()
+            TurnBackend.wgTurnProxyStop()
             instance.running = false
             appendLogLine(tunnelName, "TURN stopped for tunnel \"$tunnelName\"")
         }

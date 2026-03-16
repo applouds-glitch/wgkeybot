@@ -29,7 +29,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
 	return JNI_VERSION_1_6;
 }
 
-JNIEXPORT void JNICALL Java_com_wireguard_android_backend_GoBackend_wgSetVpnService(JNIEnv *env, jclass c, jobject vpn_service)
+JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetVpnService(JNIEnv *env, jclass c, jobject vpn_service)
 {
 	if (vpn_service_global) {
 		(*env)->DeleteGlobalRef(env, vpn_service_global);
@@ -125,7 +125,7 @@ JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_GoBackend_wgVersion
 	return ret;
 }
 
-JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_GoBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jint n, jboolean udp, jstring listen_addr)
+JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jint n, jboolean udp, jstring listen_addr)
 {
 	const char *peer_addr_str = (*env)->GetStringUTFChars(env, peer_addr, 0);
 	const char *vklink_str = (*env)->GetStringUTFChars(env, vklink, 0);
@@ -137,7 +137,7 @@ JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_GoBackend_wgTurnProxyS
 	return ret;
 }
 
-JNIEXPORT void JNICALL Java_com_wireguard_android_backend_GoBackend_wgTurnProxyStop(JNIEnv *env, jclass c)
+JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStop(JNIEnv *env, jclass c)
 {
 	wgTurnProxyStop();
 }

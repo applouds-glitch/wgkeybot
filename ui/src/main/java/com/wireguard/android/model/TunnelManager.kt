@@ -22,13 +22,13 @@ import com.wireguard.android.backend.Statistics
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.configStore.ConfigStore
 import com.wireguard.android.databinding.ObservableSortedKeyedArrayList
+import com.wireguard.android.turn.TurnConfigProcessor
 import com.wireguard.android.turn.TurnSettings
 import com.wireguard.android.turn.TurnSettingsStore
 import com.wireguard.android.util.ErrorMessages
 import com.wireguard.android.util.UserKnobs
 import com.wireguard.android.util.applicationScope
 import com.wireguard.config.Config
-import com.wireguard.config.Peer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,7 +54,7 @@ class TunnelManager(
         val tunnel = ObservableTunnel(this, name, config, state)
         var turnSettings = turnSettingsStore.load(name)
         if (turnSettings == null && config != null) {
-            turnSettings = extractTurnSettingsFromConfig(config)
+            turnSettings = TurnConfigProcessor.extractTurnSettings(config)
             if (turnSettings != null) {
                 turnSettingsStore.save(name, turnSettings)
             }
@@ -75,7 +75,8 @@ class TunnelManager(
             throw IllegalArgumentException(context.getString(R.string.tunnel_error_invalid_name))
         if (tunnelMap.containsKey(name))
             throw IllegalArgumentException(context.getString(R.string.tunnel_error_already_exists, name))
-        val configWithTurn = injectTurnSettingsIntoConfig(config!!, turnSettings)
+        
+        val configWithTurn = TurnConfigProcessor.injectTurnSettings(config!!, turnSettings)
         val savedConfig = withContext(Dispatchers.IO) { configStore.create(name, configWithTurn) }
         withContext(Dispatchers.IO) { turnSettingsStore.save(name, turnSettings) }
         addToList(name, savedConfig, Tunnel.State.DOWN)
@@ -121,7 +122,7 @@ class TunnelManager(
 
     suspend fun getTunnelConfig(tunnel: ObservableTunnel): Config = withContext(Dispatchers.Main.immediate) {
         val config = withContext(Dispatchers.IO) { configStore.load(tunnel.name) }
-        val extractedTurn = extractTurnSettingsFromConfig(config)
+        val extractedTurn = TurnConfigProcessor.extractTurnSettings(config)
         if (extractedTurn != null) {
             withContext(Dispatchers.IO) {
                 turnSettingsStore.save(tunnel.name, extractedTurn)
@@ -198,7 +199,7 @@ class TunnelManager(
             setTunnelState(tunnel, Tunnel.State.DOWN)
         }
         
-        val configWithTurn = injectTurnSettingsIntoConfig(config, turnSettings)
+        val configWithTurn = TurnConfigProcessor.injectTurnSettings(config, turnSettings)
         val result = tunnel.onConfigChanged(
             withContext(Dispatchers.IO) {
                 configStore.save(tunnel.name, configWithTurn)
@@ -217,48 +218,6 @@ class TunnelManager(
         }
         
         result
-    }
-
-    private fun injectTurnSettingsIntoConfig(config: Config, turnSettings: TurnSettings?): Config {
-        if (turnSettings == null) return config
-        val peers = config.peers
-        if (peers.isEmpty()) return config
-
-        val newPeers = ArrayList<Peer>()
-        for (i in peers.indices) {
-            val peer = peers[i]
-            if (i == 0) {
-                val builder = Peer.Builder()
-                builder.addAllowedIps(peer.allowedIps)
-                builder.setPublicKey(peer.publicKey)
-                peer.endpoint.ifPresent { builder.setEndpoint(it) }
-                peer.persistentKeepalive.ifPresent { builder.setPersistentKeepalive(it) }
-                peer.preSharedKey.ifPresent { builder.setPreSharedKey(it) }
-
-                // Add existing extra lines (excluding our own to avoid duplicates)
-                val filteredLines = peer.extraLines.filter { !it.startsWith("#@wgt:") && !it.contains("TURN extensions") }
-                builder.addExtraLines(filteredLines)
-
-                // Add TURN settings as comments
-                builder.addExtraLines(turnSettings.toComments())
-                newPeers.add(builder.build())
-            } else {
-                newPeers.add(peer)
-            }
-        }
-
-        return Config.Builder()
-            .setInterface(config.`interface`)
-            .addPeers(newPeers)
-            .build()
-    }
-
-    private fun extractTurnSettingsFromConfig(config: Config): TurnSettings? {
-        for (peer in config.peers) {
-            val settings = TurnSettings.fromComments(peer.extraLines)
-            if (settings != null) return settings
-        }
-        return null
     }
 
     suspend fun setTunnelName(tunnel: ObservableTunnel, name: String): String = withContext(Dispatchers.Main.immediate) {
@@ -322,7 +281,7 @@ class TunnelManager(
 
                 val turn = tunnel.turnSettings
                 if (turn != null && turn.enabled) {
-                    configToUse = modifyConfigForTurn(configToUse, turn.localPort)
+                    configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn.localPort)
                     // Start TURN proxy BEFORE tunnel is up
                     val turnStarted = withContext(Dispatchers.IO) {
                         getTurnProxyManager().startForTunnel(tunnel.name, turn)
@@ -352,22 +311,6 @@ class TunnelManager(
         if (throwable != null)
             throw throwable
         newState
-    }
-
-    private fun modifyConfigForTurn(config: Config, localPort: Int): Config {
-        val builder = Config.Builder()
-        builder.setInterface(config.`interface`)
-        for (peer in config.peers) {
-            val peerBuilder = Peer.Builder()
-            peerBuilder.addAllowedIps(peer.allowedIps)
-            peerBuilder.setPublicKey(peer.publicKey)
-            peer.preSharedKey.ifPresent { peerBuilder.setPreSharedKey(it) }
-            peer.persistentKeepalive.ifPresent { peerBuilder.setPersistentKeepalive(it.toInt()) }
-            // Replace endpoint with 127.0.0.1:localPort
-            peerBuilder.parseEndpoint("127.0.0.1:$localPort")
-            builder.addPeer(peerBuilder.build())
-        }
-        return builder.build()
     }
 
     class IntentReceiver : BroadcastReceiver() {
