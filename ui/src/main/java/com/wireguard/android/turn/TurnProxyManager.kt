@@ -5,12 +5,14 @@
 package com.wireguard.android.turn
 
 import android.content.Context
+import android.content.Intent
 import android.util.Log
+import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.TurnBackend
-import com.wireguard.android.util.applicationScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 /**
  * Lightweight manager for per-tunnel TURN client processes and logs.
@@ -29,6 +31,17 @@ class TurnProxyManager(private val context: Context) {
             
             // Force stop any existing proxy before starting a new one
             TurnBackend.wgTurnProxyStop()
+
+            // Pre-start VpnService to ensure native layer can protect sockets.
+            // This is required because VpnService must exist to call protect().
+            try {
+                Log.d(TAG, "Pre-starting VpnService for TURN socket protection")
+                context.startService(Intent(context, GoBackend.VpnService::class.java))
+                // Wait for the service to be created and registered in TurnBackend
+                TurnBackend.getVpnServiceFuture().get(2, TimeUnit.SECONDS)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to pre-start VpnService for TURN, proxy might fail to protect sockets", e)
+            }
             
             val listenAddr = "127.0.0.1:${settings.localPort}"
             val ret = TurnBackend.wgTurnProxyStart(
@@ -99,4 +112,3 @@ class TurnProxyManager(private val context: Context) {
         private const val MAX_LOG_CHARS = 128 * 1024
     }
 }
-

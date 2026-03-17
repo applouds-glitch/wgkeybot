@@ -62,11 +62,34 @@ object TurnConfigProcessor {
     }
 
     /**
-     * Modifies the configuration for active TURN usage (replaces Endpoint with local loopback).
+     * Modifies the configuration for active TURN usage (replaces Endpoint with local loopback and sets MTU 1280).
      */
     fun modifyConfigForActiveTurn(config: Config, localPort: Int): Config {
+        val iface = config.`interface`
+        val ifaceBuilder = com.wireguard.config.Interface.Builder()
+        ifaceBuilder.addAddresses(iface.addresses)
+        ifaceBuilder.addDnsServers(iface.dnsServers)
+        ifaceBuilder.addDnsSearchDomains(iface.dnsSearchDomains)
+        ifaceBuilder.setKeyPair(iface.keyPair)
+        ifaceBuilder.excludeApplications(iface.excludedApplications)
+        ifaceBuilder.includeApplications(iface.includedApplications)
+        
+        try {
+            ifaceBuilder.setListenPort(iface.listenPort.orElse(0))
+            // Force MTU to 1280 for TURN proxy to handle encapsulation overhead
+            ifaceBuilder.setMtu(1280)
+        } catch (e: Exception) {
+            // Should not happen with valid port/mtu
+        }
+
         val builder = Config.Builder()
-        builder.setInterface(config.`interface`)
+        try {
+            builder.setInterface(ifaceBuilder.build())
+        } catch (e: Exception) {
+            // Fallback to original interface if building fails
+            builder.setInterface(iface)
+        }
+        
         for (peer in config.peers) {
             val peerBuilder = Peer.Builder()
             peerBuilder.addAllowedIps(peer.allowedIps)

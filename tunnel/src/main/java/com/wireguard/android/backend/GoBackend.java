@@ -388,13 +388,13 @@ public final class GoBackend implements Backend {
         @Override
         public void onCreate() {
             vpnService.complete(this);
-            TurnBackend.wgSetVpnService(this);
+            TurnBackend.onVpnServiceCreated(this);
             super.onCreate();
         }
 
         @Override
         public void onDestroy() {
-            TurnBackend.wgSetVpnService(null);
+            TurnBackend.onVpnServiceCreated(null);
             if (owner != null) {
                 final Tunnel tunnel = owner.currentTunnel;
                 if (tunnel != null) {
