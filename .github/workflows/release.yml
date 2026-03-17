@@ -1,11 +1,15 @@
-name: Android CI (Manual)
+name: Android Release
 
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
     - uses: actions/checkout@v4
@@ -24,11 +28,6 @@ jobs:
       with:
         go-version: '1.25'
 
-    - name: Debug versions
-      run: |
-        java -version
-        go version
-
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 
@@ -38,8 +37,13 @@ jobs:
     - name: Build with Gradle
       run: ./gradlew :ui:assembleRelease --stacktrace
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
+    - name: Create Release
+      id: create_release
+      uses: softprops/action-gh-release@v2
       with:
-        name: wireguard-turn-debug-build
-        path: ui/build/outputs/apk/release/*.apk
+        files: ui/build/outputs/apk/release/*.apk
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
