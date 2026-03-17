@@ -129,12 +129,13 @@ func getVkCreds(ctx context.Context, link string) (string, string, string, error
 }
 
 type stream struct {
-	ctx    context.Context
-	id     int
-	in     chan []byte
-	out    net.PacketConn
-	peer   atomic.Pointer[net.Addr] // Last seen addr from WireGuard
-	ready  atomic.Bool
+	ctx       context.Context
+	id        int
+	in        chan []byte
+	out       net.PacketConn
+	peer      atomic.Pointer[net.Addr] // Last seen addr from WireGuard
+	ready     atomic.Bool
+	sessionID []byte
 }
 
 func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- struct{}) {
@@ -195,16 +196,72 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 				CipherSuites: []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 				ConnectionIDGenerator: dtls.OnlySendCIDGenerator(),
 			})
-			if err != nil { return fmt.Errorf("DTLS client failed: %w", err) }
+			if err != nil { return fmt.Errorf("DTLS client creation failed: %w", err) }
 			defer dtlsConn.Close()
+
+			wg := sync.WaitGroup{}
+			wg.Add(4)
+
+			// DTLS <-> Relay (via Pipe) - MUST start before handshake
+			go func() {
+				defer wg.Done(); defer sCancel()
+				buf := make([]byte, 2048)
+				for {
+					n, _, err := c2.ReadFrom(buf)
+					if err != nil { return }
+					if _, err := relayConn.WriteTo(buf[:n], peer); err != nil { return }
+				}
+			}()
+			go func() {
+				defer wg.Done(); defer sCancel()
+				buf := make([]byte, 2048)
+				for {
+					n, from, err := relayConn.ReadFrom(buf)
+					if err != nil { return }
+					if from.String() == peer.String() {
+						if _, err := c2.WriteTo(buf[:n], peer); err != nil { return }
+					}
+				}
+			}()
+
+			if err := dtlsConn.HandshakeContext(sCtx); err != nil {
+				return fmt.Errorf("DTLS handshake failed: %w", err)
+			}
+
+			// Session ID Handshake
+			dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if _, err := dtlsConn.Write(s.sessionID); err != nil {
+				return fmt.Errorf("session ID handshake failed: %w", err)
+			}
+			dtlsConn.SetWriteDeadline(time.Time{})
 
 			turnLog("[STREAM %d] Ready!", s.id)
 			s.ready.Store(true)
 			select { case okchan <- struct{}{}: default: }
 
-			wg := sync.WaitGroup{}
-			wg.Add(4)
-			
+			// WireGuard <-> DTLS
+			go func() {
+				defer wg.Done(); defer sCancel()
+				for {
+					select {
+					case <-sCtx.Done(): return
+					case b := <-s.in:
+						if _, err := dtlsConn.Write(b); err != nil { return }
+					}
+				}
+			}()
+			go func() {
+				defer wg.Done(); defer sCancel()
+				buf := make([]byte, 2048)
+				for {
+					n, err := dtlsConn.Read(buf)
+					if err != nil { return }
+					if last := s.peer.Load(); last != nil {
+						s.out.WriteTo(buf[:n], *last)
+					}
+				}
+			}()
+
 			// Deadline updater
 			go func() {
 				ticker := time.NewTicker(5 * time.Second)
@@ -217,55 +274,6 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 						relayConn.SetDeadline(deadline)
 						dtlsConn.SetDeadline(deadline)
 						c2.SetDeadline(deadline)
-					}
-				}
-			}()
-
-			// WireGuard -> DTLS
-			go func() {
-				defer wg.Done(); defer sCancel()
-				for {
-					select {
-					case <-sCtx.Done(): return
-					case b := <-s.in:
-						// turnLog("[STREAM %d] -> DTLS (%d bytes)", s.id, len(b))
-						if _, err := dtlsConn.Write(b); err != nil { return }
-					}
-				}
-			}()
-			// DTLS -> Relay (via Pipe)
-			go func() {
-				defer wg.Done(); defer sCancel()
-				buf := make([]byte, 2048)
-				for {
-					n, _, err := c2.ReadFrom(buf)
-					if err != nil { return }
-					// turnLog("[STREAM %d] DTLS -> TURN (%d bytes)", s.id, n)
-					if _, err := relayConn.WriteTo(buf[:n], peer); err != nil { return }
-				}
-			}()
-			// Relay -> DTLS (via Pipe)
-			go func() {
-				defer wg.Done(); defer sCancel()
-				buf := make([]byte, 2048)
-				for {
-					n, from, err := relayConn.ReadFrom(buf)
-					if err != nil { return }
-					if from.String() == peer.String() {
-						// turnLog("[STREAM %d] TURN -> DTLS (%d bytes)", s.id, n)
-						if _, err := c2.WriteTo(buf[:n], peer); err != nil { return }
-					}
-				}
-			}()
-			// DTLS -> WireGuard
-			go func() {
-				defer wg.Done(); defer sCancel()
-				buf := make([]byte, 2048)
-				for {
-					n, err := dtlsConn.Read(buf)
-					if err != nil { return }
-					if last := s.peer.Load(); last != nil {
-						s.out.WriteTo(buf[:n], *last)
 					}
 				}
 			}()
@@ -307,36 +315,35 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listen
 	if err != nil { return -1 }
 	context.AfterFunc(ctx, func() { lc.Close() })
 
+	sessionID, _ := uuid.New().MarshalBinary()
+	turnLog("[PROXY] Session ID: %x", sessionID)
+
 	ok := make(chan struct{}, n)
 	streams := make([]*stream, n)
 	for i := 0; i < n; i++ {
-		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 1000), out: lc}
+		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 1000), out: lc, sessionID: sessionID}
 		go streams[i].run(link, peer, udp != 0, ok)
 	}
 
 	go func() {
-		var activeStream atomic.Pointer[stream]
+		var counter uint64
 		buf := make([]byte, 2048)
 		for {
 			nRead, addr, err := lc.ReadFrom(buf)
 			if err != nil { return }
 			
-			s := activeStream.Load()
-			// Only switch if current is nil or not ready
-			if s == nil || !s.ready.Load() {
-				s = nil
-				for _, st := range streams {
-					if st.ready.Load() {
-						s = st
-						activeStream.Store(s)
-						turnLog("[PROXY] Sticky stream selected: [STREAM %d]", s.id)
-						break
-					}
+			var readyStreams []*stream
+			for _, st := range streams {
+				if st.ready.Load() {
+					readyStreams = append(readyStreams, st)
 				}
 			}
 
-			if s == nil { continue }
+			if len(readyStreams) == 0 { continue }
 
+			// Round-Robin selection
+			s := readyStreams[atomic.AddUint64(&counter, 1)%uint64(len(readyStreams))]
+			
 			returnAddr := addr
 			s.peer.Store(&returnAddr)
 

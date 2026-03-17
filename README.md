@@ -25,7 +25,9 @@
 
 Этот проект построен на базе:
 1. **[Official WireGuard Android](https://git.zx2c4.com/wireguard-android)** — основное приложение VPN и пользовательский интерфейс.
-2. **[vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy)** — оригинальная концепция и реализация прокси на языке Go.
+2. **[vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)** — серверная часть прокси (v2), необходимая для работы данного клиента. 
+
+> **Важно**: Для корректной работы этого клиента (агрегация потоков по Session ID) необходимо использовать серверную часть из форка [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy).
 
 ## Сборка
 

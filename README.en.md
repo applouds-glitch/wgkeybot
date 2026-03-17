@@ -23,7 +23,9 @@ Unauthorized use of the VK Calls infrastructure (TURN servers) without explicit 
 
 This project is built upon the foundations laid by:
 1. **[Official WireGuard Android](https://git.zx2c4.com/wireguard-android)** — The core VPN application and user interface.
-2. **[vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy)** — The original concept and Go implementation of the VK TURN proxy.
+2. **[vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)** — The proxy server implementation (v2) required for this client.
+
+> **Important**: This client requires the server-side implementation from the [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy) fork to function correctly (Multi-stream Session ID support).
 
 ## Building
 
