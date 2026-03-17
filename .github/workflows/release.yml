@@ -37,6 +37,9 @@ jobs:
     - name: Build with Gradle
       run: ./gradlew :ui:assembleRelease --stacktrace
 
+    - name: Rename APK
+      run: mv ui/build/outputs/apk/release/ui-release.apk ui/build/outputs/apk/release/wg-turn.apk
+
     - name: Create Release
       id: create_release
       uses: softprops/action-gh-release@v2

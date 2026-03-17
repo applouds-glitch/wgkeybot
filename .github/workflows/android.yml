@@ -38,6 +38,9 @@ jobs:
     - name: Build with Gradle
       run: ./gradlew :ui:assembleRelease --stacktrace
 
+    - name: Rename APK
+      run: mv ui/build/outputs/apk/release/ui-release.apk ui/build/outputs/apk/release/wg-turn.apk
+
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
