@@ -56,6 +56,13 @@ AllowedIPs = 0.0.0.0/0
 
 For more technical details, see [info/TURN_INTEGRATION_DETAILS.md](info/TURN_INTEGRATION_DETAILS.md).
 
+## Donations / Поддержать разработчика
+Are welcome here :
+
+* **BTC:** `1KxW8gGEv27YR1ckygrLoEftb89eqFtwgt`
+* **TON / USDT TON:** `UQBPqDx7s_mKBEp7kGRGok_qpEehI2yYUUw1djwyofaKVX3o`
+* **USDT TRC20:** `TAN2vABggLn9FN4PoRGWjfQVFmgZxxZWYp`
+
 ## Contributing
 
 For UI translations, please refer to the original [WireGuard Crowdin](https://crowdin.com/project/WireGuard). For technical bugs related to the TURN integration, please open an issue in this repository.
