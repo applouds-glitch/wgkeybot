@@ -113,6 +113,8 @@ class Application : android.app.Application() {
             FileConfigStore(applicationContext),
             TurnSettingsStore(applicationContext),
         )
+        // Load wg-go library BEFORE creating TurnProxyManager to avoid UnsatisfiedLinkError
+        com.wireguard.android.util.SharedLibraryLoader.loadSharedLibrary(applicationContext, "wg-go")
         turnProxyManager = TurnProxyManager(applicationContext)
         tunnelManager.onCreate()
         coroutineScope.launch(Dispatchers.IO) {
@@ -123,7 +125,8 @@ class Application : android.app.Application() {
                 Log.e(TAG, Log.getStackTraceString(e))
             }
         }
-        Updater.monitorForUpdates()
+        // Updater.monitorForUpdates()  // Disabled for fork
+        // If you want to enable updates, set up your own update server and configure Updater.kt
 
         if (BuildConfig.DEBUG) {
             StrictMode.setVmPolicy(VmPolicy.Builder().detectAll().penaltyLog().build())

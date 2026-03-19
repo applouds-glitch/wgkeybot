@@ -259,26 +259,23 @@ class TunnelManager(
     }
 
     suspend fun setTunnelState(tunnel: ObservableTunnel, state: Tunnel.State): Tunnel.State = withContext(Dispatchers.Main.immediate) {
+        if (state == tunnel.state) return@withContext state
+        
+        // If we are already UP and someone (like AlwaysOnCallback) requests UP again,
+        // double check with backend if it is really running.
+        if (state == Tunnel.State.UP && tunnel.state == Tunnel.State.UP) {
+            val runningNames = withContext(Dispatchers.IO) { getBackend().runningTunnelNames }
+            if (runningNames.contains(tunnel.name)) {
+                Log.d(TAG, "Skip redundant UP call for ${tunnel.name}, already running")
+                return@withContext state
+            }
+        }
+
         var newState = tunnel.state
         var throwable: Throwable? = null
         try {
             var configToUse = tunnel.getConfigAsync()
             if (state == Tunnel.State.UP) {
-                // If any tunnel is running, bring it down first to ensure clean DNS for TURN
-                withContext(Dispatchers.IO) {
-                    val runningNames = getBackend().runningTunnelNames
-                    if (runningNames.isNotEmpty()) {
-                        for (name in runningNames) {
-                            val runningTunnel = getTunnels()[name]
-                            if (runningTunnel != null) {
-                                withContext(Dispatchers.Main) {
-                                    setTunnelState(runningTunnel, Tunnel.State.DOWN)
-                                }
-                            }
-                        }
-                    }
-                }
-
                 val turn = tunnel.turnSettings
                 if (turn != null && turn.enabled) {
                     configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn.localPort)

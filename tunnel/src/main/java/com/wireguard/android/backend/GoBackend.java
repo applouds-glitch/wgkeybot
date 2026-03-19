@@ -387,13 +387,17 @@ public final class GoBackend implements Backend {
 
         @Override
         public void onCreate() {
+            Log.d(TAG, "VpnService.onCreate() called");
+            // Complete the GoBackend future for internal use
             vpnService.complete(this);
+            // Register with TurnBackend for TURN proxy socket protection
             TurnBackend.onVpnServiceCreated(this);
             super.onCreate();
         }
 
         @Override
         public void onDestroy() {
+            // Unregister from TurnBackend
             TurnBackend.onVpnServiceCreated(null);
             if (owner != null) {
                 final Tunnel tunnel = owner.currentTunnel;
@@ -406,6 +410,7 @@ public final class GoBackend implements Backend {
                     tunnel.onStateChange(State.DOWN);
                 }
             }
+            // Reset GoBackend future for next cycle
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
                 vpnService = vpnService.newIncompleteFuture();
             else
@@ -415,7 +420,10 @@ public final class GoBackend implements Backend {
 
         @Override
         public int onStartCommand(@Nullable final Intent intent, final int flags, final int startId) {
+            // Also complete on start command for robustness
             vpnService.complete(this);
+            // Register with TurnBackend in case it was not done or future was reset
+            TurnBackend.onVpnServiceCreated(this);
             if (intent == null || intent.getComponent() == null || !intent.getComponent().getPackageName().equals(getPackageName())) {
                 Log.d(TAG, "Service started by Always-on VPN feature");
                 if (alwaysOnCallback != null)

@@ -18,6 +18,7 @@ extern char *wgGetConfig(int handle);
 extern char *wgVersion();
 extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, int n, int udp, const char *listen_addr);
 extern void wgTurnProxyStop();
+extern void wgNotifyNetworkChange();
 
 static JavaVM *java_vm;
 static jobject vpn_service_global;
@@ -125,16 +126,21 @@ JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_GoBackend_wgVersion
 	return ret;
 }
 
-JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jint n, jboolean udp, jstring listen_addr)
+JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jint n, jint useUdp, jstring listen_addr)
 {
 	const char *peer_addr_str = (*env)->GetStringUTFChars(env, peer_addr, 0);
 	const char *vklink_str = (*env)->GetStringUTFChars(env, vklink, 0);
 	const char *listen_addr_str = (*env)->GetStringUTFChars(env, listen_addr, 0);
-	int ret = wgTurnProxyStart(peer_addr_str, vklink_str, (int)n, (int)udp, listen_addr_str);
+	int ret = wgTurnProxyStart(peer_addr_str, vklink_str, (int)n, (int)useUdp, listen_addr_str);
 	(*env)->ReleaseStringUTFChars(env, peer_addr, peer_addr_str);
 	(*env)->ReleaseStringUTFChars(env, vklink, vklink_str);
 	(*env)->ReleaseStringUTFChars(env, listen_addr, listen_addr_str);
 	return ret;
+}
+
+JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgNotifyNetworkChange(JNIEnv *env, jclass c)
+{
+	wgNotifyNetworkChange();
 }
 
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStop(JNIEnv *env, jclass c)

@@ -49,30 +49,49 @@ func protectControl(network, address string, c syscall.RawConn) error {
 	})
 }
 
-var protectedResolver = &net.Resolver{
-	PreferGo: true,
-	Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-		d := net.Dialer{Timeout: 5 * time.Second, Control: protectControl}
-		if strings.HasPrefix(address, "127.0.0.1") || strings.HasPrefix(address, "[::1]") {
-			return d.DialContext(ctx, "udp", "77.88.8.8:53")
-		}
-		conn, err := d.DialContext(ctx, network, address)
-		if err == nil { return conn, nil }
-		return d.DialContext(ctx, "udp", "77.88.8.8:53")
-	},
-}
+var (
+	protectedResolverMu sync.RWMutex
+	protectedResolver   = createProtectedResolver()
+)
 
-var turnHTTPClient *http.Client
+func createProtectedResolver() *net.Resolver {
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 5 * time.Second, Control: protectControl}
+			return d.DialContext(ctx, "udp", "77.88.8.8:53")
+		},
+	}
+}
 
 func init() {
 	os.Setenv("GODEBUG", "netdns=go")
-	turnHTTPClient = &http.Client{
-		Timeout: 20 * time.Second,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{Timeout: 30 * time.Second, Control: protectControl, Resolver: protectedResolver}).DialContext,
-			MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second,
-		},
+}
+
+//export wgNotifyNetworkChange
+func wgNotifyNetworkChange() {
+	protectedResolverMu.Lock()
+	defer protectedResolverMu.Unlock()
+	protectedResolver = createProtectedResolver()
+	turnHTTPClient.CloseIdleConnections()
+	turnHTTPClient.Transport = &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 30 * time.Second,
+			Control: protectControl,
+			Resolver: protectedResolver,
+		}).DialContext,
+		MaxIdleConns: 100,
+		IdleConnTimeout: 90 * time.Second,
 	}
+	turnLog("[NETWORK] Network change notified: resolver reset, HTTP connections cleared")
+}
+
+var turnHTTPClient = &http.Client{
+	Timeout: 20 * time.Second,
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{Timeout: 30 * time.Second, Control: protectControl, Resolver: protectedResolver}).DialContext,
+		MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second,
+	},
 }
 
 func getVkCreds(ctx context.Context, link string) (string, string, string, error) {
@@ -147,6 +166,7 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 
 		err := func() error {
 			s.ready.Store(false)
+			var dtlsConn *dtls.Conn
 			sCtx, sCancel := context.WithCancel(s.ctx)
 			defer sCancel()
 
@@ -185,12 +205,12 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 
 			cert, err := selfsign.GenerateSelfSigned()
 			if err != nil { return err }
+
 			c1, c2 := connutil.AsyncPacketPipe()
 			defer c1.Close()
 			defer c2.Close()
 
-			turnLog("[STREAM %d] Starting DTLS handshake...", s.id)
-			dtlsConn, err := dtls.Client(c1, peer, &dtls.Config{
+			dtlsConn, err = dtls.Client(c1, peer, &dtls.Config{
 				Certificates: []tls.Certificate{cert}, InsecureSkipVerify: true,
 				ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
 				CipherSuites: []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
@@ -200,7 +220,13 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 			defer dtlsConn.Close()
 
 			wg := sync.WaitGroup{}
-			wg.Add(4)
+			wg.Add(3)
+
+			// Robust cleanup
+			context.AfterFunc(sCtx, func() {
+				relayConn.Close()
+				c1.Close() // Breaks dtlsConn
+			})
 
 			// DTLS <-> Relay (via Pipe) - MUST start before handshake
 			go func() {
@@ -212,6 +238,7 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 					if _, err := relayConn.WriteTo(buf[:n], peer); err != nil { return }
 				}
 			}()
+			
 			go func() {
 				defer wg.Done(); defer sCancel()
 				buf := make([]byte, 2048)
@@ -224,46 +251,9 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 				}
 			}()
 
-			if err := dtlsConn.HandshakeContext(sCtx); err != nil {
-				return fmt.Errorf("DTLS handshake failed: %w", err)
-			}
-
-			// Session ID Handshake
-			dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if _, err := dtlsConn.Write(s.sessionID); err != nil {
-				return fmt.Errorf("session ID handshake failed: %w", err)
-			}
-			dtlsConn.SetWriteDeadline(time.Time{})
-
-			turnLog("[STREAM %d] Ready!", s.id)
-			s.ready.Store(true)
-			select { case okchan <- struct{}{}: default: }
-
-			// WireGuard <-> DTLS
-			go func() {
-				defer wg.Done(); defer sCancel()
-				for {
-					select {
-					case <-sCtx.Done(): return
-					case b := <-s.in:
-						if _, err := dtlsConn.Write(b); err != nil { return }
-					}
-				}
-			}()
-			go func() {
-				defer wg.Done(); defer sCancel()
-				buf := make([]byte, 2048)
-				for {
-					n, err := dtlsConn.Read(buf)
-					if err != nil { return }
-					if last := s.peer.Load(); last != nil {
-						s.out.WriteTo(buf[:n], *last)
-					}
-				}
-			}()
-
 			// Deadline updater
 			go func() {
+				defer wg.Done()
 				ticker := time.NewTicker(5 * time.Second)
 				defer ticker.Stop()
 				for {
@@ -278,12 +268,70 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 				}
 			}()
 
+			// Set explicit deadline for handshake
+			turnLog("[STREAM %d] Starting DTLS handshake...", s.id)
+			dtlsConn.SetDeadline(time.Now().Add(10 * time.Second))
+
+			if err := dtlsConn.HandshakeContext(sCtx); err != nil {
+				turnLog("[STREAM %d] DTLS handshake FAILED: %v", s.id, err)
+				return fmt.Errorf("DTLS handshake timeout: %w", err)
+			}
+
+			// Clear deadline after successful handshake
+			dtlsConn.SetDeadline(time.Time{})
+			turnLog("[STREAM %d] DTLS handshake SUCCESS", s.id)
+
+			// Session ID Handshake
+			dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if _, err := dtlsConn.Write(s.sessionID); err != nil {
+				return fmt.Errorf("session ID handshake failed: %w", err)
+			}
+			dtlsConn.SetWriteDeadline(time.Time{})
+
+			s.ready.Store(true)
+			select { case okchan <- struct{}{}: default: }
+
+			var lastRx atomic.Int64
+			lastRx.Store(time.Now().Unix())
+
+			wg.Add(2)
+
+			// WireGuard -> DTLS (TX)
+			go func() {
+				defer wg.Done(); defer sCancel()
+				for {
+					select {
+					case <-sCtx.Done(): return
+					case b := <-s.in:
+						// Watchdog
+						if time.Since(time.Unix(lastRx.Load(), 0)) > 30*time.Second {
+							return // Trigger reconnect
+						}
+						if _, err := dtlsConn.Write(b); err != nil { return }
+					}
+				}
+			}()
+			
+			// DTLS -> WireGuard (RX)
+			go func() {
+				defer wg.Done(); defer sCancel()
+				buf := make([]byte, 2048)
+				for {
+					n, err := dtlsConn.Read(buf)
+					if err != nil { return }
+					lastRx.Store(time.Now().Unix())
+					if last := s.peer.Load(); last != nil {
+						s.out.WriteTo(buf[:n], *last)
+					}
+				}
+			}()
+
 			wg.Wait()
 			return nil
 		}()
 
 		if err != nil && s.ctx.Err() == nil {
-			turnLog("[STREAM %d] Error: %v. Restarting in 1s...", s.id, err)
+			turnLog("[STREAM %d] Error: %v. Reconnecting in 1s...", s.id, err)
 			time.Sleep(1 * time.Second)
 		}
 	}
@@ -291,7 +339,6 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 
 var currentTurnCancel context.CancelFunc
 var turnMutex sync.Mutex
-
 //export wgTurnProxyStart
 func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listenAddrC *C.char) int32 {
 	peerAddr := C.GoString(peerAddrC)
@@ -315,14 +362,16 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listen
 	if err != nil { return -1 }
 	context.AfterFunc(ctx, func() { lc.Close() })
 
+	// Generate fresh Session ID for every run to avoid server-side conflicts
 	sessionID, _ := uuid.New().MarshalBinary()
-	turnLog("[PROXY] Session ID: %x", sessionID)
+	turnLog("[PROXY] Session ID generated: %x", sessionID)
 
 	ok := make(chan struct{}, n)
 	streams := make([]*stream, n)
 	for i := 0; i < n; i++ {
 		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 1000), out: lc, sessionID: sessionID}
 		go streams[i].run(link, peer, udp != 0, ok)
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	go func() {

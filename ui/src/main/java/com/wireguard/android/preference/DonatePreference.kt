@@ -33,7 +33,7 @@ class DonatePreference(context: Context, attrs: AttributeSet?) : Preference(cont
         }
 
         val intent = Intent(Intent.ACTION_VIEW)
-        intent.data = "https://www.wireguard.com/donations/".toUri()
+        intent.data = "https://github.com/kiper292/wireguard-turn-android#donations--%D0%BF%D0%BE%D0%B4%D0%B4%D0%B5%D1%80%D0%B6%D0%B0%D1%82%D1%8C-%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D1%87%D0%B8%D0%BA%D0%B0".toUri()
         try {
             context.startActivity(intent)
         } catch (e: Throwable) {

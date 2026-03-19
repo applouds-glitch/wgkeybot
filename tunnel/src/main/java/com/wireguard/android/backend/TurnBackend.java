@@ -7,13 +7,15 @@ package com.wireguard.android.backend;
 
 import android.net.VpnService;
 import androidx.annotation.Nullable;
+import android.util.Log;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Native interface for TURN proxy management.
  */
 public final class TurnBackend {
-    private static final CompletableFuture<VpnService> vpnServiceFuture = new CompletableFuture<>();
+    private static final AtomicReference<CompletableFuture<VpnService>> vpnServiceFutureRef = new AtomicReference<>(new CompletableFuture<>());
 
     private TurnBackend() {
     }
@@ -23,9 +25,30 @@ public final class TurnBackend {
      * @param service The VpnService instance.
      */
     public static void onVpnServiceCreated(@Nullable VpnService service) {
-        wgSetVpnService(service);
+        Log.d("WireGuard/TurnBackend", "onVpnServiceCreated called with service=" + (service != null ? "non-null" : "null"));
+        
         if (service != null) {
-            vpnServiceFuture.complete(service);
+            // First, set the service in JNI so sockets can be protected
+            wgSetVpnService(service);
+            
+            // Get the current future and complete it
+            CompletableFuture<VpnService> currentFuture = vpnServiceFutureRef.get();
+            if (!currentFuture.isDone()) {
+                currentFuture.complete(service);
+                Log.d("WireGuard/TurnBackend", "VpnService future completed");
+            } else {
+                // Future was already completed (e.g., from previous cycle)
+                // Create a new one and complete it
+                Log.d("WireGuard/TurnBackend", "VpnService future was already completed, creating new one");
+                CompletableFuture<VpnService> newFuture = new CompletableFuture<>();
+                vpnServiceFutureRef.set(newFuture);
+                newFuture.complete(service);
+            }
+        } else {
+            // Service destroyed - reset the future for next cycle
+            Log.d("WireGuard/TurnBackend", "VpnService destroyed, resetting future");
+            wgSetVpnService(null);
+            vpnServiceFutureRef.set(new CompletableFuture<>());
         }
     }
 
@@ -33,12 +56,12 @@ public final class TurnBackend {
      * Returns a future that completes when the VpnService is created.
      */
     public static CompletableFuture<VpnService> getVpnServiceFuture() {
-        return vpnServiceFuture;
+        return vpnServiceFutureRef.get();
     }
 
     public static native void wgSetVpnService(@Nullable VpnService service);
 
-    public static native int wgTurnProxyStart(String peerAddr, String vklink, int n, boolean udp, String listenAddr);
-
+    public static native int wgTurnProxyStart(String peerAddr, String vklink, int n, int useUdp, String listenAddr);
     public static native void wgTurnProxyStop();
+    public static native void wgNotifyNetworkChange();
 }
