@@ -16,9 +16,12 @@ data class TurnSettings(
     val streams: Int = 4,
     val useUdp: Boolean = false,
     val localPort: Int = 9000,
+    val turnIp: String = "",
+    val turnPort: Int = 0,
+    val noDtls: Boolean = false,
 ) {
     fun toComments(): List<String> {
-        return listOf(
+        val lines = mutableListOf(
             "",
             "# [Peer] TURN extensions",
             "#@wgt:EnableTURN = $enabled",
@@ -28,6 +31,10 @@ data class TurnSettings(
             "#@wgt:StreamNum = $streams",
             "#@wgt:LocalPort = $localPort"
         )
+        if (turnIp.isNotBlank()) lines.add("#@wgt:TurnIP = $turnIp")
+        if (turnPort > 0) lines.add("#@wgt:TurnPort = $turnPort")
+        if (noDtls) lines.add("#@wgt:NoDTLS = true")
+        return lines
     }
 
     companion object {
@@ -38,6 +45,9 @@ data class TurnSettings(
             var streams = 4
             var useUdp = false
             var localPort = 9000
+            var turnIp = ""
+            var turnPort = 0
+            var noDtls = false
             var foundAny = false
 
             for (line in comments) {
@@ -55,9 +65,12 @@ data class TurnSettings(
                     "vklink" -> vkLink = value
                     "streamnum" -> streams = value.toIntOrNull() ?: 4
                     "localport" -> localPort = value.toIntOrNull() ?: 9000
+                    "turnip" -> turnIp = value
+                    "turnport" -> turnPort = value.toIntOrNull() ?: 0
+                    "nodtls" -> noDtls = value.toBoolean()
                 }
             }
-            return if (foundAny) TurnSettings(enabled, peer, vkLink, streams, useUdp, localPort) else null
+            return if (foundAny) TurnSettings(enabled, peer, vkLink, streams, useUdp, localPort, turnIp, turnPort, noDtls) else null
         }
 
         fun validate(settings: TurnSettings): TurnSettings {
@@ -68,6 +81,10 @@ data class TurnSettings(
             require(settings.streams in 1..16) { "Streams must be between 1 and 16" }
             require(settings.localPort in 1..65535) { "Local port must be between 1 and 65535" }
 
+            if (settings.turnPort != 0) {
+                require(settings.turnPort in 1..65535) { "TURN port must be between 1 and 65535" }
+            }
+
             // Very small sanity check for host:port format; full validation is done later when applying.
             require(':' in settings.peer) { "TURN peer must be in host:port format" }
 
@@ -75,4 +92,3 @@ data class TurnSettings(
         }
     }
 }
-

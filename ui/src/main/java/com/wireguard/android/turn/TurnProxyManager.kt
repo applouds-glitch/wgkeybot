@@ -201,7 +201,10 @@ class TurnProxyManager(private val context: Context) {
             val ret = TurnBackend.wgTurnProxyStart(
                 settings.peer, settings.vkLink, settings.streams,
                 if (settings.useUdp) 1 else 0,
-                "127.0.0.1:${settings.localPort}"
+                "127.0.0.1:${settings.localPort}",
+                settings.turnIp,
+                settings.turnPort,
+                if (settings.noDtls) 1 else 0
             )
 
             val listenAddr = "127.0.0.1:${settings.localPort}"

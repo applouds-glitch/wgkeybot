@@ -157,7 +157,7 @@ type stream struct {
 	sessionID []byte
 }
 
-func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- struct{}) {
+func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- struct{}, turnIp string, turnPort int, noDtls bool) {
 	for {
 		select {
 		case <-s.ctx.Done(): return
@@ -166,12 +166,28 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 
 		err := func() error {
 			s.ready.Store(false)
-			var dtlsConn *dtls.Conn
 			sCtx, sCancel := context.WithCancel(s.ctx)
 			defer sCancel()
 
 			user, pass, addr, err := getVkCreds(sCtx, link)
 			if err != nil { return fmt.Errorf("VK creds failed: %w", err) }
+
+			// Override TURN address if provided
+			if turnIp != "" {
+				_, origPort, _ := net.SplitHostPort(addr)
+				if turnPort != 0 {
+					addr = net.JoinHostPort(turnIp, fmt.Sprintf("%d", turnPort))
+				} else if origPort != "" {
+					addr = net.JoinHostPort(turnIp, origPort)
+				} else {
+					addr = turnIp
+				}
+				turnLog("[STREAM %d] Using custom TURN IP: %s", s.id, addr)
+			} else if turnPort != 0 {
+				origHost, _, _ := net.SplitHostPort(addr)
+				addr = net.JoinHostPort(origHost, fmt.Sprintf("%d", turnPort))
+				turnLog("[STREAM %d] Using custom TURN port: %s", s.id, addr)
+			}
 
 			turnLog("[STREAM %d] Dialing TURN server %s...", s.id, addr)
 			dialer := &net.Dialer{Control: protectControl, Resolver: protectedResolver}
@@ -195,7 +211,7 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 			if err != nil { return fmt.Errorf("TURN client creation failed: %w", err) }
 			defer client.Close()
 			if err := client.Listen(); err != nil { return fmt.Errorf("TURN listen failed: %w", err) }
-			
+
 			turnLog("[STREAM %d] Requesting TURN allocation...", s.id)
 			relayConn, err := client.Allocate()
 			if err != nil { return fmt.Errorf("TURN allocation failed: %w", err) }
@@ -203,131 +219,11 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 
 			turnLog("[STREAM %d] Allocated relay address: %s", s.id, relayConn.LocalAddr())
 
-			cert, err := selfsign.GenerateSelfSigned()
-			if err != nil { return err }
-
-			c1, c2 := connutil.AsyncPacketPipe()
-			defer c1.Close()
-			defer c2.Close()
-
-			dtlsConn, err = dtls.Client(c1, peer, &dtls.Config{
-				Certificates: []tls.Certificate{cert}, InsecureSkipVerify: true,
-				ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
-				CipherSuites: []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
-				ConnectionIDGenerator: dtls.OnlySendCIDGenerator(),
-			})
-			if err != nil { return fmt.Errorf("DTLS client creation failed: %w", err) }
-			defer dtlsConn.Close()
-
-			wg := sync.WaitGroup{}
-			wg.Add(3)
-
-			// Robust cleanup
-			context.AfterFunc(sCtx, func() {
-				relayConn.Close()
-				c1.Close() // Breaks dtlsConn
-			})
-
-			// DTLS <-> Relay (via Pipe) - MUST start before handshake
-			go func() {
-				defer wg.Done(); defer sCancel()
-				buf := make([]byte, 2048)
-				for {
-					n, _, err := c2.ReadFrom(buf)
-					if err != nil { return }
-					if _, err := relayConn.WriteTo(buf[:n], peer); err != nil { return }
-				}
-			}()
-			
-			go func() {
-				defer wg.Done(); defer sCancel()
-				buf := make([]byte, 2048)
-				for {
-					n, from, err := relayConn.ReadFrom(buf)
-					if err != nil { return }
-					if from.String() == peer.String() {
-						if _, err := c2.WriteTo(buf[:n], peer); err != nil { return }
-					}
-				}
-			}()
-
-			// Deadline updater
-			go func() {
-				defer wg.Done()
-				ticker := time.NewTicker(5 * time.Second)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-sCtx.Done(): return
-					case <-ticker.C:
-						deadline := time.Now().Add(25 * time.Second)
-						relayConn.SetDeadline(deadline)
-						dtlsConn.SetDeadline(deadline)
-						c2.SetDeadline(deadline)
-					}
-				}
-			}()
-
-			// Set explicit deadline for handshake
-			turnLog("[STREAM %d] Starting DTLS handshake...", s.id)
-			dtlsConn.SetDeadline(time.Now().Add(10 * time.Second))
-
-			if err := dtlsConn.HandshakeContext(sCtx); err != nil {
-				turnLog("[STREAM %d] DTLS handshake FAILED: %v", s.id, err)
-				return fmt.Errorf("DTLS handshake timeout: %w", err)
+			// Delegate to mode-specific handler
+			if noDtls {
+				return s.runNoDTLS(sCtx, relayConn, peer, okchan)
 			}
-
-			// Clear deadline after successful handshake
-			dtlsConn.SetDeadline(time.Time{})
-			turnLog("[STREAM %d] DTLS handshake SUCCESS", s.id)
-
-			// Session ID Handshake
-			dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if _, err := dtlsConn.Write(s.sessionID); err != nil {
-				return fmt.Errorf("session ID handshake failed: %w", err)
-			}
-			dtlsConn.SetWriteDeadline(time.Time{})
-
-			s.ready.Store(true)
-			select { case okchan <- struct{}{}: default: }
-
-			var lastRx atomic.Int64
-			lastRx.Store(time.Now().Unix())
-
-			wg.Add(2)
-
-			// WireGuard -> DTLS (TX)
-			go func() {
-				defer wg.Done(); defer sCancel()
-				for {
-					select {
-					case <-sCtx.Done(): return
-					case b := <-s.in:
-						// Watchdog
-						if time.Since(time.Unix(lastRx.Load(), 0)) > 30*time.Second {
-							return // Trigger reconnect
-						}
-						if _, err := dtlsConn.Write(b); err != nil { return }
-					}
-				}
-			}()
-			
-			// DTLS -> WireGuard (RX)
-			go func() {
-				defer wg.Done(); defer sCancel()
-				buf := make([]byte, 2048)
-				for {
-					n, err := dtlsConn.Read(buf)
-					if err != nil { return }
-					lastRx.Store(time.Now().Unix())
-					if last := s.peer.Load(); last != nil {
-						s.out.WriteTo(buf[:n], *last)
-					}
-				}
-			}()
-
-			wg.Wait()
-			return nil
+			return s.runDTLS(sCtx, relayConn, peer, okchan)
 		}()
 
 		if err != nil && s.ctx.Err() == nil {
@@ -337,15 +233,209 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 	}
 }
 
+// runNoDTLS handles packet relay without DTLS obfuscation
+func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr, okchan chan<- struct{}) error {
+	sCtx, sCancel := context.WithCancel(ctx)
+	defer sCancel()
+
+	turnLog("[STREAM %d] No DTLS mode - direct relay", s.id)
+	turnLog("[STREAM %d] Forwarding to WireGuard server: %s", s.id, peer.String())
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	// WireGuard backend (s.in channel) -> TURN -> WireGuard server (TX)
+	go func() {
+		defer wg.Done(); defer sCancel()
+		for {
+			select {
+			case <-sCtx.Done(): return
+			case b := <-s.in:
+				if _, err := relayConn.WriteTo(b, peer); err != nil {
+					turnLog("[STREAM %d] TX error: %v", s.id, err)
+					return
+				}
+			}
+		}
+	}()
+
+	// WireGuard server -> TURN -> WireGuard backend (s.out socket) (RX)
+	go func() {
+		defer wg.Done(); defer sCancel()
+		buf := make([]byte, 2048)
+		for {
+			n, from, err := relayConn.ReadFrom(buf)
+			if err != nil {
+				turnLog("[STREAM %d] RX error: %v", s.id, err)
+				return
+			}
+			if from.String() == peer.String() {
+				addr := s.peer.Load()
+				if addr == nil {
+					turnLog("[STREAM %d] RX: no peer address yet", s.id)
+					continue
+				}
+				if _, err := s.out.WriteTo(buf[:n], *addr); err != nil {
+					turnLog("[STREAM %d] RX write error: %v", s.id, err)
+					return
+				}
+			}
+		}
+	}()
+
+	s.ready.Store(true)
+	select { case okchan <- struct{}{}: default: }
+
+	wg.Wait()
+	return nil
+}
+
+// runDTLS handles packet relay with DTLS obfuscation
+func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr, okchan chan<- struct{}) error {
+	sCtx, sCancel := context.WithCancel(ctx)
+	defer sCancel()
+
+	var dtlsConn *dtls.Conn
+
+	cert, err := selfsign.GenerateSelfSigned()
+	if err != nil { return err }
+
+	c1, c2 := connutil.AsyncPacketPipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	dtlsConn, err = dtls.Client(c1, peer, &dtls.Config{
+		Certificates: []tls.Certificate{cert}, InsecureSkipVerify: true,
+		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
+		CipherSuites: []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+		ConnectionIDGenerator: dtls.OnlySendCIDGenerator(),
+	})
+	if err != nil { return fmt.Errorf("DTLS client creation failed: %w", err) }
+	defer dtlsConn.Close()
+
+	wg := sync.WaitGroup{}
+	wg.Add(3)
+
+	// Robust cleanup
+	context.AfterFunc(sCtx, func() {
+		relayConn.Close()
+		c1.Close() // Breaks dtlsConn
+	})
+
+	// DTLS <-> Relay (via Pipe) - MUST start before handshake
+	go func() {
+		defer wg.Done(); defer sCancel()
+		buf := make([]byte, 2048)
+		for {
+			n, _, err := c2.ReadFrom(buf)
+			if err != nil { return }
+			if _, err := relayConn.WriteTo(buf[:n], peer); err != nil { return }
+		}
+	}()
+
+	go func() {
+		defer wg.Done(); defer sCancel()
+		buf := make([]byte, 2048)
+		for {
+			n, from, err := relayConn.ReadFrom(buf)
+			if err != nil { return }
+			if from.String() == peer.String() {
+				if _, err := c2.WriteTo(buf[:n], peer); err != nil { return }
+			}
+		}
+	}()
+
+	// Deadline updater
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-sCtx.Done(): return
+			case <-ticker.C:
+				deadline := time.Now().Add(25 * time.Second)
+				relayConn.SetDeadline(deadline)
+				dtlsConn.SetDeadline(deadline)
+				c2.SetDeadline(deadline)
+			}
+		}
+	}()
+
+	// Set explicit deadline for handshake
+	turnLog("[STREAM %d] Starting DTLS handshake...", s.id)
+	dtlsConn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	if err := dtlsConn.HandshakeContext(sCtx); err != nil {
+		turnLog("[STREAM %d] DTLS handshake FAILED: %v", s.id, err)
+		return fmt.Errorf("DTLS handshake timeout: %w", err)
+	}
+
+	// Clear deadline after successful handshake
+	dtlsConn.SetDeadline(time.Time{})
+	turnLog("[STREAM %d] DTLS handshake SUCCESS", s.id)
+
+	// Session ID Handshake
+	dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if _, err := dtlsConn.Write(s.sessionID); err != nil {
+		return fmt.Errorf("session ID handshake failed: %w", err)
+	}
+	dtlsConn.SetWriteDeadline(time.Time{})
+
+	s.ready.Store(true)
+	select { case okchan <- struct{}{}: default: }
+
+	var lastRx atomic.Int64
+	lastRx.Store(time.Now().Unix())
+
+	wg.Add(2)
+
+	// WireGuard -> DTLS (TX)
+	go func() {
+		defer wg.Done(); defer sCancel()
+		for {
+			select {
+			case <-sCtx.Done(): return
+			case b := <-s.in:
+				// Watchdog
+				if time.Since(time.Unix(lastRx.Load(), 0)) > 30*time.Second {
+					return // Trigger reconnect
+				}
+				if _, err := dtlsConn.Write(b); err != nil { return }
+			}
+		}
+	}()
+
+	// DTLS -> WireGuard (RX)
+	go func() {
+		defer wg.Done(); defer sCancel()
+		buf := make([]byte, 2048)
+		for {
+			n, err := dtlsConn.Read(buf)
+			if err != nil { return }
+			lastRx.Store(time.Now().Unix())
+			if last := s.peer.Load(); last != nil {
+				s.out.WriteTo(buf[:n], *last)
+			}
+		}
+	}()
+
+	wg.Wait()
+	return nil
+}
+
 var currentTurnCancel context.CancelFunc
 var turnMutex sync.Mutex
 //export wgTurnProxyStart
-func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listenAddrC *C.char) int32 {
+func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listenAddrC *C.char, turnIpC *C.char, turnPortC int, noDtlsC int) int32 {
 	peerAddr := C.GoString(peerAddrC)
 	vklink := C.GoString(vklinkC)
 	listenAddr := C.GoString(listenAddrC)
+	turnIp := C.GoString(turnIpC)
+	turnPort := int(turnPortC)
+	noDtls := noDtlsC != 0
 
-	turnLog("[PROXY] Hub starting on %s (peer=%s, streams=%d)", listenAddr, peerAddr, n)
+	turnLog("[PROXY] Hub starting on %s (peer=%s, streams=%d, turnIp=%s, turnPort=%d, noDtls=%v)", listenAddr, peerAddr, n, turnIp, turnPort, noDtls)
 	turnMutex.Lock()
 	if currentTurnCancel != nil { currentTurnCancel() }
 	ctx, cancel := context.WithCancel(context.Background())
@@ -370,7 +460,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listen
 	streams := make([]*stream, n)
 	for i := 0; i < n; i++ {
 		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 1000), out: lc, sessionID: sessionID}
-		go streams[i].run(link, peer, udp != 0, ok)
+		go streams[i].run(link, peer, udp != 0, ok, turnIp, turnPort, noDtls)
 		time.Sleep(200 * time.Millisecond)
 	}
 

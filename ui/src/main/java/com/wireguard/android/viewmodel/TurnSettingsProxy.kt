@@ -55,6 +55,34 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             notifyPropertyChanged(BR.localPort)
         }
 
+    @get:Bindable
+    var turnIp: String = ""
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.turnIp)
+        }
+
+    @get:Bindable
+    var turnPort: String = ""
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.turnPort)
+        }
+
+    @get:Bindable
+    var noDtls: Boolean = false
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.noDtls)
+        }
+
+    @get:Bindable
+    var advancedExpanded: Boolean = false
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.advancedExpanded)
+        }
+
     private constructor(parcel: Parcel) {
         enabled = parcel.readInt() != 0
         peer = parcel.readString() ?: ""
@@ -62,6 +90,10 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         streams = parcel.readString() ?: ""
         useUdp = parcel.readInt() != 0
         localPort = parcel.readString() ?: ""
+        turnIp = parcel.readString() ?: ""
+        turnPort = parcel.readString() ?: ""
+        noDtls = parcel.readInt() != 0
+        advancedExpanded = parcel.readInt() != 0
     }
 
     constructor()
@@ -74,6 +106,9 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             streams = other.streams.toString()
             useUdp = other.useUdp
             localPort = other.localPort.toString()
+            turnIp = other.turnIp
+            turnPort = if (other.turnPort > 0) other.turnPort.toString() else ""
+            noDtls = other.noDtls
         }
     }
 
@@ -86,12 +121,17 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         dest.writeString(streams)
         dest.writeInt(if (useUdp) 1 else 0)
         dest.writeString(localPort)
+        dest.writeString(turnIp)
+        dest.writeString(turnPort)
+        dest.writeInt(if (noDtls) 1 else 0)
+        dest.writeInt(if (advancedExpanded) 1 else 0)
     }
 
     @Throws(BadConfigException::class)
     fun resolve(): TurnSettings {
         val parsedStreams = streams.toIntOrNull() ?: 4
         val parsedPort = localPort.toIntOrNull() ?: 9000
+        val parsedTurnPort = turnPort.toIntOrNull() ?: 0
 
         if (enabled) {
             if (parsedStreams !in 1..16) {
@@ -100,6 +140,10 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
 
             if (parsedPort !in 1..65535) {
                 throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.LISTEN_PORT, BadConfigException.Reason.INVALID_VALUE, localPort)
+            }
+
+            if (turnPort.isNotEmpty() && parsedTurnPort !in 1..65535) {
+                throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, turnPort)
             }
 
             if (peer.isBlank()) {
@@ -120,6 +164,9 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             streams = parsedStreams,
             useUdp = useUdp,
             localPort = parsedPort,
+            turnIp = turnIp.trim(),
+            turnPort = parsedTurnPort,
+            noDtls = noDtls,
         )
         if (enabled) {
             TurnSettings.validate(settings)
@@ -136,4 +183,3 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             }
     }
 }
-
