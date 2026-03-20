@@ -37,6 +37,9 @@ class TurnSettingsStore(private val context: Context) {
                     streams = json.optInt("streams", 4),
                     useUdp = json.optBoolean("useUdp", false),
                     localPort = json.optInt("localPort", 9000),
+                    turnIp = json.optString("turnIp", ""),
+                    turnPort = json.optInt("turnPort", 0),
+                    noDtls = json.optBoolean("noDtls", false),
                 )
             }
         } catch (t: Throwable) {
@@ -61,6 +64,9 @@ class TurnSettingsStore(private val context: Context) {
             .put("streams", settings.streams)
             .put("useUdp", settings.useUdp)
             .put("localPort", settings.localPort)
+            .put("turnIp", settings.turnIp)
+            .put("turnPort", settings.turnPort)
+            .put("noDtls", settings.noDtls)
 
         file.parentFile?.mkdirs()
         FileOutputStream(file, false).use { stream ->

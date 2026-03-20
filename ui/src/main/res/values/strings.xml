@@ -270,5 +270,11 @@
     <string name="turn_streams_hint">1-16 (default 4)</string>
     <string name="turn_local_port">Local port</string>
     <string name="turn_local_port_hint">1024-65535 (default 9000)</string>
-    <string name="turn_use_udp">Use UDP (-udp)</string>
+    <string name="turn_use_udp">Use UDP</string>
+    <string name="turn_advanced">Advanced settings</string>
+    <string name="turn_ip">Turn IP</string>
+    <string name="turn_ip_hint">(auto)</string>
+    <string name="turn_port">Turn port</string>
+    <string name="turn_port_hint">(auto)</string>
+    <string name="turn_no_dtls">No DTLS (not recommended)</string>
 </resources>

@@ -61,7 +61,16 @@ public final class TurnBackend {
 
     public static native void wgSetVpnService(@Nullable VpnService service);
 
-    public static native int wgTurnProxyStart(String peerAddr, String vklink, int n, int useUdp, String listenAddr);
+    public static native int wgTurnProxyStart(
+            String peerAddr,
+            String vklink,
+            int n,
+            int useUdp,
+            String listenAddr,
+            String turnIp,
+            int turnPort,
+            int noDtls
+    );
     public static native void wgTurnProxyStop();
     public static native void wgNotifyNetworkChange();
 }

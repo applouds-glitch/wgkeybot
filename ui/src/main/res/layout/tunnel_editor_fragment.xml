@@ -402,6 +402,82 @@
                             app:layout_constraintStart_toStartOf="parent"
                             app:layout_constraintTop_toBottomOf="@id/turn_local_port_layout" />
 
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/turn_advanced_toggle"
+                            style="@style/Widget.Material3.Button.TextButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_margin="4dp"
+                            android:onClick="@{() -> config.turn.setAdvancedExpanded(!config.turn.advancedExpanded)}"
+                            android:text="@string/turn_advanced"
+                            app:icon="@{config.turn.advancedExpanded ? @drawable/ic_action_expand_less : @drawable/ic_action_expand_more}"
+                            app:layout_constraintStart_toStartOf="parent"
+                            app:layout_constraintTop_toBottomOf="@id/turn_udp_switch" />
+
+                        <LinearLayout
+                            android:id="@+id/turn_advanced_layout"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:visibility="@{config.turn.advancedExpanded ? android.view.View.VISIBLE : android.view.View.GONE}"
+                            app:layout_constraintTop_toBottomOf="@id/turn_advanced_toggle">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="horizontal">
+
+                                <com.google.android.material.textfield.TextInputLayout
+                                    android:id="@+id/turn_ip_layout"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_margin="4dp"
+                                    android:layout_weight="0.6"
+                                    android:enabled="@{config.turn.enabled}"
+                                    android:hint="@string/turn_ip"
+                                    app:expandedHintEnabled="false">
+
+                                    <com.google.android.material.textfield.TextInputEditText
+                                        android:id="@+id/turn_ip_text"
+                                        android:layout_width="match_parent"
+                                        android:layout_height="wrap_content"
+                                        android:hint="@string/turn_ip_hint"
+                                        android:imeOptions="actionNext"
+                                        android:inputType="textNoSuggestions|textVisiblePassword"
+                                        android:text="@={config.turn.turnIp}" />
+                                </com.google.android.material.textfield.TextInputLayout>
+
+                                <com.google.android.material.textfield.TextInputLayout
+                                    android:id="@+id/turn_port_layout"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_margin="4dp"
+                                    android:layout_weight="0.4"
+                                    android:enabled="@{config.turn.enabled}"
+                                    android:hint="@string/turn_port"
+                                    app:expandedHintEnabled="false">
+
+                                    <com.google.android.material.textfield.TextInputEditText
+                                        android:id="@+id/turn_port_text"
+                                        android:layout_width="match_parent"
+                                        android:layout_height="wrap_content"
+                                        android:hint="@string/turn_port_hint"
+                                        android:imeOptions="actionNext"
+                                        android:inputType="number"
+                                        android:text="@={config.turn.turnPort}" />
+                                </com.google.android.material.textfield.TextInputLayout>
+                            </LinearLayout>
+
+                            <com.google.android.material.switchmaterial.SwitchMaterial
+                                android:id="@+id/turn_no_dtls_switch"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_margin="8dp"
+                                android:checked="@={config.turn.noDtls}"
+                                android:enabled="@{config.turn.enabled}"
+                                android:text="@string/turn_no_dtls" />
+                        </LinearLayout>
+
                     </androidx.constraintlayout.widget.ConstraintLayout>
                 </com.google.android.material.card.MaterialCardView>
 
