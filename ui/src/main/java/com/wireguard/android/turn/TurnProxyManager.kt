@@ -44,6 +44,22 @@ class TurnProxyManager(private val context: Context) {
 
     init {
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        
+        // Initialize lastTransportType with current active network to avoid false restart on app launch
+        val activeNetwork = connectivityManager.activeNetwork
+        if (activeNetwork != null) {
+            val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
+            if (capabilities != null) {
+                lastTransportType = when {
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkCapabilities.TRANSPORT_WIFI
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkCapabilities.TRANSPORT_CELLULAR
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> NetworkCapabilities.TRANSPORT_ETHERNET
+                    else -> null
+                }
+                Log.d(TAG, "Initialized with active transport: ${transportName(lastTransportType ?: -1)}")
+            }
+        }
+        
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -53,53 +69,48 @@ class TurnProxyManager(private val context: Context) {
         connectivityManager.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 super.onAvailable(network)
-                Log.d(TAG, "Network available (no action - waiting for capabilities)")
-                // Do NOT call wgNotifyNetworkChange() — this may be an additional network
+                Log.d(TAG, "onAvailable: network=${network}")
             }
             override fun onLost(network: Network) {
                 super.onLost(network)
-                Log.d(TAG, "Network lost (no action - waiting for capabilities)")
-                // Do NOT call wgNotifyNetworkChange() — this may be a temporary loss
+                Log.d(TAG, "onLost: network=${network}")
             }
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
                 super.onCapabilitiesChanged(network, capabilities)
-                
-                // Ignore networks without internet
-                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-                    Log.d(TAG, "Skipping network without INTERNET capability")
-                    return
-                }
-                
-                // Ignore non-default networks (MMS, IMS, VPN)
-                // NET_CAPABILITY_NOT_DEFAULT = 23 (available since API 29)
-                // Use numeric value for compatibility with API 24+
-                val NOT_DEFAULT_CAPABILITY = 23
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                    if (capabilities.hasCapability(NOT_DEFAULT_CAPABILITY)) {
-                        Log.d(TAG, "Skipping NOT_DEFAULT network")
-                        return
-                    }
-                }
-                
+
                 // Determine current transport type
                 val currentTransportType = when {
                     capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkCapabilities.TRANSPORT_WIFI
                     capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkCapabilities.TRANSPORT_CELLULAR
                     capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> NetworkCapabilities.TRANSPORT_ETHERNET
                     else -> {
-                        Log.d(TAG, "Skipping unknown transport type")
+                        Log.d(TAG, "onCapabilitiesChanged: unknown transport, skipping")
                         return
                     }
                 }
-                
+
+                // Ignore networks without internet
+                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                    Log.d(TAG, "Skipping: no INTERNET capability")
+                    return
+                }
+
+                // Ignore non-default networks (MMS, IMS, VPN)
+                val NOT_DEFAULT_CAPABILITY = 23
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    if (capabilities.hasCapability(NOT_DEFAULT_CAPABILITY)) {
+                        Log.d(TAG, "Skipping: NOT_DEFAULT network")
+                        return
+                    }
+                }
+
                 // Compare with previous state
                 val lastType = lastTransportType
                 if (lastType != null && lastType == currentTransportType) {
-                    Log.d(TAG, "Skipping: same transport type (${transportName(currentTransportType)})")
-                    networkChangeLock.set(false)
-                    return  // Do not restart on minor changes within same transport
+                    // Skip minor changes within same transport type
+                    return
                 }
-                
+
                 // Check lock
                 if (!networkChangeLock.compareAndSet(false, true)) {
                     Log.d(TAG, "Skipping: network change lock is held")
@@ -110,10 +121,10 @@ class TurnProxyManager(private val context: Context) {
                     networkChangeLock.set(false)
                     return
                 }
-                
+
                 // Save current type
                 lastTransportType = currentTransportType
-                
+
                 // Check restart frequency (10 seconds debounce)
                 val now = System.currentTimeMillis()
                 if (now - lastRestartTime < 10000) {
@@ -122,7 +133,7 @@ class TurnProxyManager(private val context: Context) {
                     return
                 }
                 lastRestartTime = now
-                
+
                 Log.d(TAG, "Network change detected: transport=${transportName(currentTransportType)}, restarting TURN for $activeTunnelName")
                 scope.launch {
                     try {
