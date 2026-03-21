@@ -347,8 +347,14 @@ public final class GoBackend implements Backend {
             currentTunnel = tunnel;
             currentConfig = config;
 
+            // Protect WireGuard sockets
             service.protect(wgGetSocketV4(currentTunnelHandle));
             service.protect(wgGetSocketV6(currentTunnelHandle));
+
+            // NEW: Start TURN proxy AFTER tunnel is established
+            // This ensures VpnService.protect() will work for TURN sockets
+            // TurnProxyManager will be called from UI module via callback
+            Log.d(TAG, "Tunnel established, TURN proxy should be started now");
         } else {
             if (currentTunnelHandle == -1) {
                 Log.w(TAG, "Tunnel already down");
@@ -388,10 +394,16 @@ public final class GoBackend implements Backend {
         @Override
         public void onCreate() {
             Log.d(TAG, "VpnService.onCreate() called");
-            // Complete the GoBackend future for internal use
-            vpnService.complete(this);
-            // Register with TurnBackend for TURN proxy socket protection
+            // CORRECT ORDER: First register in TurnBackend (JNI), then complete Future
+            // This ensures JNI is ready before TurnProxyManager gets the Future
+            Log.d(TAG, "Calling TurnBackend.onVpnServiceCreated()...");
             TurnBackend.onVpnServiceCreated(this);
+            Log.d(TAG, "TurnBackend.onVpnServiceCreated() complete");
+
+            Log.d(TAG, "Calling vpnService.complete()...");
+            vpnService.complete(this);
+            Log.d(TAG, "vpnService.complete() complete");
+
             super.onCreate();
         }
 
@@ -422,8 +434,7 @@ public final class GoBackend implements Backend {
         public int onStartCommand(@Nullable final Intent intent, final int flags, final int startId) {
             // Also complete on start command for robustness
             vpnService.complete(this);
-            // Register with TurnBackend in case it was not done or future was reset
-            TurnBackend.onVpnServiceCreated(this);
+            // Note: TurnBackend.onVpnServiceCreated() is called in onCreate(), no need to call again here
             if (intent == null || intent.getComponent() == null || !intent.getComponent().getPackageName().equals(getPackageName())) {
                 Log.d(TAG, "Service started by Always-on VPN feature");
                 if (alwaysOnCallback != null)

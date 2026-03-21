@@ -279,13 +279,6 @@ class TunnelManager(
                 val turn = tunnel.turnSettings
                 if (turn != null && turn.enabled) {
                     configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn.localPort)
-                    // Start TURN proxy BEFORE tunnel is up
-                    val turnStarted = withContext(Dispatchers.IO) {
-                        getTurnProxyManager().startForTunnel(tunnel.name, turn)
-                    }
-                    if (!turnStarted) {
-                        throw Exception("Failed to start TURN proxy")
-                    }
                 }
             } else if (state == Tunnel.State.DOWN) {
                 val turn = tunnel.turnSettings
@@ -296,7 +289,25 @@ class TunnelManager(
                 }
             }
             newState = withContext(Dispatchers.IO) { getBackend().setState(tunnel, state, configToUse) }
-            
+
+            // NEW: Start TURN AFTER tunnel is established
+            // This ensures VpnService.protect() will work for TURN sockets
+            if (newState == Tunnel.State.UP && state == Tunnel.State.UP) {
+                // Use tunnel.turnSettings (already loaded from turnSettingsStore)
+                val turn = tunnel.turnSettings
+                if (turn != null && turn.enabled) {
+                    Log.d(TAG, "Tunnel established, starting TURN proxy...")
+                    val turnStarted = withContext(Dispatchers.IO) {
+                        getTurnProxyManager().onTunnelEstablished(tunnel.name, turn)
+                    }
+                    if (!turnStarted) {
+                        Log.w(TAG, "TURN proxy start returned false, but tunnel is up")
+                    }
+                } else {
+                    Log.w(TAG, "TURN not enabled for tunnel ${tunnel.name}, skipping")
+                }
+            }
+
             if (newState == Tunnel.State.UP) {
                 lastUsedTunnel = tunnel
             }

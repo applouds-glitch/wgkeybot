@@ -49,21 +49,35 @@ int wgProtectSocket(int fd)
 	JNIEnv *env;
 	int ret = 0;
 	int attached = 0;
+
+	// Validate fd
+	if (fd < 0) {
+		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
+			"wgProtectSocket: invalid fd=%d", fd);
+		return -1;
+	}
+
 	if (!vpn_service_global || !protect_method) {
-		// Log that we are skipping protection because service is not yet registered
-		// This is expected during early proxy startup
-		__android_log_print(ANDROID_LOG_DEBUG, "WireGuard/JNI", "wgProtectSocket(%d): vpn_service_global is NULL, skipping", fd);
+		__android_log_print(ANDROID_LOG_WARN, "WireGuard/JNI",
+			"wgProtectSocket(fd=%d): vpn_service_global is NULL, SKIPPING", fd);
 		return 0;
 	}
 	if ((*java_vm)->GetEnv(java_vm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
-		if ((*java_vm)->AttachCurrentThread(java_vm, &env, NULL) != 0)
+		if ((*java_vm)->AttachCurrentThread(java_vm, &env, NULL) != 0) {
+			__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
+				"wgProtectSocket(fd=%d): AttachCurrentThread failed", fd);
 			return -1;
+		}
 		attached = 1;
 	}
-	if ((*env)->CallBooleanMethod(env, vpn_service_global, protect_method, (jint)fd))
+
+	if ((*env)->CallBooleanMethod(env, vpn_service_global, protect_method, (jint)fd)) {
+		__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI",
+			"wgProtectSocket(fd=%d): SUCCESS", fd);
 		ret = 0;
-	else {
-		__android_log_print(ANDROID_LOG_WARN, "WireGuard/JNI", "VpnService.protect(%d) failed", fd);
+	} else {
+		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
+			"wgProtectSocket(fd=%d): VpnService.protect() FAILED - tunnel not established yet?", fd);
 		ret = -1;
 	}
 	if (attached)

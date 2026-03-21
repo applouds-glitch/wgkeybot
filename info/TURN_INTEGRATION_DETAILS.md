@@ -1,17 +1,20 @@
-# Изменения для поддержки VK TURN Proxy (отличия от апстрима)
+# Интеграция VK TURN Proxy (Архитектура)
 
-В данном документе перечислены ключевые отличия данного форка от оригинального клиента [WireGuard Android](https://git.zx2c4.com/wireguard-android) (после коммита `cc3f417`).
+В данном документе описана архитектура интеграции VK TURN Proxy в форк клиента [WireGuard Android](https://git.zx2c4.com/wireguard-android).
 
 ## 1. Нативный уровень (Go / JNI)
 
-### `tunnel/tools/libwg-go/jni.c` (Добавлено)
-- **`wgProtectSocket(int fd)`**: Новая функция для вызова `VpnService.protect(fd)` через JNI. Позволяет TURN-клиенту выводить трафик за пределы VPN-туннеля.
-- **`wgTurnProxyStart/Stop`**: Экспортированные методы для управления жизненным циклом прокси-сервера.
-- **`wgNotifyNetworkChange()`**: Новая функция для сброса DNS resolver и HTTP-соединений при переключении сети (WiFi <-> 4G). Обеспечивает быстрое восстановление соединения после смены сетевого интерфейса.
-- **Стабилизация ABI**: Использование простых C-типов (`const char *`, `int`) для передачи параметров прокси, что устраняет ошибки выравнивания памяти в Go-структурах на разных архитектурах. Параметр `udp` изменён с `boolean` на `int` для корректной работы JNI.
+### `tunnel/tools/libwg-go/jni.c`
 
-### `tunnel/tools/libwg-go/turn-client.go` (Добавлено)
-- **Session ID Handshake (Multi-User Support)**: Клиент генерирует уникальный 16-байтный UUID **при каждом запуске туннеля** и отправляет его первым пакетом после DTLS рукопожатия в каждом потоке. Это позволяет серверу агрегировать несколько DTLS-сессий в одно стабильное UDP-соединение до WireGuard сервера, решая проблему "Endpoint Thrashing".
+- **`wgProtectSocket(int fd)`**: Функция для вызова `VpnService.protect(fd)` через JNI. Позволяет TURN-клиенту выводить трафик за пределы VPN-туннеля.
+- **`wgTurnProxyStart/Stop`**: Экспортированные методы для управления жизненным циклом прокси-сервера.
+- **`wgNotifyNetworkChange()`**: Функция для сброса DNS resolver и HTTP-соединений при переключении сети (WiFi <-> 4G). Обеспечивает быстрое восстановление соединения после смены сетевого интерфейса.
+- **Стабилизация ABI**: Использование простых C-типов (`const char *`, `int`) для передачи параметров прокси, что устраняет ошибки выравнивания памяти в Go-структурах на разных архитектурах. Параметр `udp` изменён с `boolean` на `int` для корректной работы JNI.
+- **Детальное логирование**: `wgProtectSocket()` логирует валидацию fd, вызов protect() и результат (SUCCESS/FAILED).
+
+### `tunnel/tools/libwg-go/turn-client.go`
+
+- **Session ID Handshake (Multi-User Support)**: Клиент генерирует уникальный 16-байтный UUID при каждом запуске туннеля и отправляет его первым пакетом после DTLS рукопожатия в каждом потоке. Это позволяет серверу агрегировать несколько DTLS-сессий в одно стабильное UDP-соединение до WireGuard сервера, решая проблему "Endpoint Thrashing".
 - **Round-Robin Load Balancing**: Реализация Hub-сервера, который поддерживает `n` параллельных DTLS-соединений. Вместо использования одного «липкого» потока, клиент равномерно распределяет исходящие пакеты WireGuard между всеми готовыми (ready) DTLS-соединениями. Это повышает общую пропускную способность и устойчивость к потерям в отдельных потоках.
 - **Интегрированная авторизация VK**: Реализован полный цикл получения токенов (VK Calls -> OK.ru -> TURN credentials) внутри Go.
 - **Защита сокетов**: Все исходящие соединения (HTTP, UDP, TCP) используют `Control` функцию с вызовом `wgProtectSocket`.
@@ -26,41 +29,74 @@
 ## 2. Слой конфигурации (Java)
 
 ### `tunnel/src/main/java/com/wireguard/config/`
-- **`Peer.java`**: Добавлена поддержка `extraLines` — списка строк, начинающихся с `#@`. Это позволяет хранить метаданные прокси прямо в `.conf` файле, не нарушая совместимость с другими клиентами.
-- **`Config.java`**: Обновлен парсер для корректной передачи комментариев с префиксом `#@` в соответствующие секции.
+
+- **`Peer.java`**: Поддержка `extraLines` — списка строк, начинающихся с `#@`. Это позволяет хранить метаданные прокси прямо в `.conf` файле, не нарушая совместимость с другими клиентами.
+- **`Config.java`**: Парсер обновлён для корректной передачи комментариев с префиксом `#@` в соответствующие секции.
 
 ---
 
 ## 3. Логика управления и UI (Kotlin)
 
-### `ui/src/main/java/com/wireguard/android/turn/TurnProxyManager` (Новый пакет)
+### `ui/src/main/java/com/wireguard/android/turn/TurnProxyManager.kt`
+
 - **`TurnSettings`**: Модель данных для настроек прокси (VK Link, Peer, Port, Streams).
 - **`TurnConfigProcessor`**: Логика инъекции/извлечения настроек из текста конфигурации. Метод `modifyConfigForActiveTurn` динамически подменяет `Endpoint` на `127.0.0.1` и **принудительно устанавливает MTU в 1280**, чтобы компенсировать оверхед инкапсуляции.
-- **`TurnProxyManager`**: Управляет нативным процессом прокси. Содержит критическую логику синхронизации: перед стартом прокси инициирует запуск `VpnService` и дожидается его готовности, чтобы гарантировать успешную защиту сокетов через `protect()`.
-  - **NetworkCallback с фильтрацией (Android 14 fix)**:
-    - Фильтрация по типу транспорта (WiFi, Cellular, Ethernet) — игнорируются изменения внутри одного типа сети
-    - Фильтрация по `NET_CAPABILITY_INTERNET` — игнорируются сети без доступа в интернет
-    - Фильтрация по `NET_CAPABILITY_NOT_DEFAULT` — игнорируются фоновые сети (MMS, IMS, VPN)
-    - Debounce 10 секунд между рестартами для защиты от «флаппинга» сети
-    - Детальное логирование с указанием типа транспорта
-  - **Автоматический рестарт**: При смене типа сети (WiFi ↔ Cellular) TURN переподключается без участия пользователя.
-  - **Экспоненциальный backoff**: Задержка увеличивается при неудачах (5с → 10с → 20с).
-  - **Флаг `userInitiatedStop`**: Не рестартировать, если пользователь явно остановил туннель.
-  - **Сброс состояния**: Поля `lastTransportType` и `lastRestartTime` сбрасываются при остановке туннеля.
+- **`TurnProxyManager`**: Управляет нативным процессом прокси.
 
-### `tunnel/src/main/java/com/wireguard/android/backend/TurnBackend.java` (Добавлено)
-- **Атомарная синхронизация сервиса**: Использует `AtomicReference.getAndSet()` для атомарной замены `CompletableFuture<VpnService>`, что предотвращает гонки при быстрой смене состояний сервиса (Android 14 fix).
-- **`wgNotifyNetworkChange()`**: Native функция для сброса DNS/HTTP при смене сети. Вызывается только при реальной смене типа транспорта (WiFi ↔ Cellular).
+  **Синхронизация при запуске:**
+  - Вызывает `TurnBackend.waitForVpnServiceRegistered(2000)` для ожидания регистрации JNI
+  - После подтверждения JNI запускает `wgTurnProxyStart()`
+  - Это гарантирует что `VpnService.protect()` будет работать для всех сокетов TURN
 
-### `ui/src/main/res/layout/`
-- **`tunnel_detail_fragment.xml`**: Добавлена карточка отображения статуса и параметров TURN.
-- **`tunnel_editor_fragment.xml`**: Добавлена секция настроек TURN прокси (Enable, VK Link, Streams, Local Port, UDP).
+  **NetworkCallback с фильтрацией (Android 14 fix):**
+  - Фильтрация по типу транспорта (WiFi, Cellular, Ethernet) — игнорируются изменения внутри одного типа сети
+  - Фильтрация по `NET_CAPABILITY_INTERNET` — игнорируются сети без доступа в интернет
+  - Фильтрация по `NET_CAPABILITY_NOT_DEFAULT` — игнорируются фоновые сети (MMS, IMS, VPN)
+  - Debounce 15 секунд между рестартами для защиты от «флаппинга» сети
+  - Детальное логирование с указанием типа транспорта
+  - Флаг `ignoreFirstNetworkChange` — игнорирует первое событие network change после запуска TURN
+  - Сброс `lastTransportType = null` в `onLost()` — обеспечивает детектирование следующего переключения сети
+
+  **Автоматический рестарт:**
+  - При смене типа сети (WiFi ↔ Cellular) TURN переподключается без участия пользователя
+  - Вызывает `wgNotifyNetworkChange()` для сброса DNS/HTTP в Go слое
+  - Экспоненциальный backoff при неудачах (5с → 10с → 20с)
+  - Флаг `userInitiatedStop` — не рестартировать, если пользователь явно остановил туннель
+
+### `tunnel/src/main/java/com/wireguard/android/backend/TurnBackend.java`
+
+- **AtomicReference для CompletableFuture**: Атомарная замена `CompletableFuture<VpnService>` через `getAndSet()` предотвращает гонки при быстрой смене состояний сервиса.
+- **CountDownLatch для синхронизации JNI**: Latch сигнализирует что JNI зарегистрирован и готов защищать сокеты.
+- **`waitForVpnServiceRegistered(timeout)`**: Метод для ожидания регистрации JNI перед запуском TURN прокси.
+- **`wgNotifyNetworkChange()`**: Native функция для сброса DNS/HTTP при смене сети.
+
+### `tunnel/src/main/java/com/wireguard/android/backend/GoBackend.java`
+
+- **Правильный порядок инициализации VpnService:**
+  1. В `onCreate()` сначала вызывается `TurnBackend.onVpnServiceCreated(this)` для регистрации в JNI
+  2. Затем завершается `vpnService.complete(this)` для Java кода
+  - Это гарантирует что JNI готов до того как TurnProxyManager получит Future
+
+- **TURN запускается после создания туннеля:**
+  - В `setStateInternal()` TURN прокси запускается после `builder.establish()`
+  - Это гарантирует что `VpnService.protect()` будет работать для сокетов TURN
+
+- **Убрано дублирование:**
+  - `TurnBackend.onVpnServiceCreated()` вызывается только в `onCreate()`
+  - В `onStartCommand()` вызов удалён
+
+### `ui/src/main/java/com/wireguard/android/model/TunnelManager.kt`
+
+- **Запуск TURN после создания туннеля:**
+  - TURN прокси запускается через `TurnProxyManager.onTunnelEstablished()` после того как `GoBackend.setStateInternal()` завершит создание туннеля
+  - Метод `startForTunnel()` больше не вызывается до создания туннеля
 
 ---
 
-## 4. Протокол взаимодействия (Protocol Spec)
+## 4. Протокол взаимодействия
 
 Для обеспечения стабильности соединения в условиях мультиплексирования (Multi-Stream) используется следующий протокол:
+
 1. **DTLS Handshake**: Стандартное установление защищенного соединения (с таймаутом 10 секунд).
 2. **Session Identification**: Клиент отправляет 16 байт (Raw UUID) непосредственно в поток DTLS.
 3. **Tunnel Traffic**: После отправки UUID начинается двусторонний обмен пакетами WireGuard.
@@ -72,6 +108,7 @@
 ## 5. Формат метаданных в конфигурации
 
 Для хранения настроек используются специально размеченные комментарии в секции `[Peer]`:
+
 ```ini
 [Peer]
 PublicKey = <key>
@@ -89,6 +126,7 @@ AllowedIPs = 0.0.0.0/0
 #@wgt:TurnPort = 12345        # (optional) Override TURN server port
 #@wgt:NoDTLS = true           # (optional) Disable DTLS obfuscation
 ```
+
 Эти строки игнорируются стандартными клиентами WireGuard, но считываются данным форком при загрузке.
 
 ---
@@ -96,6 +134,7 @@ AllowedIPs = 0.0.0.0/0
 ## 6. Расширенные настройки TURN
 
 ### TurnIP и TurnPort
+
 Позволяют переопределить адрес TURN сервера, полученный из VK/OK API. Полезно для:
 - Подключения к конкретному серверу TURN
 - Обхода проблем с маршрутизацией
@@ -108,6 +147,7 @@ AllowedIPs = 0.0.0.0/0
 ```
 
 ### No DTLS
+
 Отключает DTLS-инкапсуляцию трафика WireGuard. Предназначен для:
 - Отладки соединения
 - Прямого подключения к WireGuard серверу через TURN
@@ -125,6 +165,7 @@ AllowedIPs = 0.0.0.0/0
 ## 7. Хранение настроек
 
 ### TurnSettingsStore
+
 Настройки TURN сохраняются в отдельном JSON-файле `<tunnel>.turn.json` рядом с конфигом WireGuard. Это позволяет:
 - Хранить настройки независимо от конфига
 - Обновлять конфиг без потери настроек TURN
@@ -144,3 +185,26 @@ AllowedIPs = 0.0.0.0/0
   "noDtls": false
 }
 ```
+
+---
+
+## 8. Архитектура запуска TURN
+
+```
+GoBackend.setStateInternal()
+  → builder.establish()                    ← Туннель создан
+  → wgTurnOn()                             ← Go backend запущен
+  → service.protect() для сокетов WireGuard
+  → TurnProxyManager.onTunnelEstablished() ← TURN запускается ПОСЛЕ туннеля
+    → TurnBackend.waitForVpnServiceRegistered() ← Ждём JNI
+    → wgTurnProxyStart()                   ← Запуск TURN прокси
+      → VK Auth для получения credentials
+      → Подключение к TURN серверу (4 потока)
+      → DTLS handshake для каждого потока
+      → wgProtectSocket() для всех сокетов
+```
+
+**Преимущества:**
+- TURN запускается после создания туннеля, что гарантирует работу `VpnService.protect()` для всех сокетов
+- Явная синхронизация через CountDownLatch исключает гонки условий
+- Сокеты WireGuard защищаются до запуска TURN

@@ -37,14 +37,16 @@ class TurnProxyManager(private val context: Context) {
     @Volatile private var userInitiatedStop: Boolean = false
     private val networkChangeLock = AtomicBoolean(false)
     private var restartFailureCount: Int = 0
-    
+
     // Fields for network event filtering (Android 14 fix)
     @Volatile private var lastTransportType: Int? = null
     @Volatile private var lastRestartTime: Long = 0
+    // Flag to ignore first network change after TURN start (prevents false restart on tunnel establishment)
+    @Volatile private var ignoreFirstNetworkChange: Boolean = false
 
     init {
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        
+
         // Initialize lastTransportType with current active network to avoid false restart on app launch
         val activeNetwork = connectivityManager.activeNetwork
         if (activeNetwork != null) {
@@ -74,6 +76,10 @@ class TurnProxyManager(private val context: Context) {
             override fun onLost(network: Network) {
                 super.onLost(network)
                 Log.d(TAG, "onLost: network=${network}")
+                // Reset lastTransportType to force restart on next network change
+                // This fixes the issue where WiFi->4G->WiFi switch was not detected properly
+                lastTransportType = null
+                Log.d(TAG, "onLost: reset lastTransportType to null")
             }
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
                 super.onCapabilitiesChanged(network, capabilities)
@@ -111,6 +117,14 @@ class TurnProxyManager(private val context: Context) {
                     return
                 }
 
+                // Check if we should ignore the first network change after TURN start
+                if (ignoreFirstNetworkChange) {
+                    Log.d(TAG, "Skipping: ignoring first network change after TURN start")
+                    ignoreFirstNetworkChange = false
+                    lastTransportType = currentTransportType
+                    return
+                }
+
                 // Check lock
                 if (!networkChangeLock.compareAndSet(false, true)) {
                     Log.d(TAG, "Skipping: network change lock is held")
@@ -125,9 +139,9 @@ class TurnProxyManager(private val context: Context) {
                 // Save current type
                 lastTransportType = currentTransportType
 
-                // Check restart frequency (10 seconds debounce)
+                // Check restart frequency (15 seconds debounce to prevent false restarts)
                 val now = System.currentTimeMillis()
-                if (now - lastRestartTime < 10000) {
+                if (now - lastRestartTime < 15000) {
                     Log.w(TAG, "Skipping restart: too soon (${now - lastRestartTime}ms)")
                     networkChangeLock.set(false)
                     return
@@ -153,7 +167,10 @@ class TurnProxyManager(private val context: Context) {
                         val success = startForTunnel(name, settings)
                         if (success) {
                             restartFailureCount = 0
-                            Log.d(TAG, "TURN restarted successfully")
+                            // Set flag to ignore first network change after TURN start
+                            // This prevents false restart when TURN is starting up
+                            ignoreFirstNetworkChange = true
+                            Log.d(TAG, "TURN restarted successfully, ignoreFirstNetworkChange=true")
                         } else {
                             restartFailureCount++
                             val delayMs = when (restartFailureCount) {
@@ -180,34 +197,63 @@ class TurnProxyManager(private val context: Context) {
 
     private val instances = ConcurrentHashMap<String, Instance>()
 
-    suspend fun startForTunnel(tunnelName: String, settings: TurnSettings): Boolean =
+    /**
+     * Called from TurnManager when the tunnel is established.
+     * This is the correct time to start TURN because VpnService.protect() will work.
+     * @return true if TURN was started successfully, false otherwise
+     */
+    suspend fun onTunnelEstablished(tunnelName: String, turnSettings: TurnSettings?): Boolean {
+        Log.d(TAG, "onTunnelEstablished called for tunnel: $tunnelName")
+
+        // Check if TURN is enabled
+        if (turnSettings == null || !turnSettings.enabled) {
+            Log.d(TAG, "TURN not enabled, skipping")
+            return true  // Not an error, just skip
+        }
+
+        // Start TURN proxy (VpnService already created at this point)
+        val success = startForTunnelInternal(tunnelName, turnSettings)
+        if (success) {
+            // Set flag to ignore first network change after TURN start
+            // This prevents false restart when TURN is starting up
+            ignoreFirstNetworkChange = true
+            Log.d(TAG, "onTunnelEstablished: TURN start SUCCESS, ignoreFirstNetworkChange=true")
+        } else {
+            Log.d(TAG, "onTunnelEstablished: TURN start FAILED")
+        }
+        return success
+    }
+
+    suspend fun startForTunnel(tunnelName: String, settings: TurnSettings): Boolean {
+        // This method is now only used for manual starts or network change restarts
+        // VpnService should already be running
+        return startForTunnelInternal(tunnelName, settings)
+    }
+    
+    private suspend fun startForTunnelInternal(tunnelName: String, settings: TurnSettings): Boolean =
         withContext(Dispatchers.IO) {
             userInitiatedStop = false
             activeTunnelName = tunnelName
             activeSettings = settings
             restartFailureCount = 0
             val instance = instances.getOrPut(tunnelName) { Instance() }
-            
+
             // Force stop any existing proxy before starting a new one
             TurnBackend.wgTurnProxyStop()
-            TurnBackend.onVpnServiceCreated(null)
 
-            // Pre-start VpnService to ensure native layer can protect sockets.
-            // This is required because VpnService must exist to call protect().
-            var vpnServiceReady = false
-            try {
-                val intent = Intent(context, GoBackend.VpnService::class.java).apply { setPackage(context.packageName) }
-                context.startService(intent)
-                for (attempt in 1..50) {
-                    try {
-                        TurnBackend.getVpnServiceFuture().get(200, TimeUnit.MILLISECONDS)
-                        vpnServiceReady = true
-                        break
-                    } catch (e: Exception) { continue }
-                }
-            } catch (e: Exception) { Log.e(TAG, "VpnService error: ${e.message}") }
-
-            if (vpnServiceReady) delay(500)
+            // Wait for JNI to be registered (synchronization)
+            val startTime = System.currentTimeMillis()
+            Log.d(TAG, "Waiting for JNI registration...")
+            val jniReady = TurnBackend.waitForVpnServiceRegistered(2000)
+            val elapsed = System.currentTimeMillis() - startTime
+            Log.d(TAG, "JNI registration wait: ${if (jniReady) "SUCCESS" else "TIMEOUT"} (${elapsed}ms)")
+            
+            if (!jniReady) {
+                Log.e(TAG, "TIMEOUT waiting for JNI registration!")
+                return@withContext false
+            }
+            Log.d(TAG, "JNI registration confirmed")
+            // delay(500) ← REMOVED: no longer needed, explicit synchronization is in place
 
             val ret = TurnBackend.wgTurnProxyStart(
                 settings.peer, settings.vkLink, settings.streams,
@@ -240,6 +286,10 @@ class TurnProxyManager(private val context: Context) {
             activeSettings = null
             lastTransportType = null  // Reset for next launch
             lastRestartTime = 0
+
+            // Reset latch for next launch
+            TurnBackend.onVpnServiceCreated(null)
+
             val instance = instances[tunnelName] ?: return@withContext
             TurnBackend.wgTurnProxyStop()
             instance.running = false
