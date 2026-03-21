@@ -70,6 +70,9 @@ func init() {
 
 //export wgNotifyNetworkChange
 func wgNotifyNetworkChange() {
+	// Invalidate credentials cache on network change
+	invalidateCredentialsCache()
+
 	protectedResolverMu.Lock()
 	defer protectedResolverMu.Unlock()
 	protectedResolver = createProtectedResolver()
@@ -83,7 +86,7 @@ func wgNotifyNetworkChange() {
 		MaxIdleConns: 100,
 		IdleConnTimeout: 90 * time.Second,
 	}
-	turnLog("[NETWORK] Network change notified: resolver reset, HTTP connections cleared")
+	turnLog("[NETWORK] Network change notified: resolver reset, HTTP connections cleared, credentials cache invalidated")
 }
 
 var turnHTTPClient = &http.Client{
@@ -92,59 +95,6 @@ var turnHTTPClient = &http.Client{
 		DialContext: (&net.Dialer{Timeout: 30 * time.Second, Control: protectControl, Resolver: protectedResolver}).DialContext,
 		MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second,
 	},
-}
-
-func getVkCreds(ctx context.Context, link string) (string, string, string, error) {
-	turnLog("[VK Auth] Starting credential fetch...")
-	doRequest := func(data string, url string) (resp map[string]interface{}, err error) {
-		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer([]byte(data)))
-		if err != nil { return nil, err }
-		req.Header.Add("User-Agent", "Mozilla/5.0 (Android 12; Mobile; rv:144.0)")
-		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-		httpResp, err := turnHTTPClient.Do(req)
-		if err != nil { return nil, err }
-		defer httpResp.Body.Close()
-		body, err := io.ReadAll(httpResp.Body)
-		if err != nil { return nil, err }
-		if err = json.Unmarshal(body, &resp); err != nil { return nil, err }
-		if errMsg, ok := resp["error"].(map[string]interface{}); ok { return resp, fmt.Errorf("VK error: %v", errMsg) }
-		return resp, nil
-	}
-
-	data := "client_secret=QbYic1K3lEV5kTGiqlq2&client_id=6287487&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487"
-	resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
-	if err != nil { return "", "", "", err }
-	token1 := resp["data"].(map[string]interface{})["access_token"].(string)
-
-	data = fmt.Sprintf("access_token=%s", token1)
-	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload?v=5.264&client_id=6287487")
-	if err != nil { return "", "", "", err }
-	token2 := resp["response"].(map[string]interface{})["payload"].(string)
-
-	data = fmt.Sprintf("client_id=6287487&token_type=messages&payload=%s&client_secret=QbYic1K3lEV5kTGiqlq2&version=1&app_id=6287487", url.QueryEscape(token2))
-	resp, err = doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
-	if err != nil { return "", "", "", err }
-	token3 := resp["data"].(map[string]interface{})["access_token"].(string)
-
-	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", url.QueryEscape(link), token3)
-	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getAnonymousToken?v=5.264")
-	if err != nil { return "", "", "", err }
-	token4 := resp["response"].(map[string]interface{})["token"].(string)
-
-	data = fmt.Sprintf("session_data=%%7B%%22version%%22%%3A2%%2C%%22device_id%%22%%3A%%22%s%%22%%2C%%22client_version%%22%%3A1.1%%2C%%22client_type%%22%%3A%%22SDK_JS%%22%%7D&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA", uuid.New())
-	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
-	if err != nil { return "", "", "", err }
-	token5 := resp["session_key"].(string)
-
-	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", url.QueryEscape(link), token4, token5)
-	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
-	if err != nil { return "", "", "", err }
-
-	ts := resp["turn_server"].(map[string]interface{})
-	urls := ts["urls"].([]interface{})
-	address := strings.TrimPrefix(strings.TrimPrefix(strings.Split(urls[0].(string), "?")[0], "turn:"), "turns:")
-	turnLog("[VK Auth] Success! TURN Server: %s", address)
-	return ts["username"].(string), ts["credential"].(string), address, nil
 }
 
 type stream struct {
@@ -210,11 +160,23 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 			})
 			if err != nil { return fmt.Errorf("TURN client creation failed: %w", err) }
 			defer client.Close()
-			if err := client.Listen(); err != nil { return fmt.Errorf("TURN listen failed: %w", err) }
+			if err := client.Listen(); err != nil {
+				// Check if this is an authentication error (stale credentials)
+				if isAuthError(err) {
+					handleAuthError(s.id)
+				}
+				return fmt.Errorf("TURN listen failed: %w", err)
+			}
 
 			turnLog("[STREAM %d] Requesting TURN allocation...", s.id)
 			relayConn, err := client.Allocate()
-			if err != nil { return fmt.Errorf("TURN allocation failed: %w", err) }
+			if err != nil {
+				// Check if this is an authentication error (stale credentials)
+				if isAuthError(err) {
+					handleAuthError(s.id)
+				}
+				return fmt.Errorf("TURN allocation failed: %w", err)
+			}
 			defer relayConn.Close()
 
 			turnLog("[STREAM %d] Allocated relay address: %s", s.id, relayConn.LocalAddr())
