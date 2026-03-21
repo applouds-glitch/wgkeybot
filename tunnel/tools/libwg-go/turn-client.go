@@ -435,7 +435,8 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listen
 	turnPort := int(turnPortC)
 	noDtls := noDtlsC != 0
 
-	turnLog("[PROXY] Hub starting on %s (peer=%s, streams=%d, turnIp=%s, turnPort=%d, noDtls=%v)", listenAddr, peerAddr, n, turnIp, turnPort, noDtls)
+	//turnLog("[PROXY] Hub starting on %s (peer=%s, streams=%d, turnIp=%s, turnPort=%d, noDtls=%v)", listenAddr, peerAddr, n, turnIp, turnPort, noDtls)
+	turnLog("[PROXY] Hub starting on %s (streams=%d, noDtls=%v)", listenAddr, n, noDtls)
 	turnMutex.Lock()
 	if currentTurnCancel != nil { currentTurnCancel() }
 	ctx, cancel := context.WithCancel(context.Background())
