@@ -278,7 +278,7 @@ class TunnelManager(
             if (state == Tunnel.State.UP) {
                 val turn = tunnel.turnSettings
                 if (turn != null && turn.enabled) {
-                    configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn.localPort)
+                    configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn)
                 }
             } else if (state == Tunnel.State.DOWN) {
                 val turn = tunnel.turnSettings

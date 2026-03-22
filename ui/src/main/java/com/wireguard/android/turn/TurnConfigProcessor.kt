@@ -63,8 +63,9 @@ object TurnConfigProcessor {
 
     /**
      * Modifies the configuration for active TURN usage (replaces Endpoint with local loopback and sets MTU 1280).
+     * Also sets PersistentKeepalive=25 when DTLS is enabled to keep connection alive.
      */
-    fun modifyConfigForActiveTurn(config: Config, localPort: Int): Config {
+    fun modifyConfigForActiveTurn(config: Config, turnSettings: TurnSettings): Config {
         val iface = config.`interface`
         val ifaceBuilder = com.wireguard.config.Interface.Builder()
         ifaceBuilder.addAddresses(iface.addresses)
@@ -73,7 +74,7 @@ object TurnConfigProcessor {
         ifaceBuilder.setKeyPair(iface.keyPair)
         ifaceBuilder.excludeApplications(iface.excludedApplications)
         ifaceBuilder.includeApplications(iface.includedApplications)
-        
+
         try {
             ifaceBuilder.setListenPort(iface.listenPort.orElse(0))
             // Force MTU to 1280 for TURN proxy to handle encapsulation overhead
@@ -89,13 +90,25 @@ object TurnConfigProcessor {
             // Fallback to original interface if building fails
             builder.setInterface(iface)
         }
-        
+
+        // Determine if we should set PersistentKeepalive (when DTLS is enabled)
+        val shouldSetKeepalive = !turnSettings.noDtls
+        val localPort = turnSettings.localPort
+
         for (peer in config.peers) {
             val peerBuilder = Peer.Builder()
             peerBuilder.addAllowedIps(peer.allowedIps)
             peerBuilder.setPublicKey(peer.publicKey)
             peer.preSharedKey.ifPresent { peerBuilder.setPreSharedKey(it) }
-            peer.persistentKeepalive.ifPresent { peerBuilder.setPersistentKeepalive(it.toInt()) }
+
+            // Set PersistentKeepalive=25 when DTLS is enabled (if not set or > 25)
+            if (shouldSetKeepalive) {
+                val originalKeepalive = peer.persistentKeepalive.orElse(25)
+                peerBuilder.setPersistentKeepalive(minOf(25, originalKeepalive))
+            } else {
+                peer.persistentKeepalive.ifPresent { peerBuilder.setPersistentKeepalive(it) }
+            }
+
             // Replace endpoint with 127.0.0.1:localPort
             peerBuilder.parseEndpoint("127.0.0.1:$localPort")
             builder.addPeer(peerBuilder.build())

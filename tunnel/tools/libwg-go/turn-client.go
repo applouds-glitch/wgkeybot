@@ -13,15 +13,11 @@ extern int wgProtectSocket(int fd);
 import "C"
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -316,7 +312,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			select {
 			case <-sCtx.Done(): return
 			case <-ticker.C:
-				deadline := time.Now().Add(25 * time.Second)
+				deadline := time.Now().Add(30 * time.Second)
 				relayConn.SetDeadline(deadline)
 				dtlsConn.SetDeadline(deadline)
 				c2.SetDeadline(deadline)
