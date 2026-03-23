@@ -99,7 +99,8 @@ public final class TurnBackend {
             String listenAddr,
             String turnIp,
             int turnPort,
-            int noDtls
+            int noDtls,
+            long networkHandle
     );
     public static native void wgTurnProxyStop();
     public static native void wgNotifyNetworkChange();

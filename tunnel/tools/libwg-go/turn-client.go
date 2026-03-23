@@ -103,6 +103,18 @@ type stream struct {
 	sessionID []byte
 }
 
+const iPacketBuffMaxSize = 2048;
+
+// Metrics for diagnostics
+var (
+	dtlsTxDropCount   atomic.Uint64      // Drops in DTLS TX goroutine
+	dtlsRxErrorCount  atomic.Uint64      // Errors in DTLS RX goroutine
+	relayTxErrorCount atomic.Uint64      // Errors in relay TX
+	relayRxErrorCount atomic.Uint64      // Errors in relay RX
+	noDtlsTxDropCount atomic.Uint64      // Drops in NoDTLS TX
+	noDtlsRxErrorCount atomic.Uint64     // Errors in NoDTLS RX
+)
+
 func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- struct{}, turnIp string, turnPort int, noDtls bool) {
 	for {
 		select {
@@ -210,6 +222,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			case <-sCtx.Done(): return
 			case b := <-s.in:
 				if _, err := relayConn.WriteTo(b, peer); err != nil {
+					noDtlsTxDropCount.Add(1)
 					turnLog("[STREAM %d] TX error: %v", s.id, err)
 					return
 				}
@@ -220,10 +233,11 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	// WireGuard server -> TURN -> WireGuard backend (s.out socket) (RX)
 	go func() {
 		defer wg.Done(); defer sCancel()
-		buf := make([]byte, 2048)
+		buf := make([]byte, iPacketBuffMaxSize)
 		for {
 			n, from, err := relayConn.ReadFrom(buf)
 			if err != nil {
+				noDtlsRxErrorCount.Add(1)
 				turnLog("[STREAM %d] RX error: %v", s.id, err)
 				return
 			}
@@ -234,6 +248,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 					continue
 				}
 				if _, err := s.out.WriteTo(buf[:n], *addr); err != nil {
+					noDtlsRxErrorCount.Add(1)
 					turnLog("[STREAM %d] RX write error: %v", s.id, err)
 					return
 				}
@@ -283,22 +298,34 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// DTLS <-> Relay (via Pipe) - MUST start before handshake
 	go func() {
 		defer wg.Done(); defer sCancel()
-		buf := make([]byte, 2048)
+		buf := make([]byte, iPacketBuffMaxSize)
 		for {
 			n, _, err := c2.ReadFrom(buf)
 			if err != nil { return }
-			if _, err := relayConn.WriteTo(buf[:n], peer); err != nil { return }
+			if _, err := relayConn.WriteTo(buf[:n], peer); err != nil {
+				relayTxErrorCount.Add(1)
+				turnLog("[STREAM %d] Relay TX error: %v", s.id, err)
+				return
+			}
 		}
 	}()
 
 	go func() {
 		defer wg.Done(); defer sCancel()
-		buf := make([]byte, 2048)
+		buf := make([]byte, iPacketBuffMaxSize)
 		for {
 			n, from, err := relayConn.ReadFrom(buf)
-			if err != nil { return }
+			if err != nil {
+				relayRxErrorCount.Add(1)
+				turnLog("[STREAM %d] Relay RX error: %v", s.id, err)
+				return
+			}
 			if from.String() == peer.String() {
-				if _, err := c2.WriteTo(buf[:n], peer); err != nil { return }
+				if _, err := c2.WriteTo(buf[:n], peer); err != nil {
+					relayTxErrorCount.Add(1)
+					turnLog("[STREAM %d] Relay RX->Pipe error: %v", s.id, err)
+					return
+				}
 			}
 		}
 	}()
@@ -355,11 +382,20 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			select {
 			case <-sCtx.Done(): return
 			case b := <-s.in:
+
 				// Watchdog
 				if time.Since(time.Unix(lastRx.Load(), 0)) > 30*time.Second {
-					return // Trigger reconnect
+					dtlsTxDropCount.Add(1)
+					turnLog("[STREAM %d] TX watchdog timeout", s.id)
+					return
 				}
-				if _, err := dtlsConn.Write(b); err != nil { return }
+
+				_, err := dtlsConn.Write(b)
+				if err != nil {
+					dtlsTxDropCount.Add(1)
+					turnLog("[STREAM %d] TX error: %v", s.id, err)
+					return
+				}
 			}
 		}
 	}()
@@ -367,13 +403,21 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// DTLS -> WireGuard (RX)
 	go func() {
 		defer wg.Done(); defer sCancel()
-		buf := make([]byte, 2048)
+		buf := make([]byte, iPacketBuffMaxSize)
 		for {
 			n, err := dtlsConn.Read(buf)
-			if err != nil { return }
+			if err != nil {
+				dtlsRxErrorCount.Add(1)
+				turnLog("[STREAM %d] RX error: %v", s.id, err)
+				return
+			}
 			lastRx.Store(time.Now().Unix())
 			if last := s.peer.Load(); last != nil {
-				s.out.WriteTo(buf[:n], *last)
+				if _, err := s.out.WriteTo(buf[:n], *last); err != nil {
+					dtlsRxErrorCount.Add(1)
+					turnLog("[STREAM %d] RX write error: %v", s.id, err)
+					return
+				}
 			}
 		}
 	}()
@@ -385,16 +429,17 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 var currentTurnCancel context.CancelFunc
 var turnMutex sync.Mutex
 //export wgTurnProxyStart
-func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listenAddrC *C.char, turnIpC *C.char, turnPortC int, noDtlsC int) int32 {
+func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listenAddrC *C.char, turnIpC *C.char, turnPortC int, noDtlsC int, networkHandleC C.longlong) int32 {
 	peerAddr := C.GoString(peerAddrC)
 	vklink := C.GoString(vklinkC)
 	listenAddr := C.GoString(listenAddrC)
 	turnIp := C.GoString(turnIpC)
 	turnPort := int(turnPortC)
 	noDtls := noDtlsC != 0
+	networkHandle := int64(networkHandleC)
 
 	//turnLog("[PROXY] Hub starting on %s (peer=%s, streams=%d, turnIp=%s, turnPort=%d, noDtls=%v)", listenAddr, peerAddr, n, turnIp, turnPort, noDtls)
-	turnLog("[PROXY] Hub starting on %s (streams=%d, noDtls=%v)", listenAddr, n, noDtls)
+	turnLog("[PROXY] Hub starting on %s (streams=%d, noDtls=%v, networkHandle=%d)", listenAddr, n, noDtls, networkHandle)
 	turnMutex.Lock()
 	if currentTurnCancel != nil { currentTurnCancel() }
 	ctx, cancel := context.WithCancel(context.Background())
@@ -418,41 +463,52 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listen
 	ok := make(chan struct{}, n)
 	streams := make([]*stream, n)
 	for i := 0; i < n; i++ {
-		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 1000), out: lc, sessionID: sessionID}
+		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 8192), out: lc, sessionID: sessionID}
 		go streams[i].run(link, peer, udp != 0, ok, turnIp, turnPort, noDtls)
 		time.Sleep(200 * time.Millisecond)
 	}
 
 	go func() {
 		var counter uint64
-		buf := make([]byte, 2048)
+		nStreams := len(streams)
+		buf := make([]byte, iPacketBuffMaxSize)
 		for {
 			nRead, addr, err := lc.ReadFrom(buf)
-			if err != nil { return }
-			
-			var readyStreams []*stream
-			for _, st := range streams {
-				if st.ready.Load() {
-					readyStreams = append(readyStreams, st)
-				}
+			if err != nil {
+			    return
 			}
 
-			if len(readyStreams) == 0 { continue }
-
 			// Round-Robin selection
-			s := readyStreams[atomic.AddUint64(&counter, 1)%uint64(len(readyStreams))]
-			
+			start := int(counter % uint64(nStreams))
+            counter++
+
+            var s *stream
+            for i := 0; i < nStreams; i++ {
+            	st := streams[(start+i)%nStreams]
+            	if st.ready.Load() {
+            		s = st
+            		break
+            	}
+            }
+
+            if s == nil {
+            	continue
+            }
+
 			returnAddr := addr
 			s.peer.Store(&returnAddr)
-
-			b := make([]byte, nRead)
+            b := make([]byte, nRead)
 			copy(b, buf[:nRead])
-			select { case s.in <- b: default: }
+			select {
+			case s.in <- b[:nRead]:
+				// Packet queued successfully
+			default:
+			}
 		}
 	}()
 
 	select {
-	case <-ok: 
+	case <-ok:
 		turnLog("[PROXY] First stream is ready, tunnel can start")
 		return 0
 	case <-time.After(30 * time.Second):

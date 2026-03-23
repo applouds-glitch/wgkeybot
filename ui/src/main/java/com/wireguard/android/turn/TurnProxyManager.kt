@@ -21,13 +21,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.flow.collectLatest
 import java.net.Inet4Address
 
 /**
  * Lightweight manager for per-tunnel TURN client processes and logs.
  *
- * TURN streams automatically reconnect on network changes (WiFi <-> Cellular)
- * using the DefaultNetworkCallback to track the system's preferred internet connection.
+ * Uses PhysicalNetworkMonitor to track stable internet connections and 
+ * triggers restarts when the underlying network or IP changes.
  */
 class TurnProxyManager(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -38,114 +39,45 @@ class TurnProxyManager(private val context: Context) {
     @Volatile private var userInitiatedStop: Boolean = false
     
     // Network tracking
-	private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    private var reconnectJob: Job? = null
-    @Volatile private var pendingNetwork: Network? = null
+    private val networkMonitor = PhysicalNetworkMonitor(context)
     @Volatile private var lastKnownNetwork: Network? = null
-	@Volatile private var lastKnownIps: Set<String> = emptySet()
     
     init {
-        //val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-
-        // Initialize with current active network (if it's not VPN)
-        // We do a quick check to avoid setting VPN as baseline
-        val active = connectivityManager.activeNetwork
-        val caps = connectivityManager.getNetworkCapabilities(active)
-        if (active != null && caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) {
-            lastKnownNetwork = active
-			lastKnownIps = getIpsV4ForNetwork(active)
+        networkMonitor.start()
+        
+        scope.launch {
+            networkMonitor.bestNetwork.collectLatest { network ->
+                if (network != null) {
+                    handleNetworkChange(network)
+                }
+            }
         }
-
-        // Use a specific request that EXCLUDES VPNs.
-        // This ensures we track the underlying physical network (WiFi/LTE), not our own tunnel.
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) // Crucial: Ignore VPN interfaces
-            .build()
-
-        connectivityManager.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                Log.d(TAG, "onAvailable: Physical network $network")
-                handleNetworkChange(network)
-            }
-
-            override fun onLost(network: Network) {
-                 Log.d(TAG, "onLost: Physical network $network")
-                 if (lastKnownNetwork == network) {
-                     // We lost our tracking network
-                     // We don't restart immediately, we wait for a new one
-                 }
-                 if (pendingNetwork == network) {
-                     Log.d(TAG, "Cancelling pending restart check: network $network lost")
-                     reconnectJob?.cancel()
-                     pendingNetwork = null
-                 }
-            }
-
-            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return
-                // We are guaranteed NOT_VPN by the request filter
-                handleNetworkChange(network)
-            }
-        })
     }
 
     /**
-     * Central handler for network changes.
-     * Uses Debouncing via Job Cancellation: prevents race conditions by canceling any pending
-     * restart check if a new network change arrives immediately.
-     *
-     * The check itself (IP comparison) is delayed by 5s to ensure network stability.
+     * Central handler for network changes from PhysicalNetworkMonitor.
+     * The monitor already provides debounced stable networks.
      */
-    private fun handleNetworkChange(network: Network) {
+    private suspend fun handleNetworkChange(network: Network) {
         if (userInitiatedStop || activeTunnelName == null) return
 
-        // Immediate baseline setting if we don't have one yet
+        // 1. Initial baseline setting
         if (lastKnownNetwork == null) {
-            val ips = getIpsV4ForNetwork(network)
-            if (ips.isNotEmpty()) {
-                Log.d(TAG, "Setting initial network baseline immediately: $network with IPs: $ips")
-                lastKnownNetwork = network
-                lastKnownIps = ips
-                return
-            }
-        }
-
-        // Schedule a debounced check. If another event comes within 5s, this is cancelled.
-        pendingNetwork = network
-        reconnectJob?.cancel()
-        reconnectJob = scope.launch {
-            // Wait for network to settle (e.g. DHCP to finish)
-            delay(5000)
-            if (!isActive || pendingNetwork != network) return@launch
-
-            val currentIps = getIpsV4ForNetwork(network)
-            
-            // 1. Check if IPs are even available
-            if (currentIps.isEmpty()) {
-                Log.d(TAG, "Network $network has no IPv4 after 5s. Skipping restart.")
-                return@launch
-            }
-
-            // 2. Check if anything actually changed compared to what's currently running
-            if (lastKnownNetwork == network && lastKnownIps == currentIps) {
-                Log.d(TAG, "Network state is stable and unchanged for $network. Skipping restart.")
-                return@launch
-            }
-
-            // 3. Special case: same IPs but different network handle
-            if (lastKnownNetwork != network && lastKnownIps == currentIps) {
-                Log.d(TAG, "Network changed ($network), but IPs remained same. Updating baseline only.")
-                lastKnownNetwork = network
-                return@launch
-            }
-
-            // 4. Real change confirmed
-            Log.d(TAG, "Network change confirmed after 5s debounce: $lastKnownIps -> $currentIps. Restarting TURN.")
+            Log.d(TAG, "Setting initial network baseline: $network")
             lastKnownNetwork = network
-            lastKnownIps = currentIps
-            performRestartSequence()
+            return
         }
+
+        // 2. Stability check
+        if (lastKnownNetwork == network) {
+            Log.d(TAG, "Network state stable for $network")
+            return
+        }
+
+        // 3. Real change confirmed
+        Log.d(TAG, "Network change confirmed: $network. Restarting TURN.")
+        lastKnownNetwork = network
+        performRestartSequence()
     }
 
     private suspend fun performRestartSequence() {
@@ -200,26 +132,30 @@ class TurnProxyManager(private val context: Context) {
      */
     suspend fun onTunnelEstablished(tunnelName: String, turnSettings: TurnSettings?): Boolean {
         Log.d(TAG, "onTunnelEstablished called for tunnel: $tunnelName")
-        
+
         // Reset state for new session
         activeTunnelName = tunnelName
         activeSettings = turnSettings
         userInitiatedStop = false
         
+        // Initialize network baseline for the new session
+        lastKnownNetwork = networkMonitor.currentNetwork
+        Log.d(TAG, "Initial network for tunnel session: $lastKnownNetwork")
+
         if (turnSettings == null || !turnSettings.enabled) {
             Log.d(TAG, "TURN not enabled, skipping")
             return true
         }
 
         val success = startForTunnelInternal(tunnelName, turnSettings)
-        
+
         // After initial start, allow network changes to trigger restarts
         // We delay slightly to ensure we don't catch the immediate network fluctuation caused by VPN itself
         scope.launch {
             delay(2000)
             Log.d(TAG, "Initialization phase complete, network monitoring active")
         }
-        
+
         return success
     }
 
@@ -250,14 +186,15 @@ class TurnProxyManager(private val context: Context) {
                     return@withContext false
                 }
 
-                Log.d(TAG, "Starting TURN proxy for $tunnelName...")
+                Log.d(TAG, "Starting TURN proxy for $tunnelName with network handle: $lastKnownNetwork...")
                 val ret = TurnBackend.wgTurnProxyStart(
                     settings.peer, settings.vkLink, settings.streams,
                     if (settings.useUdp) 1 else 0,
                     "127.0.0.1:${settings.localPort}",
                     settings.turnIp,
                     settings.turnPort,
-                    if (settings.noDtls) 1 else 0
+                    if (settings.noDtls) 1 else 0,
+                    lastKnownNetwork?.getNetworkHandle() ?: 0L
                 )
 
                 val listenAddr = "127.0.0.1:${settings.localPort}"
@@ -284,11 +221,7 @@ class TurnProxyManager(private val context: Context) {
             activeTunnelName = null
             activeSettings = null
             lastKnownNetwork = null
-			lastKnownIps = emptySet()
             
-            // Cancel any pending restart jobs
-            reconnectJob?.cancel()
-
             // Reset VpnService reference
             TurnBackend.onVpnServiceCreated(null)
 
@@ -329,15 +262,6 @@ class TurnProxyManager(private val context: Context) {
         }
     }
 	
-	private fun getIpsV4ForNetwork(network: Network): Set<String> {
-		val linkProperties = connectivityManager.getLinkProperties(network) ?: return emptySet()
-		return linkProperties.linkAddresses
-        .map { it.address }
-        .filterIsInstance<Inet4Address>()
-        .mapNotNull { it.hostAddress }
-        .toSet()
-	}
-
     companion object {
         private const val TAG = "WireGuard/TurnProxyManager"
         private const val MAX_LOG_CHARS = 128 * 1024

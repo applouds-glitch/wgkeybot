@@ -16,13 +16,55 @@ extern int wgGetSocketV4(int handle);
 extern int wgGetSocketV6(int handle);
 extern char *wgGetConfig(int handle);
 extern char *wgVersion();
-extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, int n, int udp, const char *listen_addr, const char *turn_ip, int turn_port, int no_dtls);
+extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, int n, int udp, const char *listen_addr, const char *turn_ip, int turn_port, int no_dtls, long long network_handle);
 extern void wgTurnProxyStop();
 extern void wgNotifyNetworkChange();
 
 static JavaVM *java_vm;
 static jobject vpn_service_global;
 static jmethodID protect_method;
+static jmethodID get_system_service_method;
+static jmethodID get_all_networks_method;
+static jmethodID get_network_handle_method;
+static jmethodID bind_socket_method;
+static jfieldID file_descriptor_descriptor;
+static jmethodID file_descriptor_init;
+static jclass connectivity_manager_class_global;
+static jclass network_class_global;
+static jclass file_descriptor_class_global;
+static jobject connectivity_manager_instance_global;
+static jobject current_network_global = NULL;
+static jlong current_network_handle = 0;
+
+
+// Helper to update the cached Network object
+static void update_current_network(JNIEnv *env, jlong handle)
+{
+	if (current_network_global) {
+		(*env)->DeleteGlobalRef(env, current_network_global);
+		current_network_global = NULL;
+	}
+	current_network_handle = handle;
+
+	if (handle == 0 || !connectivity_manager_instance_global || !get_all_networks_method || !get_network_handle_method)
+		return;
+
+	jobjectArray networks = (jobjectArray)(*env)->CallObjectMethod(env, connectivity_manager_instance_global, get_all_networks_method);
+	if (networks) {
+		jsize len = (*env)->GetArrayLength(env, networks);
+		for (jsize i = 0; i < len; i++) {
+			jobject network_obj = (*env)->GetObjectArrayElement(env, networks, i);
+			if (handle == (*env)->CallLongMethod(env, network_obj, get_network_handle_method)) {
+				current_network_global = (*env)->NewGlobalRef(env, network_obj);
+				(*env)->DeleteLocalRef(env, network_obj);
+				break;
+			}
+			(*env)->DeleteLocalRef(env, network_obj);
+		}
+		(*env)->DeleteLocalRef(env, networks);
+	}
+	if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+}
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
 {
@@ -36,11 +78,50 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetVpnSe
 		(*env)->DeleteGlobalRef(env, vpn_service_global);
 		vpn_service_global = NULL;
 		protect_method = NULL;
+		get_system_service_method = NULL;
+		get_all_networks_method = NULL;
+		get_network_handle_method = NULL;
+		bind_socket_method = NULL;
+		file_descriptor_descriptor = NULL;
+		file_descriptor_init = NULL;
+		if (connectivity_manager_class_global) (*env)->DeleteGlobalRef(env, connectivity_manager_class_global);
+		if (network_class_global) (*env)->DeleteGlobalRef(env, network_class_global);
+		if (file_descriptor_class_global) (*env)->DeleteGlobalRef(env, file_descriptor_class_global);
+		if (connectivity_manager_instance_global) (*env)->DeleteGlobalRef(env, connectivity_manager_instance_global);
+		if (current_network_global) (*env)->DeleteGlobalRef(env, current_network_global);
+		connectivity_manager_class_global = NULL;
+		network_class_global = NULL;
+		file_descriptor_class_global = NULL;
+		connectivity_manager_instance_global = NULL;
+		current_network_global = NULL;
 	}
 	if (vpn_service) {
 		vpn_service_global = (*env)->NewGlobalRef(env, vpn_service);
 		jclass vpn_service_class = (*env)->GetObjectClass(env, vpn_service_global);
 		protect_method = (*env)->GetMethodID(env, vpn_service_class, "protect", "(I)Z");
+		get_system_service_method = (*env)->GetMethodID(env, vpn_service_class, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+		
+		jclass cm_class = (*env)->FindClass(env, "android/net/ConnectivityManager");
+		connectivity_manager_class_global = (*env)->NewGlobalRef(env, cm_class);
+		get_all_networks_method = (*env)->GetMethodID(env, connectivity_manager_class_global, "getAllNetworks", "()[Landroid/net/Network;");
+		
+		jclass n_class = (*env)->FindClass(env, "android/net/Network");
+		network_class_global = (*env)->NewGlobalRef(env, n_class);
+		get_network_handle_method = (*env)->GetMethodID(env, network_class_global, "getNetworkHandle", "()J");
+		bind_socket_method = (*env)->GetMethodID(env, network_class_global, "bindSocket", "(Ljava/io/FileDescriptor;)V");
+		
+		jclass fd_class = (*env)->FindClass(env, "java/io/FileDescriptor");
+		file_descriptor_class_global = (*env)->NewGlobalRef(env, fd_class);
+		file_descriptor_init = (*env)->GetMethodID(env, file_descriptor_class_global, "<init>", "()V");
+		file_descriptor_descriptor = (*env)->GetFieldID(env, file_descriptor_class_global, "descriptor", "I");
+
+		jstring cm_service_name = (*env)->NewStringUTF(env, "connectivity");
+		jobject cm_obj = (*env)->CallObjectMethod(env, vpn_service_global, get_system_service_method, cm_service_name);
+		if (cm_obj) {
+			connectivity_manager_instance_global = (*env)->NewGlobalRef(env, cm_obj);
+			(*env)->DeleteLocalRef(env, cm_obj);
+		}
+		(*env)->DeleteLocalRef(env, cm_service_name);
 	}
 }
 
@@ -72,8 +153,23 @@ int wgProtectSocket(int fd)
 	}
 
 	if ((*env)->CallBooleanMethod(env, vpn_service_global, protect_method, (jint)fd)) {
+
 		__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI",
 			"wgProtectSocket(fd=%d): SUCCESS", fd);
+
+        // Use cached network object for immediate binding
+        if (current_network_global && bind_socket_method) {
+            jobject fd_obj = (*env)->NewObject(env, file_descriptor_class_global, file_descriptor_init);
+			(*env)->SetIntField(env, fd_obj, file_descriptor_descriptor, fd);
+			(*env)->CallVoidMethod(env, current_network_global, bind_socket_method, fd_obj);
+			if ((*env)->ExceptionCheck(env)) {
+				__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI", "wgProtectSocket(fd=%d): bindSocket exception!", fd);
+				(*env)->ExceptionClear(env);
+			} else {
+				__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI", "wgProtectSocket(fd=%d): Bound to network %lld", fd, (long long)current_network_handle);
+			}
+			(*env)->DeleteLocalRef(env, fd_obj);
+		}
 		ret = 0;
 	} else {
 		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
@@ -140,13 +236,16 @@ JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_GoBackend_wgVersion
 	return ret;
 }
 
-JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jint n, jint useUdp, jstring listen_addr, jstring turn_ip, jint turn_port, jint no_dtls)
+JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jint n, jint useUdp, jstring listen_addr, jstring turn_ip, jint turn_port, jint no_dtls, jlong network_handle)
 {
 	const char *peer_addr_str = (*env)->GetStringUTFChars(env, peer_addr, 0);
 	const char *vklink_str = (*env)->GetStringUTFChars(env, vklink, 0);
 	const char *listen_addr_str = (*env)->GetStringUTFChars(env, listen_addr, 0);
 	const char *turn_ip_str = (*env)->GetStringUTFChars(env, turn_ip, 0);
-	int ret = wgTurnProxyStart(peer_addr_str, vklink_str, (int)n, (int)useUdp, listen_addr_str, turn_ip_str, (int)turn_port, (int)no_dtls);
+	
+	update_current_network(env, network_handle);
+	
+	int ret = wgTurnProxyStart(peer_addr_str, vklink_str, (int)n, (int)useUdp, listen_addr_str, turn_ip_str, (int)turn_port, (int)no_dtls, (long long)network_handle);
 	(*env)->ReleaseStringUTFChars(env, peer_addr, peer_addr_str);
 	(*env)->ReleaseStringUTFChars(env, vklink, vklink_str);
 	(*env)->ReleaseStringUTFChars(env, listen_addr, listen_addr_str);
@@ -161,5 +260,6 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgNotifyNe
 
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStop(JNIEnv *env, jclass c)
 {
+	update_current_network(env, 0);
 	wgTurnProxyStop();
 }
