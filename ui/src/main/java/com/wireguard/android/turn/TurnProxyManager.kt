@@ -186,7 +186,19 @@ class TurnProxyManager(private val context: Context) {
                     return@withContext false
                 }
 
-                Log.d(TAG, "Starting TURN proxy for $tunnelName with network handle: $lastKnownNetwork...")
+                // If network is still null, try one quick re-poll from monitor
+                if (lastKnownNetwork == null) {
+                    lastKnownNetwork = networkMonitor.currentNetwork
+                    if (lastKnownNetwork == null) {
+                        Log.w(TAG, "Network still null, waiting 500ms for PhysicalNetworkMonitor...")
+                        delay(500)
+                        lastKnownNetwork = networkMonitor.currentNetwork
+                    }
+                }
+
+                val networkHandle = lastKnownNetwork?.getNetworkHandle() ?: 0L
+                Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $lastKnownNetwork (handle=$networkHandle)")
+                
                 val ret = TurnBackend.wgTurnProxyStart(
                     settings.peer, settings.vkLink, settings.streams,
                     if (settings.useUdp) 1 else 0,
@@ -194,7 +206,7 @@ class TurnProxyManager(private val context: Context) {
                     settings.turnIp,
                     settings.turnPort,
                     if (settings.noDtls) 1 else 0,
-                    lastKnownNetwork?.getNetworkHandle() ?: 0L
+                    networkHandle
                 )
 
                 val listenAddr = "127.0.0.1:${settings.localPort}"

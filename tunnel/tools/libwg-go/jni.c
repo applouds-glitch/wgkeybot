@@ -139,9 +139,9 @@ int wgProtectSocket(int fd)
 	}
 
 	if (!vpn_service_global || !protect_method) {
-		__android_log_print(ANDROID_LOG_WARN, "WireGuard/JNI",
-			"wgProtectSocket(fd=%d): vpn_service_global is NULL, SKIPPING", fd);
-		return 0;
+		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
+			"wgProtectSocket(fd=%d): vpn_service_global is NULL! CANNOT PROTECT", fd);
+		return -1;
 	}
 	if ((*java_vm)->GetEnv(java_vm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
 		if ((*java_vm)->AttachCurrentThread(java_vm, &env, NULL) != 0) {
@@ -153,10 +153,6 @@ int wgProtectSocket(int fd)
 	}
 
 	if ((*env)->CallBooleanMethod(env, vpn_service_global, protect_method, (jint)fd)) {
-
-		__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI",
-			"wgProtectSocket(fd=%d): SUCCESS", fd);
-
         // Use cached network object for immediate binding
         if (current_network_global && bind_socket_method) {
             jobject fd_obj = (*env)->NewObject(env, file_descriptor_class_global, file_descriptor_init);
@@ -166,14 +162,16 @@ int wgProtectSocket(int fd)
 				__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI", "wgProtectSocket(fd=%d): bindSocket exception!", fd);
 				(*env)->ExceptionClear(env);
 			} else {
-				__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI", "wgProtectSocket(fd=%d): Bound to network %lld", fd, (long long)current_network_handle);
+				__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI", "wgProtectSocket(fd=%d): SUCCESS (protected + bound to net %lld)", fd, (long long)current_network_handle);
 			}
 			(*env)->DeleteLocalRef(env, fd_obj);
-		}
+		} else {
+            __android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI", "wgProtectSocket(fd=%d): SUCCESS (protected, but NOT bound - handle=%lld)", fd, (long long)current_network_handle);
+        }
 		ret = 0;
 	} else {
 		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
-			"wgProtectSocket(fd=%d): VpnService.protect() FAILED - tunnel not established yet?", fd);
+			"wgProtectSocket(fd=%d): VpnService.protect() FAILED", fd);
 		ret = -1;
 	}
 	if (attached)

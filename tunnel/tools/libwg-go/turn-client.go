@@ -444,6 +444,9 @@ var currentTurnCancel context.CancelFunc
 var turnMutex sync.Mutex
 //export wgTurnProxyStart
 func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listenAddrC *C.char, turnIpC *C.char, turnPortC int, noDtlsC int, networkHandleC C.longlong) int32 {
+	// Force initialization of resolver and HTTP client with current environment
+	wgNotifyNetworkChange()
+
 	peerAddr := C.GoString(peerAddrC)
 	vklink := C.GoString(vklinkC)
 	listenAddr := C.GoString(listenAddrC)
