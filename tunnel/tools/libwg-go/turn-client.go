@@ -105,6 +105,12 @@ type stream struct {
 
 const iPacketBuffMaxSize = 2048;
 
+var packetPool = sync.Pool{
+    New: func() interface{} {
+        return make([]byte, iPacketBuffMaxSize)
+    },
+}
+
 // Metrics for diagnostics
 var (
 	dtlsTxDropCount   atomic.Uint64      // Drops in DTLS TX goroutine
@@ -221,7 +227,9 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			select {
 			case <-sCtx.Done(): return
 			case b := <-s.in:
-				if _, err := relayConn.WriteTo(b, peer); err != nil {
+                _, err := relayConn.WriteTo(b, peer)
+                packetPool.Put(b[:cap(b)])
+                if err != nil {
 					noDtlsTxDropCount.Add(1)
 					turnLog("[STREAM %d] TX error: %v", s.id, err)
 					return
@@ -385,12 +393,14 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 
 				// Watchdog
 				if time.Since(time.Unix(lastRx.Load(), 0)) > 30*time.Second {
+				    packetPool.Put(b[:cap(b)])
 					dtlsTxDropCount.Add(1)
 					turnLog("[STREAM %d] TX watchdog timeout", s.id)
 					return
 				}
 
 				_, err := dtlsConn.Write(b)
+				packetPool.Put(b[:cap(b)])
 				if err != nil {
 					dtlsTxDropCount.Add(1)
 					turnLog("[STREAM %d] TX error: %v", s.id, err)
@@ -463,7 +473,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listen
 	ok := make(chan struct{}, n)
 	streams := make([]*stream, n)
 	for i := 0; i < n; i++ {
-		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 8192), out: lc, sessionID: sessionID}
+		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 512), out: lc, sessionID: sessionID}
 		go streams[i].run(link, peer, udp != 0, ok, turnIp, turnPort, noDtls)
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -497,12 +507,14 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listen
 
 			returnAddr := addr
 			s.peer.Store(&returnAddr)
-            b := make([]byte, nRead)
+            //b := make([]byte, nRead)
+            b := packetPool.Get().([]byte)[:iPacketBuffMaxSize]
 			copy(b, buf[:nRead])
 			select {
 			case s.in <- b[:nRead]:
 				// Packet queued successfully
 			default:
+                packetPool.Put(b[:cap(b)])
 			}
 		}
 	}()
