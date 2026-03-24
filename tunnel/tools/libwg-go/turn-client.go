@@ -101,6 +101,7 @@ type stream struct {
 	peer      atomic.Pointer[net.Addr] // Last seen addr from WireGuard
 	ready     atomic.Bool
 	sessionID []byte
+	cert      *tls.Certificate
 }
 
 const iPacketBuffMaxSize = 2048;
@@ -229,6 +230,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			case b := <-s.in:
                 _, err := relayConn.WriteTo(b, peer)
                 packetPool.Put(b[:cap(b)])
+
                 if err != nil {
 					noDtlsTxDropCount.Add(1)
 					turnLog("[STREAM %d] TX error: %v", s.id, err)
@@ -278,15 +280,12 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 
 	var dtlsConn *dtls.Conn
 
-	cert, err := selfsign.GenerateSelfSigned()
-	if err != nil { return err }
-
 	c1, c2 := connutil.AsyncPacketPipe()
 	defer c1.Close()
 	defer c2.Close()
 
-	dtlsConn, err = dtls.Client(c1, peer, &dtls.Config{
-		Certificates: []tls.Certificate{cert}, InsecureSkipVerify: true,
+	dtlsConn, err := dtls.Client(c1, peer, &dtls.Config{
+		Certificates: []tls.Certificate{*s.cert}, InsecureSkipVerify: true,
 		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
 		CipherSuites: []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 		ConnectionIDGenerator: dtls.OnlySendCIDGenerator(),
@@ -368,9 +367,13 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	dtlsConn.SetDeadline(time.Time{})
 	turnLog("[STREAM %d] DTLS handshake SUCCESS", s.id)
 
-	// Session ID Handshake
+	// Session ID + Stream ID Handshake (17 bytes total)
 	dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if _, err := dtlsConn.Write(s.sessionID); err != nil {
+	handshakeBuf := make([]byte, 17)
+	copy(handshakeBuf[:16], s.sessionID)
+	handshakeBuf[16] = byte(s.id)
+
+	if _, err := dtlsConn.Write(handshakeBuf); err != nil {
 		return fmt.Errorf("session ID handshake failed: %w", err)
 	}
 	dtlsConn.SetWriteDeadline(time.Time{})
@@ -401,6 +404,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 
 				_, err := dtlsConn.Write(b)
 				packetPool.Put(b[:cap(b)])
+
 				if err != nil {
 					dtlsTxDropCount.Add(1)
 					turnLog("[STREAM %d] TX error: %v", s.id, err)
@@ -470,31 +474,39 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listen
 	sessionID, _ := uuid.New().MarshalBinary()
 	turnLog("[PROXY] Session ID generated: %x", sessionID)
 
+	// Generate DTLS certificate once for all streams to save CPU
+	cert, err := selfsign.GenerateSelfSigned()
+	if err != nil {
+		turnLog("[PROXY] Failed to generate DTLS certificate: %v", err)
+		return -1
+	}
+
 	ok := make(chan struct{}, n)
 	streams := make([]*stream, n)
 	for i := 0; i < n; i++ {
-		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 512), out: lc, sessionID: sessionID}
+		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 512), out: lc, sessionID: sessionID, cert: &cert}
 		go streams[i].run(link, peer, udp != 0, ok, turnIp, turnPort, noDtls)
 		time.Sleep(200 * time.Millisecond)
 	}
 
 	go func() {
-		var counter uint64
-		nStreams := len(streams)
-		buf := make([]byte, iPacketBuffMaxSize)
+		nStreams := int(len(streams))
+		var lastUsed int = 0
+
 		for {
-			nRead, addr, err := lc.ReadFrom(buf)
+		    b := packetPool.Get().([]byte)[:iPacketBuffMaxSize]
+			nRead, addr, err := lc.ReadFrom(b)
 			if err != nil {
+			    packetPool.Put(b[:cap(b)])
 			    return
 			}
 
 			// Round-Robin selection
-			start := int(counter % uint64(nStreams))
-            counter++
+			lastUsed = (lastUsed + 1) % nStreams
 
             var s *stream
             for i := 0; i < nStreams; i++ {
-            	st := streams[(start+i)%nStreams]
+            	st := streams[(lastUsed+i)%nStreams]
             	if st.ready.Load() {
             		s = st
             		break
@@ -502,14 +514,13 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listen
             }
 
             if s == nil {
+                packetPool.Put(b[:cap(b)])
             	continue
             }
 
 			returnAddr := addr
 			s.peer.Store(&returnAddr)
-            //b := make([]byte, nRead)
-            b := packetPool.Get().([]byte)[:iPacketBuffMaxSize]
-			copy(b, buf[:nRead])
+
 			select {
 			case s.in <- b[:nRead]:
 				// Packet queued successfully
