@@ -281,11 +281,14 @@ class TunnelManager(
             // Determine if TURN should be started after tunnel is established
             // This happens when explicitly requesting UP, or TOGGLE from DOWN state
             val shouldStartTurn = state == Tunnel.State.UP || (state == Tunnel.State.TOGGLE && tunnel.state == Tunnel.State.DOWN)
+            
+            // Stop TURN when tunnel goes DOWN
+            val shouldStopTurn = state == Tunnel.State.DOWN || (state == Tunnel.State.TOGGLE && tunnel.state == Tunnel.State.UP)
 
             if (turnEnabled) {
                 if (shouldStartTurn) {
                     configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn)
-                } else {
+                } else if (shouldStopTurn) {
                     withContext(Dispatchers.IO) {
                         getTurnProxyManager().stopForTunnel(tunnel.name)
                     }

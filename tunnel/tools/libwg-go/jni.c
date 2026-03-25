@@ -64,6 +64,10 @@ static void update_current_network(JNIEnv *env, jlong handle)
 		(*env)->DeleteLocalRef(env, networks);
 	}
 	if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+	
+	if (!current_network_global) {
+		__android_log_print(ANDROID_LOG_WARN, "WireGuard/JNI", "update_current_network: FAILED - network not found for handle=%lld", (long long)handle);
+	}
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
