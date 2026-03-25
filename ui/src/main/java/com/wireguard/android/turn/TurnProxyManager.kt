@@ -197,8 +197,9 @@ class TurnProxyManager(private val context: Context) {
                 }
 
                 val networkHandle = lastKnownNetwork?.getNetworkHandle() ?: 0L
-                Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $lastKnownNetwork (handle=$networkHandle)")
-                
+                val networkType = getNetworkTypeString(lastKnownNetwork)
+                Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $lastKnownNetwork (type=$networkType, handle=$networkHandle)")
+
                 val ret = TurnBackend.wgTurnProxyStart(
                     settings.peer, settings.vkLink, settings.streams,
                     if (settings.useUdp) 1 else 0,
@@ -273,7 +274,24 @@ class TurnProxyManager(private val context: Context) {
             if (builder.length > MAX_LOG_CHARS) builder.delete(0, builder.length - MAX_LOG_CHARS)
         }
     }
-	
+
+    /**
+     * Returns a string representation of the network type (wifi, cellular, lan, unknown).
+     */
+    private fun getNetworkTypeString(network: Network?): String {
+        if (network == null) return "unknown"
+
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val caps = cm.getNetworkCapabilities(network)
+
+        return when {
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "wifi"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "cellular"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "lan"
+            else -> "unknown"
+        }
+    }
+
     companion object {
         private const val TAG = "WireGuard/TurnProxyManager"
         private const val MAX_LOG_CHARS = 128 * 1024
