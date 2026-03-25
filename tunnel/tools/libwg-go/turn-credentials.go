@@ -32,12 +32,13 @@ type TurnCredentials struct {
 	Link       string
 }
 
-var (
-	credsCache      TurnCredentials
-	credsMutex      sync.Mutex
-	cacheErrorCount atomic.Int32
-	lastErrorTime   atomic.Int64
-)
+// StreamCredentialsCache holds credentials cache for a single stream
+type StreamCredentialsCache struct {
+	creds         TurnCredentials
+	mutex         sync.RWMutex
+	errorCount    atomic.Int32
+	lastErrorTime atomic.Int64
+}
 
 const (
 	credentialLifetime = 10 * time.Minute
@@ -45,6 +46,39 @@ const (
 	maxCacheErrors     = 3
 	errorWindow        = 10 * time.Second
 )
+
+// credentialsStore manages per-stream credentials caches
+var credentialsStore = struct {
+	mu     sync.RWMutex
+	caches map[int]*StreamCredentialsCache
+}{
+	caches: make(map[int]*StreamCredentialsCache),
+}
+
+// getStreamCache returns or creates a cache for the given stream ID
+func getStreamCache(streamID int) *StreamCredentialsCache {
+	// Try read lock first for fast path
+	credentialsStore.mu.RLock()
+	cache, exists := credentialsStore.caches[streamID]
+	credentialsStore.mu.RUnlock()
+
+	if exists {
+		return cache
+	}
+
+	// Need to create new cache
+	credentialsStore.mu.Lock()
+	defer credentialsStore.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if cache, exists = credentialsStore.caches[streamID]; exists {
+		return cache
+	}
+
+	cache = &StreamCredentialsCache{}
+	credentialsStore.caches[streamID] = cache
+	return cache
+}
 
 // isAuthError checks if the error is an authentication error
 func isAuthError(err error) bool {
@@ -56,56 +90,75 @@ func isAuthError(err error) bool {
 		strings.Contains(errStr, "stale nonce")
 }
 
-// handleAuthError handles authentication errors and invalidates cache if needed.
+// handleAuthError handles authentication errors for a specific stream.
 // Returns true if cache was invalidated, false otherwise.
 func handleAuthError(streamID int) bool {
+	cache := getStreamCache(streamID)
+
 	now := time.Now().Unix()
 
 	// Reset counter if enough time has passed
-	if now - lastErrorTime.Load() > int64(errorWindow.Seconds()) {
-		cacheErrorCount.Store(0)
+	if now - cache.lastErrorTime.Load() > int64(errorWindow.Seconds()) {
+		cache.errorCount.Store(0)
 	}
 
-	count := cacheErrorCount.Add(1)
-	lastErrorTime.Store(now)
+	count := cache.errorCount.Add(1)
+	cache.lastErrorTime.Store(now)
 
 	turnLog("[STREAM %d] Auth error (count=%d/%d)", streamID, count, maxCacheErrors)
 
 	// Invalidate cache only after N errors within the time window
 	if count >= maxCacheErrors {
-		turnLog("[VK Auth] Multiple auth errors detected (%d), invalidating cache...", count)
-		invalidateCredentialsCache()
+		turnLog("[VK Auth] Multiple auth errors detected (%d), invalidating cache for stream %d...", count, streamID)
+		cache.invalidate(streamID)
 		return true
 	}
 
 	return false
 }
 
-// invalidateCredentialsCache invalidates the credentials cache
-func invalidateCredentialsCache() {
-	credsMutex.Lock()
-	credsCache = TurnCredentials{}
-	credsMutex.Unlock()
+// invalidate invalidates the credentials cache for this stream
+func (c *StreamCredentialsCache) invalidate(streamID int) {
+	c.mutex.Lock()
+	c.creds = TurnCredentials{}
+	c.mutex.Unlock()
 
 	// Reset auth error counter
-	cacheErrorCount.Store(0)
-	lastErrorTime.Store(0)
+	c.errorCount.Store(0)
+	c.lastErrorTime.Store(0)
 
-	turnLog("[VK Auth] Credentials cache invalidated")
+	turnLog("[STREAM %d] [VK Auth] Credentials cache invalidated", streamID)
 }
 
-// getVkCreds fetches TURN credentials from VK/OK API with caching
-func getVkCreds(ctx context.Context, link string) (string, string, string, error) {
-	credsMutex.Lock()
-	defer credsMutex.Unlock()
+// invalidateAllCaches invalidates all per-stream caches (called on network change)
+func invalidateAllCaches() {
+	credentialsStore.mu.Lock()
+	defer credentialsStore.mu.Unlock()
 
-	// Check cache
-	if credsCache.Link == link && time.Now().Before(credsCache.ExpiresAt) {
-		turnLog("[VK Auth] Using cached credentials (expires in %v)", time.Until(credsCache.ExpiresAt))
-		return credsCache.Username, credsCache.Password, credsCache.ServerAddr, nil
+	for streamID, cache := range credentialsStore.caches {
+		cache.invalidate(streamID)
 	}
 
-	turnLog("[VK Auth] Cache miss, starting credential fetch...")
+	// Clear the map to free memory
+	credentialsStore.caches = make(map[int]*StreamCredentialsCache)
+	turnLog("[VK Auth] All per-stream caches cleared")
+}
+
+// getVkCreds fetches TURN credentials from VK/OK API with per-stream caching
+func getVkCreds(ctx context.Context, link string, streamID int) (string, string, string, error) {
+	cache := getStreamCache(streamID)
+
+	// Check cache with read lock first (fast path)
+	cache.mutex.RLock()
+	if cache.creds.Link == link && time.Now().Before(cache.creds.ExpiresAt) {
+		expires := time.Until(cache.creds.ExpiresAt)
+		cache.mutex.RUnlock()
+		turnLog("[STREAM %d] [VK Auth] Using cached credentials (expires in %v)", streamID, expires)
+		return cache.creds.Username, cache.creds.Password, cache.creds.ServerAddr, nil
+	}
+	cache.mutex.RUnlock()
+
+	turnLog("[STREAM %d] [VK Auth] Cache miss, starting credential fetch...", streamID)
 
 	// Check context before long fetch
 	select {
@@ -114,6 +167,29 @@ func getVkCreds(ctx context.Context, link string) (string, string, string, error
 	default:
 	}
 
+	// Fetch credentials (without holding the lock)
+	user, pass, addr, err := fetchVkCreds(ctx, link, streamID)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	// Store in cache
+	cache.mutex.Lock()
+	cache.creds = TurnCredentials{
+		Username:   user,
+		Password:   pass,
+		ServerAddr: addr,
+		ExpiresAt:  time.Now().Add(credentialLifetime - cacheSafetyMargin),
+		Link:       link,
+	}
+	cache.mutex.Unlock()
+
+	turnLog("[STREAM %d] [VK Auth] Success! Credentials cached until %v", streamID, cache.creds.ExpiresAt)
+	return user, pass, addr, nil
+}
+
+// fetchVkCreds performs the actual VK/OK API calls to fetch credentials
+func fetchVkCreds(ctx context.Context, link string, streamID int) (string, string, string, error) {
 	doRequest := func(data string, requestURL string) (resp map[string]interface{}, err error) {
 		// Resolve host via DNS cache with cascading fallback
 		parsedURL, err := url.Parse(requestURL)
@@ -223,24 +299,14 @@ func getVkCreds(ctx context.Context, link string) (string, string, string, error
 			// It's a domain name, resolve it
 			resolvedIP, err := hostCache.Resolve(ctx, host)
 			if err != nil {
-				turnLog("[TURN DNS] Warning: failed to resolve TURN server %s: %v", host, err)
+				turnLog("[STREAM %d] [TURN DNS] Warning: failed to resolve TURN server %s: %v", streamID, host, err)
 				// Don't fail, use original address
 			} else {
 				address = net.JoinHostPort(resolvedIP, port)
-				turnLog("[TURN DNS] Resolved TURN server %s -> %s", host, resolvedIP)
+				turnLog("[STREAM %d] [TURN DNS] Resolved TURN server %s -> %s", streamID, host, resolvedIP)
 			}
 		}
 	}
 
-	// Save to cache
-	credsCache = TurnCredentials{
-		Username:   ts["username"].(string),
-		Password:   ts["credential"].(string),
-		ServerAddr: address,
-		ExpiresAt:  time.Now().Add(credentialLifetime - cacheSafetyMargin),
-		Link:       link,
-	}
-
-	turnLog("[VK Auth] Success! Credentials cached until %v", credsCache.ExpiresAt)
 	return ts["username"].(string), ts["credential"].(string), address, nil
 }

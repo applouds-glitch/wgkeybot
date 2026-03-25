@@ -51,8 +51,8 @@ func init() {
 
 //export wgNotifyNetworkChange
 func wgNotifyNetworkChange() {
-	// Invalidate credentials cache on network change
-	invalidateCredentialsCache()
+	// Invalidate all per-stream credentials caches on network change
+	invalidateAllCaches()
 
 	// Clear DNS cache
 	ClearCache()
@@ -114,7 +114,7 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 			sCtx, sCancel := context.WithCancel(s.ctx)
 			defer sCancel()
 
-			user, pass, addr, err := getVkCreds(sCtx, link)
+			user, pass, addr, err := getVkCreds(sCtx, link, s.id)
 			if err != nil { return fmt.Errorf("VK creds failed: %w", err) }
 
 			// Override TURN address if provided
