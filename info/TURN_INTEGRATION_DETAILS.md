@@ -15,6 +15,8 @@
 9. [PhysicalNetworkMonitor](#9-physicalnetworkmonitor)
 10. [VK Auth Flow](#10-vk-auth-flow)
 11. [Метрики и диагностика](#11-метрики-и-диагностика)
+12. [DNS Resolver](#12-dns-resolver)
+13. [Per-Stream Кэширование Credentials](#13-per-stream-кэширование-credentials)
 
 ---
 
@@ -53,16 +55,30 @@
   - 5-ступенчатый процесс авторизации через VK API и OK.ru
   - Использование `turnHTTPClient` с protected sockets
 
-- **Кэширование TURN credentials**: Credentials кэшируются на 9 минут (10 минут TTL - 1 минута запас). При реконнекте потоков используются кэшированные данные, что устраняет дублирующие запросы к VK API. Кэш инвалидируется при смене сети через `wgNotifyNetworkChange()` и при множественных auth errors (3 ошибки за 10 секунд).
+- **Кэширование TURN credentials (per-stream)**: Каждый поток (stream) имеет свой собственный кэш credentials. Это повышает изоляцию и стабильность работы при множественных потоках.
+  - `StreamCredentialsCache` — отдельный кэш для каждого stream ID
   - `credentialLifetime = 10 минут`, `cacheSafetyMargin = 60 секунд`
-  - `maxCacheErrors = 3`, `errorWindow = 10 секунд`
+  - `maxCacheErrors = 3`, `errorWindow = 10 секунд` (на каждый поток отдельно)
+  - Кэш инвалидируется при смене сети через `wgNotifyNetworkChange()` (все кэши)
+  - При 3 auth errors за 10 секунд инвалидируется только кэш конкретного потока
+  - `credentialsStore` — централизованное хранилище с RWMutex для потокобезопасности
+
+- **Разделение получения и кэширования credentials**:
+  - `getVkCreds()` — управляет кэшированием (проверка, чтение, запись)
+  - `fetchVkCreds()` — выполняет HTTP-запросы к VK/OK API без блокировки кэша
+  - RWMutex позволяет параллельное чтение кэша несколькими горутинами
 
 - **Защита сокетов**: Все исходящие соединения (HTTP, UDP, TCP) используют `Control` функцию с вызовом `wgProtectSocket`.
   - `protectControl()` — обёртка для syscall.RawConn
 
 - **Custom DNS Resolver**: Встроенный резолвер с обходом системных DNS Android (localhost) для обеспечения работоспособности в условиях активного VPN.
-  - Жёстко заданный DNS: `77.88.8.8:53` (Yandex DNS)
+  - Каскадный fallback: UDP (53) → DoH (443) → DoT (853)
+  - DNS сервер: `77.88.8.8` (Yandex DNS)
+  - DoH endpoint: `https://common.dot.dns.yandex.net/dns-query`
+  - DoT endpoint: `77.88.8.8:853`
+  - `hostCache` с TTL 5 минут для кэширования resolved адресов
   - `protectedResolverMu` мьютекс для потокобезопасной замены
+  - Все DNS запросы используют `protectControl()` для защиты сокетов
 
 - **Таймаут DTLS handshake**: Явный 10-секундный таймаут предотвращает зависания при потере пакетов.
   - `dtlsConn.SetDeadline(time.Now().Add(10 * time.Second))`
@@ -325,7 +341,7 @@ PersistentKeepalive = 25
 
 ### TurnSettingsStore
 
-Настройки TURN сохраняются в отдельном JSON-файле `<tunnel>.turn.json` рядом с конфигом WireGuard. Это позволяет:
+Настройки TURN сохраняются в отдельном JSON-файле `<tunnel>.turn.json` в директории приложения. Это позволяет:
 - Хранить настройки независимо от конфига
 - Обновлять конфиг без потери настроек TURN
 - Быстро загружать/применять настройки
@@ -473,11 +489,13 @@ scope.launch {
    - URL: `https://login.vk.ru/?act=get_anonym_token`
    - Params: `client_secret`, `client_id`, `scopes`, `app_id`
    - Result: `token1` (access_token)
+   - DNS resolution через `hostCache.Resolve()` с защитой сокета
 
 2. **VK Calls Payload (Step 2)**
    - URL: `https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload`
    - Params: `access_token=token1`
    - Result: `token2` (payload)
+   - HTTP клиент с `protectControl` и TLS config (ServerName для certificate verification)
 
 3. **VK Anonym Token (Step 2.5)**
    - URL: `https://login.vk.ru/?act=get_anonym_token`
@@ -494,51 +512,62 @@ scope.launch {
    - Step 4.1: `auth.anonymLogin` с `session_data` → `token5` (session_key)
    - Step 4.2: `vchat.joinConversationByLink` с `joinLink`, `anonymToken=token4`, `session_key=token5`
    - Result: TURN credentials (`username`, `credential`, `urls`)
+   - TURN server address resolution через `hostCache.Resolve()`
 
 ### Кэширование credentials
 
-- **TTL**: 10 минут
-- **Safety margin**: 60 секунд (обновление за 9 минут)
-- **Инвалидация**:
-  - При `wgNotifyNetworkChange()` (смена сети)
-  - При 3 auth errors за 10 секунд
-  - При истечении TTL
+**Краткая информация:**
+
+- Каждый поток имеет свой собственный кэш credentials (per-stream)
+- TTL: 10 минут, safety margin: 60 секунд
+- При 3 auth errors за 10 секунд инвалидируется только кэш конкретного потока
+- При смене сети инвалидируются все кэши
+
+**Подробная информация:** См. раздел [13. Per-Stream Кэширование Credentials](#13-per-stream-кэширование-credentials)
 
 ### Обработка ошибок аутентификации
 
 **Детектирование auth error:**
 - Строки в ошибке: "401", "Unauthorized", "authentication", "invalid credential", "stale nonce"
+- Функция `isAuthError(err)` проверяет текст ошибки
 
-**Логика handleAuthError():**
-- Счётчик ошибок в sliding window (10 секунд)
-- При 3 ошибках: инвалидация кэша credentials
+**Логика:**
+- Счётчик ошибок на каждый поток отдельно (sliding window 10 секунд)
+- При 3 ошибках: инвалидация кэша только этого потока
 - Логи: `[STREAM X] Auth error (count=N/3)`
 
 ---
 
 ## 11. Метрики и диагностика
 
-### Счётчики ошибок (atomic.Uint64)
+### Счётчики ошибок (atomic.Uint64/atomic.Int32)
 
-- `dtlsTxDropCount` — пакеты, отброшенные в DTLS TX goroutine
-- `dtlsRxErrorCount` — ошибки в DTLS RX goroutine
-- `relayTxErrorCount` — ошибки записи в relay connection
-- `relayRxErrorCount` — ошибки чтения из relay connection
-- `noDtlsTxDropCount` — пакеты, отброшенные в NoDTLS режиме
-- `noDtlsRxErrorCount` — ошибки в NoDTLS RX goroutine
-- `cacheErrorCount` — счётчик auth ошибок (сбрасывается при успехе)
+- `dtlsTxDropCount` (atomic.Uint64) — пакеты, отброшенные в DTLS TX goroutine
+- `dtlsRxErrorCount` (atomic.Uint64) — ошибки в DTLS RX goroutine
+- `relayTxErrorCount` (atomic.Uint64) — ошибки записи в relay connection
+- `relayRxErrorCount` (atomic.Uint64) — ошибки чтения из relay connection
+- `noDtlsTxDropCount` (atomic.Uint64) — пакеты, отброшенные в NoDTLS режиме
+- `noDtlsRxErrorCount` (atomic.Uint64) — ошибки в NoDTLS RX goroutine
+
+**Per-stream счётчики (в StreamCredentialsCache):**
+- `errorCount` (atomic.Int32) — счётчик auth ошибок для конкретного потока (сбрасывается при успехе или после 10 секунд)
+- `lastErrorTime` (atomic.Int64) — время последней auth ошибки для sliding window (на каждый поток)
 
 ### Логирование
 
 **Уровни логирования:**
 - `ANDROID_LOG_INFO` — успешные операции (handshake SUCCESS, protect SUCCESS)
 - `ANDROID_LOG_ERROR` — ошибки (protect FAILED, auth errors, timeouts)
+- `ANDROID_LOG_WARN` — предупреждения (например, network not found)
 
 **Основные теги:**
-- `WireGuard/TurnClient` — основное логирование TURN клиента
-- `WireGuard/TurnProxyManager` — логирование на уровне Kotlin
-- `WireGuard/TurnBackend` — JNI слой
+- `WireGuard/TurnClient` — основное логирование TURN клиента (Go)
+- `WireGuard/TurnProxyManager` — логирование на уровне Kotlin (TurnProxyManager)
+- `WireGuard/TurnBackend` — JNI слой (Java)
 - `WireGuard/GoBackend` — Go backend
+- `WireGuard/JNI` — JNI функции (защита сокетов, bindSocket)
+- `WireGuard/TurnSettingsStore` — хранение настроек TURN
+- `WireGuard/DNS` — DNS resolver (кэширование, запросы)
 
 **Формат логов:**
 ```
@@ -548,4 +577,183 @@ scope.launch {
 [STREAM 0] DTLS handshake SUCCESS
 [STREAM 0] TX watchdog timeout
 [NETWORK] Network change notified: resolver reset
+[DNS] UDP success: vpn.example.com -> 192.168.1.100
+[JNI] wgProtectSocket(fd=123): SUCCESS (protected + bound to net 72057594037927936)
 ```
+
+---
+
+## 12. DNS Resolver
+
+### Расположение
+`tunnel/tools/libwg-go/turn-dns-resolver.go`
+
+### Назначение
+Обход системных DNS Android (которые могут не работать через VPN) для разрешения доменных имён TURN серверов и API endpoints.
+
+### Архитектура
+
+**Каскадный fallback:**
+1. **UDP (порт 53)** — стандартный DNS запрос, самый быстрый
+2. **DoH (порт 443)** — DNS-over-HTTPS, fallback если UDP заблокирован
+3. **DoT (порт 853)** — DNS-over-TLS, последний fallback
+
+**Серверы:**
+- DNS сервер: `77.88.8.8` (Yandex DNS)
+- DoH: `https://common.dot.dns.yandex.net/dns-query` (`77.88.8.8:443`)
+- DoT: `77.88.8.8:853` (ServerName: `common.dot.dns.yandex.net`)
+
+### DnsCache
+
+**Параметры:**
+- `cacheTTL = 5 минут` — время жизни записи в кэше
+- `dnsTimeout = 2 секунды` — таймаут для UDP DNS
+- `dohTimeout = 5 секунд` — таймаут для DoH
+- `dotTimeout = 5 секунд` — таймаут для DoT
+
+**Методы:**
+- `Resolve(ctx, domain)` — разрешение домена с кэшированием
+- `ClearCache()` — очистка кэша (вызывается при смене сети)
+
+### Интеграция
+
+**VK Auth Flow:**
+- Все HTTP запросы к VK API используют `hostCache.Resolve()` для разрешения доменов
+- DNS resolution происходит перед каждым запросом при отсутствии в кэше
+- TURN server address resolution в `getVkCreds()` после получения credentials
+
+**Логирование:**
+```
+[DNS] Trying UDP for api.vk.ru
+[DNS] UDP success: api.vk.ru -> 93.186.234.10
+[TURN DNS] Resolved TURN server relay.example.com -> 155.212.199.166
+[DNS] Cache cleared
+```
+
+### Защита сокетов
+
+Все DNS запросы используют `protectControl()` для защиты сокетов через `VpnService.protect()`:
+- UDP dialer с `Control: protectControl`
+- DoH/DoT dialer с `protectAndDial()`
+
+Это гарантирует что DNS трафик обходит VPN туннель и идёт через физический интерфейс.
+
+### Особенности реализации
+
+**DNS query format:**
+- A record запрос (TYPE=1, CLASS=IN)
+- Random ID для каждого запроса
+- Стандартный рекурсивный запрос
+
+**DoH:**
+- HTTP/2 приоритет (per RFC 8484)
+- Content-Type: `application/dns-message`
+- Accept: `application/dns-message`
+
+**DoT:**
+- 2-byte length prefix перед DNS query
+- TLS handshake с явным ServerName
+- Минимальная версия TLS 1.2
+
+---
+
+## 13. Per-Stream Кэширование Credentials
+
+### Архитектура
+
+**Структуры данных:**
+
+```go
+// StreamCredentialsCache — кэш одного потока
+type StreamCredentialsCache struct {
+    creds         TurnCredentials      // Username, Password, ServerAddr, ExpiresAt, Link
+    mutex         sync.RWMutex         // Защита кэша
+    errorCount    atomic.Int32         // Счётчик auth ошибок
+    lastErrorTime atomic.Int64         // Время последней ошибки
+}
+
+// credentialsStore — хранилище всех кэшей
+var credentialsStore = struct {
+    mu     sync.RWMutex
+    caches map[int]*StreamCredentialsCache  // streamID -> cache
+}{
+    caches: make(map[int]*StreamCredentialsCache),
+}
+```
+
+**Диаграмма потокобезопасности:**
+
+```
+credentialsStore (RWMutex)
+├── StreamCredentialsCache[0] (RWMutex)
+│   ├── creds
+│   ├── errorCount (atomic)
+│   └── lastErrorTime (atomic)
+├── StreamCredentialsCache[1] (RWMutex)
+└── StreamCredentialsCache[2] (RWMutex)
+```
+
+### Функции
+
+**`getStreamCache(streamID int) *StreamCredentialsCache`**:
+- Возвращает существующий кэш или создаёт новый
+- Использует double-check locking для потокобезопасности
+- Сначала RLock для быстрого пути (чтение)
+- При отсутствии — Lock и повторная проверка
+
+**`getVkCreds(ctx, link, streamID)`**:
+1. `getStreamCache(streamID)` — получение кэша
+2. `RLock()` — проверка валидности credentials
+3. Если кэш валиден — возврат из кэша
+4. Если кэш невалиден — `fetchVkCreds()` без блокировки
+5. `Lock()` — запись новых credentials в кэш
+
+**`fetchVkCreds(ctx, link, streamID)`**:
+- Выполняет 5-ступенчатый VK Auth Flow
+- HTTP-запросы к VK API и OK.ru
+- Разрешение доменов через `hostCache.Resolve()`
+- Возвращает username, password, serverAddr
+
+**`handleAuthError(streamID int)`**:
+- Инкремент счётчика ошибок для потока
+- Проверка sliding window (10 секунд)
+- При 3 ошибках — вызов `cache.invalidate(streamID)`
+
+**`invalidate(streamID int)`**:
+- Очистка credentials кэша
+- Сброс счётчика ошибок и таймера
+- Логирование с указанием streamID
+
+**`invalidateAllCaches()`**:
+- Инвалидация всех кэшей (при смене сети)
+- Очистка map для освобождения памяти
+- Логирование для каждого потока
+
+### Сценарии использования
+
+**Нормальная работа:**
+1. Поток 0 запрашивает credentials — кэш пуст — fetchVkCreds() — запись в кэш
+2. Поток 1 запрашивает credentials — кэш пуст — fetchVkCreds() — запись в кэш (параллельно)
+3. Поток 0 reconnect — кэш валиден — возврат из кэша (быстро)
+4. Поток 1 reconnect — кэш валиден — возврат из кэша (быстро)
+
+**Auth ошибка на одном потоке:**
+1. Поток 0: ошибка 1 — счётчик = 1
+2. Поток 1: кэш валиден — работает нормально
+3. Поток 0: ошибка 2 — счётчик = 2
+4. Поток 0: ошибка 3 — инвалидация кэша потока 0
+5. Поток 0: следующий reconnect — fetchVkCreds() — новый кэш
+6. Поток 1: продолжает использовать свой кэш
+
+**Смена сети:**
+1. `wgNotifyNetworkChange()` вызван
+2. `invalidateAllCaches()` — все кэши инвалидируются
+3. `ClearCache()` — очистка DNS кэша
+4. Все потоки выполняют fetchVkCreds() при следующем reconnect
+
+### Преимущества
+
+- **Изоляция**: Ошибка на одном потоке не влияет на другие
+- **Параллелизм**: RWMutex позволяет concurrent read
+- **Производительность**: HTTP-запросы без блокировки кэша
+- **Память**: Максимум 16 кэшей × ~100 байт = ~1.6 КБ
