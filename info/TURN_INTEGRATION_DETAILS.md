@@ -2,6 +2,22 @@
 
 В данном документе описана архитектура интеграции VK TURN Proxy в форк клиента [WireGuard Android](https://git.zx2c4.com/wireguard-android).
 
+## Содержание
+
+1. [Нативный уровень (Go / JNI)](#1-нативный-уровень-go--jni)
+2. [Слой конфигурации (Java)](#2-слой-конфигурации-java)
+3. [Логика управления и UI (Kotlin)](#3-логика-управления-и-ui-kotlin)
+4. [Протокол взаимодействия](#4-протокол-взаимодействия)
+5. [Формат метаданных в конфигурации](#5-формат-метаданных-в-конфигурации)
+6. [Расширенные настройки TURN](#6-расширенные-настройки-turn)
+7. [Хранение настроек](#7-хранение-настроек)
+8. [Архитектура запуска TURN](#8-архитектура-запуска-turn)
+9. [PhysicalNetworkMonitor](#9-physicalnetworkmonitor)
+10. [VK Auth Flow](#10-vk-auth-flow)
+11. [Метрики и диагностика](#11-метрики-и-диагностика)
+
+---
+
 ## 1. Нативный уровень (Go / JNI)
 
 ### `tunnel/tools/libwg-go/jni.c`
@@ -9,36 +25,72 @@
 - **`wgProtectSocket(int fd)`**: Функция для вызова `VpnService.protect(fd)` через JNI. Позволяет TURN-клиенту выводить трафик за пределы VPN-туннеля.
   - Валидация fd (возвращает -1 при невалидном fd)
   - Логирование результата (SUCCESS/FAILED)
-  - **bindSocket()** — привязка сокета к кэшированному Network object для маршрутизации через правильный интерфейс
+  - **bindSocket()** — привязка сокета к кэшированному Network object для маршрутизации через правильный интерфейс (вызывается только если `current_network_global != NULL`)
 
 - **`wgTurnProxyStart/Stop`**: Экспортированные методы для управления жизненным циклом прокси-сервера.
   - Принимает `networkHandle` (long long) для привязки к конкретному Network
-  - Вызывает `update_current_network()` для кэширования Network object
+  - Вызывает `update_current_network()` для кэширования Network object перед запуском
 
 - **`wgNotifyNetworkChange()`**: Функция для сброса DNS resolver и HTTP-соединений при переключении сети (WiFi <-> 4G). Обеспечивает быстрое восстановление соединения после смены сетевого интерфейса.
 
-- **`update_current_network()`**: Внутренняя функция для кэширования Network object и NetworkHandle. Используется для `bindSocket()` при защите сокетов.
+- **`update_current_network()`**: Внутренняя функция для кэширования Network object и NetworkHandle. Используется для `bindSocket()` при защите сокетов. Вызывается из `wgTurnProxyStart()` и сбрасывается в `wgTurnProxyStop()`.
 
 - **Стабилизация ABI**: Использование простых C-типов (`const char *`, `int`, `long long`) для передачи параметров прокси, что устраняет ошибки выравнивания памяти в Go-структурах на разных архитектурах. Параметр `udp` имеет тип `int` для корректной работы JNI.
 
-- **Детальное логирование**: `wgProtectSocket()` логирует валидацию fd, вызов protect() и результат (SUCCESS/FAILED), а также результат bindSocket().
+- **Детальное логирование**: `wgProtectSocket()` логирует валидацию fd, вызов protect() и результат (SUCCESS/FAILED), а также результат bindSocket() с указанием network handle.
 
 ### `tunnel/tools/libwg-go/turn-client.go`
 
-- **Session ID Handshake (Multi-User Support)**: Клиент генерирует уникальный 16-байтный UUID при каждом запуске туннеля и отправляет его первым пакетом после DTLS рукопожатия в каждом потоке. Это позволяет серверу агрегировать несколько DTLS-сессий в одно стабильное UDP-соединение до WireGuard сервера, решая проблему "Endpoint Thrashing".
+- **Session ID Handshake (Multi-Stream Support)**: Клиент генерирует уникальный 16-байтный UUID при каждом запуске туннеля и отправляет его первым пакетом после DTLS рукопожатия в каждом потоке. Это позволяет серверу агрегировать несколько DTLS-сессий в одно стабильное UDP-соединение до WireGuard сервера, решая проблему "Endpoint Thrashing".
+  - Session ID (16 байт) + Stream ID (1 байт) = 17 байт handshake
+  - Отправка происходит после успешного DTLS handshake
+
 - **Round-Robin Load Balancing**: Реализация Hub-сервера, который поддерживает `n` параллельных DTLS-соединений. Вместо использования одного «липкого» потока, клиент равномерно распределяет исходящие пакеты WireGuard между всеми готовыми (ready) DTLS-соединениями. Это повышает общую пропускную способность и устойчивость к потерям в отдельных потоках.
+  - Переменная `lastUsed` циклически переключается между потоками
+  - Пакеты направляются в первый доступный ready-поток
+
 - **Интегрированная авторизация VK**: Реализован полный цикл получения токенов (VK Calls -> OK.ru -> TURN credentials) внутри Go.
-- **Кэширование TURN credentials**: Credentials кэшируются на 9 минут (10 минут TTL - 1 минута запас). При реконнекте потоков используются кэшированные данные, что устраняет дублирующие запросы к VK API. Кэш инвалидируется при смене сети через `wgNotifyNetworkChange()`.
+  - 5-ступенчатый процесс авторизации через VK API и OK.ru
+  - Использование `turnHTTPClient` с protected sockets
+
+- **Кэширование TURN credentials**: Credentials кэшируются на 9 минут (10 минут TTL - 1 минута запас). При реконнекте потоков используются кэшированные данные, что устраняет дублирующие запросы к VK API. Кэш инвалидируется при смене сети через `wgNotifyNetworkChange()` и при множественных auth errors (3 ошибки за 10 секунд).
+  - `credentialLifetime = 10 минут`, `cacheSafetyMargin = 60 секунд`
+  - `maxCacheErrors = 3`, `errorWindow = 10 секунд`
+
 - **Защита сокетов**: Все исходящие соединения (HTTP, UDP, TCP) используют `Control` функцию с вызовом `wgProtectSocket`.
+  - `protectControl()` — обёртка для syscall.RawConn
+
 - **Custom DNS Resolver**: Встроенный резолвер с обходом системных DNS Android (localhost) для обеспечения работоспособности в условиях активного VPN.
+  - Жёстко заданный DNS: `77.88.8.8:53` (Yandex DNS)
+  - `protectedResolverMu` мьютекс для потокобезопасной замены
+
 - **Таймаут DTLS handshake**: Явный 10-секундный таймаут предотвращает зависания при потере пакетов.
+  - `dtlsConn.SetDeadline(time.Now().Add(10 * time.Second))`
+
 - **Staggered запуск потоков**: Потоки запускаются с задержкой 200ms для снижения нагрузки на сервер и предотвращения "шторма" подключений.
+  - `time.Sleep(200 * time.Millisecond)` между запусками
+
 - **Watchdog реконнекта**: Автоматическое восстановление соединения при отсутствии ответа в течение 30 секунд.
+  - Проверка `time.Since(lastRx.Load()) > 30*time.Second` в TX goroutine
+
 - **No DTLS режим**: Опциональный режим работы без DTLS-инкапсуляции для прямого подключения к WireGuard серверу через TURN. Предназначен для отладки или специфичных сетевых условий. Реализован в методе `runNoDTLS()`.
+  - Не совместим с прокси-сервером, требующим DTLS handshake и Session ID
+
 - **Метрики для диагностики**: Счётчики ошибок для отслеживания проблем (dtlsTxDropCount, dtlsRxErrorCount, relayTxErrorCount, relayRxErrorCount, noDtlsTxDropCount, noDtlsRxErrorCount).
+  - `atomic.Uint64` для потокобезопасности
+
 - **Улучшенная обработка ошибок аутентификации**: Функции `isAuthError()` и `handleAuthError()` для детектирования и обработки устаревших credentials.
+  - Детектирование по строкам: "401", "Unauthorized", "authentication", "invalid credential", "stale nonce"
+
 - **Deadline management**: Явные дедлайны для handshake (10с), session ID (5с) и обновления дедлайнов каждые 5с (30с таймаут).
+  - Deadline updater goroutine обновляет каждые 5 секунд
+
 - **Connected UDP/TCP abstraction**: Интерфейс `net.PacketConn` для унификации обработки UDP и TCP соединений.
+  - `connectedUDPConn` обёртка для UDP
+  - `turn.NewSTUNConn()` для TCP
+
+- **Packet Pool**: Оптимизация выделения памяти через `sync.Pool` для буферов пакетов (2048 байт).
+  - `packetPool.Get()` / `packetPool.Put()`
 
 ---
 
@@ -47,6 +99,9 @@
 ### `tunnel/src/main/java/com/wireguard/config/`
 
 - **`Peer.java`**: Поддержка `extraLines` — списка строк, начинающихся с `#@`. Это позволяет хранить метаданные прокси прямо в `.conf` файле, не нарушая совместимость с другими клиентами.
+  - Парсинг в `Peer.parse()`: строки `#@` сохраняются через `builder.addExtraLine()`
+  - Сериализация в `toWgQuickConfig()`: extraLines выводятся как есть
+
 - **`Config.java`**: Парсер корректно передаёт комментарии с префиксом `#@` в соответствующие секции.
 
 ---
@@ -56,7 +111,17 @@
 ### `ui/src/main/java/com/wireguard/android/turn/TurnProxyManager.kt`
 
 - **`TurnSettings`**: Модель данных для настроек прокси (VK Link, Peer, Port, Streams).
+  - Данные: `enabled`, `peer`, `vkLink`, `streams`, `useUdp`, `localPort`, `turnIp`, `turnPort`, `noDtls`
+  - Методы: `toComments()`, `fromComments()`, `validate()`
+
 - **`TurnConfigProcessor`**: Логика инъекции/извлечения настроек из текста конфигурации. Метод `modifyConfigForActiveTurn` динамически подменяет `Endpoint` на `127.0.0.1`, **принудительно устанавливает MTU в 1280**, и **PersistentKeepalive=25** (для DTLS режима) для компенсации оверхеда инкапсуляции и поддержания соединения.
+  - `injectTurnSettings()` — добавляет комментарии `#@wgt:` в первый Peer
+  - `extractTurnSettings()` — извлекает настройки из комментариев
+  - `modifyConfigForActiveTurn()` — модифицирует конфиг для активного TURN:
+    - MTU = 1280 (фиксировано)
+    - Endpoint = `127.0.0.1:localPort`
+    - PersistentKeepalive = 25 (если noDtls=false) или оригинальное (если noDtls=true)
+
 - **`TurnProxyManager`**: Управляет нативным процессом прокси.
 
   **Синхронизация при запуске:**
@@ -79,13 +144,37 @@
   - Флаг `userInitiatedStop` — не рестартировать, если пользователь явно остановил туннель
   - `operationMutex` — мьютекс для сериализации операций start/stop и предотвращения гонок
 
+  **Логирование:**
+  - Встроенный лог через `StringBuilder` с ограничением 128KB
+  - Методы: `getLog()`, `clearLog()`, `appendLogLine()`
+
+  **Управление жизненным циклом:**
+  - `onTunnelEstablished()` — вызывается после создания туннеля
+  - `stopForTunnel()` — остановка с сбросом состояния и VpnService reference
+  - `isRunning()` — проверка статуса прокси
+
 ### `tunnel/src/main/java/com/wireguard/android/backend/TurnBackend.java`
 
 - **AtomicReference для CompletableFuture**: Атомарная замена `CompletableFuture<VpnService>` через `getAndSet()` предотвращает гонки при быстрой смене состояний сервиса.
+  - `vpnServiceFutureRef` — хранит текущий Future
+  - `getAndSet(new CompletableFuture<>)` — атомарная замена на новый
+
 - **CountDownLatch для синхронизации JNI**: Latch сигнализирует что JNI зарегистрирован и готов защищать сокеты.
+  - `vpnServiceLatchRef` — AtomicReference с CountDownLatch
+  - `countDown()` вызывается после `wgSetVpnService()`
+
 - **`waitForVpnServiceRegistered(timeout)`**: Метод для ожидания регистрации JNI перед запуском TURN прокси.
+  - `await(timeout, TimeUnit.MILLISECONDS)` на latch
+  - Возвращает `true` при успехе, `false` при timeout/interrupt
+
 - **`wgNotifyNetworkChange()`**: Native функция для сброса DNS/HTTP при смене сети.
+
 - **`wgTurnProxyStart(..., networkHandle)`**: Native функция принимает `networkHandle` (long) для привязки сокетов к конкретному Network.
+  - Параметры: `peerAddr`, `vklink`, `n`, `useUdp`, `listenAddr`, `turnIp`, `turnPort`, `noDtls`, `networkHandle`
+
+- **`onVpnServiceCreated()`**: Метод регистрации VpnService в JNI.
+  - При `service != null`: `wgSetVpnService()` → `latch.countDown()` → `future.complete()`
+  - При `service == null`: сброс future и latch для следующего цикла
 
 ### `tunnel/src/main/java/com/wireguard/android/backend/GoBackend.java`
 
@@ -97,9 +186,16 @@
 - **TURN запускается после создания туннеля:**
   - В `setStateInternal()` TURN прокси запускается после `builder.establish()`
   - Это гарантирует что `VpnService.protect()` будет работать для сокетов TURN
+  - Логирование: `"Tunnel established, TURN proxy should be started now"`
 
 - **Регистрация VpnService:**
   - `TurnBackend.onVpnServiceCreated()` вызывается в `onCreate()` для регистрации в JNI
+  - `onDestroy()` сбрасывает future и latch для следующего цикла
+
+- **Защита сокетов WireGuard:**
+  - `service.protect(wgGetSocketV4(currentTunnelHandle))`
+  - `service.protect(wgGetSocketV6(currentTunnelHandle))`
+  - Вызывается ДО запуска TURN прокси
 
 ### `ui/src/main/java/com/wireguard/android/model/TunnelManager.kt`
 
@@ -113,10 +209,25 @@
 Для обеспечения стабильности соединения в условиях мультиплексирования (Multi-Stream) используется следующий протокол:
 
 1. **DTLS Handshake**: Стандартное установление защищенного соединения (с таймаутом 10 секунд).
-2. **Session Identification**: Клиент отправляет 16 байт (Raw UUID) непосредственно в поток DTLS.
-3. **Tunnel Traffic**: После отправки UUID начинается двусторонний обмен пакетами WireGuard.
+   - Генерация self-signed сертификата один раз на все потоки
+   - Cipher suite: `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`
+   - Connection ID Generator: `OnlySendCIDGenerator()`
+
+2. **Session Identification**: Клиент отправляет 17 байт в DTLS поток:
+   - 16 байт — Session ID (UUID, генерируется при каждом запуске)
+   - 1 байт — Stream ID (номер потока 0..n-1)
+   - Отправка происходит сразу после успешного handshake
+
+3. **Tunnel Traffic**: После отправки Session ID начинается двусторонний обмен пакетами WireGuard.
+   - Round-robin распределение по готовым потокам
+   - Watchdog 30 секунд на отсутствие RX
 
 Это позволяет прокси-серверу идентифицировать сессию пользователя и поддерживать стабильный `Endpoint` на стороне WireGuard сервера, вне зависимости от количества активных DTLS-потоков или смены IP-адресов клиента.
+
+**No DTLS режим:**
+- При `noDtls=true` пропускается DTLS handshake и Session ID handshake
+- Прямой relay между WireGuard клиентом и сервером через TURN
+- Не совместим с прокси-сервером, требующим Session ID
 
 ---
 
@@ -144,6 +255,12 @@ AllowedIPs = 0.0.0.0/0
 
 Эти строки игнорируются стандартными клиентами WireGuard, но считываются данным форком при загрузке.
 
+**Обработка extraLines:**
+- Строки начинающиеся с `#@` сохраняются в `Peer.extraLines`
+- `TurnConfigProcessor.injectTurnSettings()` добавляет комментарии с префиксом `#@wgt:`
+- `TurnConfigProcessor.extractTurnSettings()` извлекает настройки из комментариев
+- При сериализации в `toWgQuickConfig()` extraLines выводятся как есть
+
 ---
 
 ## 6. Расширенные настройки TURN
@@ -160,6 +277,11 @@ AllowedIPs = 0.0.0.0/0
 #@wgt:TurnIP = 155.212.199.166
 #@wgt:TurnPort = 19302
 ```
+
+**Логика применения (turn-client.go):**
+- Если `turnIp != ""` и `turnPort != 0`: адрес = `turnIp:turnPort`
+- Если `turnIp != ""` и `turnPort == 0`: порт берётся из оригинального адреса
+- Если `turnIp == ""` и `turnPort != 0`: хост берётся из оригинального адреса
 
 ### No DTLS
 
@@ -223,6 +345,16 @@ PersistentKeepalive = 25
 }
 ```
 
+**Методы TurnSettingsStore:**
+- `load(name: String)` — загрузка из JSON файла
+- `save(name: String, settings: TurnSettings?)` — сохранение в JSON файл
+- `delete(name: String)` — удаление файла настроек
+- `rename(name: String, replacement: String)` — переименование файла
+
+**Расположение файлов:**
+- Путь: `<context.filesDir>/<tunnel>.turn.json`
+- Пример: `/data/data/com.wireguard.android/files/mytunnel.turn.json`
+
 ---
 
 ## 8. Архитектура запуска TURN
@@ -237,9 +369,11 @@ GoBackend.setStateInternal()
     → TurnBackend.waitForVpnServiceRegistered() ← Ждём JNI
     → wgTurnProxyStart(..., networkHandle) ← Запуск TURN с handle сети
       → update_current_network() в JNI      ← Кэширование Network object
-      → VK Auth для получения credentials
+      → wgNotifyNetworkChange()             ← Инициализация resolver и HTTP client
+      → VK Auth для получения credentials   ← 5-ступенчатый процесс
       → Подключение к TURN серверу (4 потока)
-      → DTLS handshake для каждого потока
+      → DTLS handshake для каждого потока  ← 10с таймаут
+      → Session ID handshake (17 байт)     ← UUID + Stream ID
       → wgProtectSocket() + bindSocket() для всех сокетов
 ```
 
@@ -249,6 +383,14 @@ GoBackend.setStateInternal()
 - Сокеты WireGuard защищаются до запуска TURN
 - **networkHandle** передаётся в Go для привязки сокетов к конкретному Network через `bindSocket()`
 - **PhysicalNetworkMonitor** отслеживает физические сети и автоматически перезапускает TURN при смене типа сети
+
+**Временные параметры:**
+- Timeout ожидания JNI: 2000ms
+- Задержка между запусками потоков: 200ms
+- Timeout DTLS handshake: 10s
+- Timeout ожидания ready потока: 30s
+- Watchdog реконнекта: 30s
+- Debounce network change: 1500ms
 
 ---
 
@@ -314,3 +456,96 @@ scope.launch {
 - **Flow-based** — реактивный подход с debounce через Kotlin Flow
 - **Игнорирование VPN** — явная фильтрация VPN транспортов
 - **ConcurrentHashMap** — потокобезопасное хранение сетей
+
+**Технические детали:**
+- `networks: ConcurrentHashMap<Network, NetworkCapabilities>` — хранение всех доступных сетей
+- `callback: ConnectivityManager.NetworkCallback` — системный callback для событий сети
+- `request: NetworkRequest` — запрос с `NET_CAPABILITY_INTERNET` и `NET_CAPABILITY_NOT_VPN`
+- `cm.allNetworks.forEach` — начальное заполнение при `start()`
+
+---
+
+## 10. VK Auth Flow
+
+### 5-ступенчатый процесс авторизации
+
+1. **VK Anonym Token (Step 1)**
+   - URL: `https://login.vk.ru/?act=get_anonym_token`
+   - Params: `client_secret`, `client_id`, `scopes`, `app_id`
+   - Result: `token1` (access_token)
+
+2. **VK Calls Payload (Step 2)**
+   - URL: `https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload`
+   - Params: `access_token=token1`
+   - Result: `token2` (payload)
+
+3. **VK Anonym Token (Step 2.5)**
+   - URL: `https://login.vk.ru/?act=get_anonym_token`
+   - Params: `client_id`, `token_type=messages`, `payload=token2`, `client_secret`
+   - Result: `token3` (access_token для calls)
+
+4. **VK Calls Token (Step 3)**
+   - URL: `https://api.vk.ru/method/calls.getAnonymousToken`
+   - Params: `vk_join_link`, `access_token=token3`
+   - Result: `token4` (anonym token для OK.ru)
+
+5. **OK.ru Authentication (Step 4-5)**
+   - URL: `https://calls.okcdn.ru/fb.do`
+   - Step 4.1: `auth.anonymLogin` с `session_data` → `token5` (session_key)
+   - Step 4.2: `vchat.joinConversationByLink` с `joinLink`, `anonymToken=token4`, `session_key=token5`
+   - Result: TURN credentials (`username`, `credential`, `urls`)
+
+### Кэширование credentials
+
+- **TTL**: 10 минут
+- **Safety margin**: 60 секунд (обновление за 9 минут)
+- **Инвалидация**:
+  - При `wgNotifyNetworkChange()` (смена сети)
+  - При 3 auth errors за 10 секунд
+  - При истечении TTL
+
+### Обработка ошибок аутентификации
+
+**Детектирование auth error:**
+- Строки в ошибке: "401", "Unauthorized", "authentication", "invalid credential", "stale nonce"
+
+**Логика handleAuthError():**
+- Счётчик ошибок в sliding window (10 секунд)
+- При 3 ошибках: инвалидация кэша credentials
+- Логи: `[STREAM X] Auth error (count=N/3)`
+
+---
+
+## 11. Метрики и диагностика
+
+### Счётчики ошибок (atomic.Uint64)
+
+- `dtlsTxDropCount` — пакеты, отброшенные в DTLS TX goroutine
+- `dtlsRxErrorCount` — ошибки в DTLS RX goroutine
+- `relayTxErrorCount` — ошибки записи в relay connection
+- `relayRxErrorCount` — ошибки чтения из relay connection
+- `noDtlsTxDropCount` — пакеты, отброшенные в NoDTLS режиме
+- `noDtlsRxErrorCount` — ошибки в NoDTLS RX goroutine
+- `cacheErrorCount` — счётчик auth ошибок (сбрасывается при успехе)
+
+### Логирование
+
+**Уровни логирования:**
+- `ANDROID_LOG_INFO` — успешные операции (handshake SUCCESS, protect SUCCESS)
+- `ANDROID_LOG_ERROR` — ошибки (protect FAILED, auth errors, timeouts)
+
+**Основные теги:**
+- `WireGuard/TurnClient` — основное логирование TURN клиента
+- `WireGuard/TurnProxyManager` — логирование на уровне Kotlin
+- `WireGuard/TurnBackend` — JNI слой
+- `WireGuard/GoBackend` — Go backend
+
+**Формат логов:**
+```
+[PROXY] Hub starting on 127.0.0.1:9000 (streams=4, noDtls=false, networkHandle=12345)
+[VK Auth] Using cached credentials (expires in 5m30s)
+[STREAM 0] Dialing TURN server 1.2.3.4:56000...
+[STREAM 0] DTLS handshake SUCCESS
+[STREAM 0] TX watchdog timeout
+[NETWORK] Network change notified: resolver reset
+```
