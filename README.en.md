@@ -18,7 +18,6 @@ Unauthorized use of the VK Calls infrastructure (TURN servers) without explicit 
 - **MTU Optimization**: Automatic MTU adjustment to 1280 when using TURN to ensure encapsulated packets fit standard network limits.
 - **Auto-Reconnect on Network Change**: Automatic TURN restart when switching between WiFi and 4G/5G with debounce protection.
 - **Fast Network Recovery**: DNS and HTTP connection reset on network change for quick reconnection.
-- **VpnService Protection**: All proxy traffic is automatically protected from being looped back into the VPN tunnel.
 - **Seamless Configuration**: TURN settings are stored directly inside standard WireGuard `.conf` files as special metadata comments (`#@wgt:`).
 
 ## Technical Credits
