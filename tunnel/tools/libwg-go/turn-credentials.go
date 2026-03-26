@@ -45,7 +45,11 @@ const (
 	cacheSafetyMargin  = 60 * time.Second
 	maxCacheErrors     = 3
 	errorWindow        = 10 * time.Second
+	minRequestInterval = 1 * time.Second // Minimum interval between VK API requests
 )
+
+// vkRequestMu serializes VK API requests to avoid flood control
+var vkRequestMu sync.Mutex
 
 // credentialsStore manages per-stream credentials caches
 var credentialsStore = struct {
@@ -167,8 +171,8 @@ func getVkCreds(ctx context.Context, link string, streamID int) (string, string,
 	default:
 	}
 
-	// Fetch credentials (without holding the lock)
-	user, pass, addr, err := fetchVkCreds(ctx, link, streamID)
+	// Fetch credentials with rate limiting
+	user, pass, addr, err := fetchVkCredsSerialized(ctx, link, streamID)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -186,6 +190,16 @@ func getVkCreds(ctx context.Context, link string, streamID int) (string, string,
 
 	turnLog("[STREAM %d] [VK Auth] Success! Credentials cached until %v", streamID, cache.creds.ExpiresAt)
 	return user, pass, addr, nil
+}
+
+// fetchVkCredsSerialized wraps fetchVkCreds with rate limiting to avoid VK flood control
+func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (string, string, string, error) {
+	vkRequestMu.Lock()
+	defer vkRequestMu.Unlock()
+
+	user, pass, addr, err := fetchVkCreds(ctx, link, streamID)
+	time.Sleep(minRequestInterval)
+	return user, pass, addr, err
 }
 
 // fetchVkCreds performs the actual VK/OK API calls to fetch credentials
