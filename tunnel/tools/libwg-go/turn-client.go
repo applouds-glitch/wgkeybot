@@ -351,13 +351,9 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	dtlsConn.SetDeadline(time.Time{})
 	turnLog("[STREAM %d] DTLS handshake SUCCESS", s.id)
 
-	// Session ID + Stream ID Handshake (17 bytes total)
+	// Session ID (16 bytes UUID only, no stream ID byte)
 	dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	handshakeBuf := make([]byte, 17)
-	copy(handshakeBuf[:16], s.sessionID)
-	handshakeBuf[16] = byte(s.id)
-
-	if _, err := dtlsConn.Write(handshakeBuf); err != nil {
+	if _, err := dtlsConn.Write(s.sessionID[:16]); err != nil {
 		return fmt.Errorf("session ID handshake failed: %w", err)
 	}
 	dtlsConn.SetWriteDeadline(time.Time{})

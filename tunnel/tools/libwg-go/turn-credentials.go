@@ -272,32 +272,26 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 		return resp, nil
 	}
 
-	data := "client_secret=QbYic1K3lEV5kTGiqlq2&client_id=6287487&scopes=audio_anonymous%2Cvideo_anonymous%2Cphotos_anonymous%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=6287487"
+	// Step 1: Get messages anonymous token (single call, no payload needed)
+	data := "client_id=6287487&token_type=messages&client_secret=QbYic1K3lEV5kTGiqlq2&version=1&app_id=6287487"
 	resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
 	if err != nil { return "", "", "", err }
 	token1 := resp["data"].(map[string]interface{})["access_token"].(string)
 
-	data = fmt.Sprintf("access_token=%s", token1)
-	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload?v=5.264&client_id=6287487")
-	if err != nil { return "", "", "", err }
-	token2 := resp["response"].(map[string]interface{})["payload"].(string)
-
-	data = fmt.Sprintf("client_id=6287487&token_type=messages&payload=%s&client_secret=QbYic1K3lEV5kTGiqlq2&version=1&app_id=6287487", url.QueryEscape(token2))
-	resp, err = doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
-	if err != nil { return "", "", "", err }
-	token3 := resp["data"].(map[string]interface{})["access_token"].(string)
-
-	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", url.QueryEscape(link), token3)
+	// Step 2: Get call anonymous token
+	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", url.QueryEscape(link), token1)
 	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getAnonymousToken?v=5.264")
 	if err != nil { return "", "", "", err }
-	token4 := resp["response"].(map[string]interface{})["token"].(string)
+	token2 := resp["response"].(map[string]interface{})["token"].(string)
 
+	// Step 3: Get session key via auth.anonymLogin
 	data = fmt.Sprintf("session_data=%%7B%%22version%%22%%3A2%%2C%%22device_id%%22%%3A%%22%s%%22%%2C%%22client_version%%22%%3A1.1%%2C%%22client_type%%22%%3A%%22SDK_JS%%22%%7D&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA", uuid.New())
 	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
 	if err != nil { return "", "", "", err }
-	token5 := resp["session_key"].(string)
+	token3 := resp["session_key"].(string)
 
-	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", url.QueryEscape(link), token4, token5)
+	// Step 4: Join conversation and get TURN credentials
+	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", url.QueryEscape(link), token2, token3)
 	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
 	if err != nil { return "", "", "", err }
 
