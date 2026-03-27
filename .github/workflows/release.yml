@@ -47,8 +47,8 @@ jobs:
     - name: Rename APK
       run: mv ui/build/outputs/apk/release/ui-release.apk ui/build/outputs/apk/release/wg-turn-v${{ steps.version.outputs.version }}.apk
 
-     - name: Sign APK
-      uses: r0adkll/sign-android-release@v1
+    - name: Sign APK
+      uses: r0adkll/sign-android-release@v2
       id: sign_app
       with:
         releaseDirectory: ui/build/outputs/apk/release
