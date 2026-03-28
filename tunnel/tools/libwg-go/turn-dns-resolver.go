@@ -27,96 +27,123 @@ import (
 // DnsCache stores cached IP addresses
 type DnsCache struct {
 	mu   sync.RWMutex
-	ips  map[string]cachedIP
-}
-
-type cachedIP struct {
-	ip      string
-	expires time.Time
+	ips  map[string]string
 }
 
 const (
-	cacheTTL        = 5 * time.Minute
-	dnsTimeout      = 2 * time.Second
-	dohTimeout      = 5 * time.Second
-	dotTimeout      = 5 * time.Second
-	yandexDNSServer = "77.88.8.8"
-	yandexDoHIP     = "77.88.8.8:443"
-	yandexDoHURL    = "https://common.dot.dns.yandex.net/dns-query"
-	yandexDoTIP     = "77.88.8.8:853"
-	yandexServerName = "common.dot.dns.yandex.net"
+	dnsTimeout     = 2 * time.Second
+	dohTimeout     = 2 * time.Second
+	dotTimeout     = 2 * time.Second
+	yandexIP       = "77.88.8.8"
+	yandexDomain   = "common.dot.dns.yandex.net"
+	googleIP       = "8.8.8.8"
+	googleDomain   = "dns.google"
+)
+
+// DNSServerType represents the type of DNS server
+type DNSServerType int
+
+const (
+	DNSPlain DNSServerType = iota
+	DNSDoH
+	DNSDoT
+)
+
+// DNSServer represents a DNS server configuration
+type DNSServer struct {
+	Type   DNSServerType
+	IP     string
+	Domain string
+}
+
+// Predefined ordered list of DNS servers (Yandex + Google: plain, doh, dot)
+var dnsServers = []DNSServer{
+	{Type: DNSPlain, IP: yandexIP, Domain: ""},
+	{Type: DNSDoH, IP: yandexIP, Domain: yandexDomain},
+	{Type: DNSPlain, IP: googleIP, Domain: ""},
+	{Type: DNSDoT, IP: yandexIP, Domain: yandexDomain},
+	{Type: DNSDoH, IP: googleIP, Domain: googleDomain},
+	//{Type: DNSDoT, IP: googleIP, Domain: googleDomain},
+}
+
+// lastSuccessfulIndex stores the index of the last successful DNS server
+var (
+	lastSuccessfulIndex int
+	lastSuccessfulMu    sync.RWMutex
 )
 
 var (
 	hostCache = &DnsCache{
-		ips: make(map[string]cachedIP),
+		ips: make(map[string]string),
 	}
 )
 
-// Resolve resolves DNS name using cache and cascading fallback
+// Resolve resolves DNS name using cache and ordered server list
 func (c *DnsCache) Resolve(ctx context.Context, domain string) (string, error) {
 	// 1. Check cache
 	c.mu.RLock()
-	if cached, ok := c.ips[domain]; ok && time.Now().Before(cached.expires) {
+	if cached, ok := c.ips[domain]; ok {
 		c.mu.RUnlock()
-		return cached.ip, nil
+		return cached, nil
 	}
 	c.mu.RUnlock()
 
-	// 2. Resolve with fallback
-	ip, err := resolveWithFallback(ctx, domain)
+	// 2. Resolve with ordered server list
+	ip, err := resolveWithOrderedServers(ctx, domain)
 	if err != nil {
 		return "", err
 	}
 
 	// 3. Save to cache
 	c.mu.Lock()
-	c.ips[domain] = cachedIP{
-		ip:      ip,
-		expires: time.Now().Add(cacheTTL),
-	}
+	c.ips[domain] = ip
 	c.mu.Unlock()
 
 	return ip, nil
 }
 
-// resolveWithFallback resolves DNS with cascading fallback: UDP → DoH → DoT
-func resolveWithFallback(ctx context.Context, domain string) (string, error) {
-	var lastErr error
+// resolveWithOrderedServers resolves DNS using ordered server list starting from last successful
+func resolveWithOrderedServers(ctx context.Context, domain string) (string, error) {
+	lastSuccessfulMu.RLock()
+	startIndex := lastSuccessfulIndex
+	lastSuccessfulMu.RUnlock()
 
-	// 1. Standard DNS (UDP 53) - fastest and most reliable
-	turnLog("[DNS] Trying UDP for %s", domain)
-	if ip, err := resolveUDP(ctx, domain); err == nil {
-		turnLog("[DNS] UDP success: %s -> %s", domain, ip)
-		return ip, nil
-	} else {
-		turnLog("[DNS] UDP failed: %v", err)
-		lastErr = err
+	// Try all servers in order starting from last successful
+	for i := 0; i < len(dnsServers); i++ {
+		idx := (i + startIndex) % len(dnsServers)
+		server := dnsServers[idx]
+		turnLog("[DNS] Trying server %d (%v, %s) for %s", idx, server.Type, server.IP, domain)
+		ip, err := resolveAny(ctx, domain, server)
+		if err == nil {
+			turnLog("[DNS] Success with server %d: %s -> %s", idx, domain, ip)
+			// Update last successful index
+			lastSuccessfulMu.Lock()
+			lastSuccessfulIndex = idx
+			lastSuccessfulMu.Unlock()
+			return ip, nil
+		}
+		turnLog("[DNS] Server %d failed: %v", idx, err)
 	}
 
-	// 2. DoH (HTTPS 443) - fallback if UDP is blocked
-	turnLog("[DNS] Trying DoH for %s", domain)
-	if ip, err := resolveDoH(ctx, domain); err == nil {
-		turnLog("[DNS] DoH success: %s -> %s", domain, ip)
-		return ip, nil
-	} else {
-		turnLog("[DNS] DoH failed: %v", err)
-	}
-
-	// 3. DoT (TLS 853) - final fallback
-	turnLog("[DNS] Trying DoT for %s", domain)
-	if ip, err := resolveDoT(ctx, domain); err == nil {
-		turnLog("[DNS] DoT success: %s -> %s", domain, ip)
-		return ip, nil
-	} else {
-		turnLog("[DNS] DoT failed: %v", err)
-	}
-
-	return "", fmt.Errorf("all DNS methods failed for %s: %w", domain, lastErr)
+	return "", fmt.Errorf("all DNS servers failed for %s", domain)
 }
 
-// resolveUDP resolves DNS via standard UDP query
-func resolveUDP(ctx context.Context, domain string) (string, error) {
+// resolveAny resolves DNS using the specified server
+func resolveAny(ctx context.Context, domain string, server DNSServer) (string, error) {
+	switch server.Type {
+	case DNSPlain:
+		return resolveUDPWithServer(ctx, domain, server.IP)
+	case DNSDoH:
+		return resolveDoHWithServer(ctx, domain, server.IP, server.Domain)
+	case DNSDoT:
+		return resolveDoTWithServer(ctx, domain, server.IP, server.Domain)
+	default:
+		return "", fmt.Errorf("unknown DNS server type: %v", server.Type)
+	}
+}
+
+// resolveUDPWithServer resolves DNS via standard UDP query to specified server
+func resolveUDPWithServer(ctx context.Context, domain string, serverIP string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, dnsTimeout)
 	defer cancel()
 
@@ -127,7 +154,7 @@ func resolveUDP(ctx context.Context, domain string) (string, error) {
 	}
 
 	// Use DialContext with protectControl (same as old protectedResolver)
-	addr := yandexDNSServer + ":53"
+	addr := serverIP + ":53"
 	dialer := &net.Dialer{
 		Timeout: dnsTimeout,
 		Control: protectControl,
@@ -161,8 +188,8 @@ func resolveUDP(ctx context.Context, domain string) (string, error) {
 	return ip, nil
 }
 
-// resolveDoH resolves DNS via DNS-over-HTTPS
-func resolveDoH(ctx context.Context, domain string) (string, error) {
+// resolveDoHWithServer resolves DNS via DNS-over-HTTPS to specified server
+func resolveDoHWithServer(ctx context.Context, domain string, serverIP string, serverName string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, dohTimeout)
 	defer cancel()
 
@@ -172,24 +199,26 @@ func resolveDoH(ctx context.Context, domain string) (string, error) {
 	}
 
 	// Build HTTP request with IP directly (no DNS resolution needed)
-	ipURL := "https://" + yandexDoHIP + "/dns-query"
+	// DoH uses port 443
+	addr := serverIP + ":443"
+	ipURL := "https://" + addr + "/dns-query"
 	req, err := http.NewRequestWithContext(ctx, "POST", ipURL, bytes.NewReader(query))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
-	req.Host = yandexServerName
+	req.Host = serverName
 
 	// DoH requires HTTP/2 per RFC 8484
 	client := &http.Client{
 		Timeout: dohTimeout,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return protectAndDial(ctx, network, yandexDoHIP)
+				return protectAndDial(ctx, network, serverIP+":443")
 			},
 			TLSClientConfig: &tls.Config{
-				ServerName: yandexServerName,
+				ServerName: serverName,
 				NextProtos: []string{"h2", "http/1.1"},
 			},
 			ForceAttemptHTTP2: true,
@@ -219,8 +248,8 @@ func resolveDoH(ctx context.Context, domain string) (string, error) {
 	return ip, nil
 }
 
-// resolveDoT resolves DNS via DNS-over-TLS
-func resolveDoT(ctx context.Context, domain string) (string, error) {
+// resolveDoTWithServer resolves DNS via DNS-over-TLS to specified server
+func resolveDoTWithServer(ctx context.Context, domain string, serverIP string, serverName string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, dotTimeout)
 	defer cancel()
 
@@ -230,11 +259,12 @@ func resolveDoT(ctx context.Context, domain string) (string, error) {
 	}
 
 	tlsConfig := &tls.Config{
-		ServerName: yandexServerName,
+		ServerName: serverName,
 		MinVersion: tls.VersionTLS12,
 	}
 
-	tcpConn, err := protectAndDial(ctx, "tcp", yandexDoTIP)
+	// DoT uses port 853
+	tcpConn, err := protectAndDial(ctx, "tcp", serverIP+":853")
 	if err != nil {
 		return "", fmt.Errorf("failed to connect to DoT server: %w", err)
 	}
@@ -399,10 +429,13 @@ func protectAndDial(ctx context.Context, network, addr string) (net.Conn, error)
 	return conn, nil
 }
 
-// ClearCache clears DNS cache
+// ClearCache clears DNS cache and resets last successful server index
 func ClearCache() {
 	hostCache.mu.Lock()
 	defer hostCache.mu.Unlock()
-	hostCache.ips = make(map[string]cachedIP)
+	hostCache.ips = make(map[string]string)
+	lastSuccessfulMu.Lock()
+	lastSuccessfulIndex = 0
+	lastSuccessfulMu.Unlock()
 	turnLog("[DNS] Cache cleared")
 }

@@ -23,6 +23,21 @@ import (
 	"github.com/google/uuid"
 )
 
+// VKCredentials stores VK API client credentials
+type VKCredentials struct {
+	ClientID     string
+	ClientSecret string
+}
+
+// Predefined list of VK credentials (tried in order until success)
+var vkCredentialsList = []VKCredentials{
+	{ClientID: "6287487", ClientSecret: "QbYic1K3lEV5kTGiqlq2"}, // VK_WEB_APP_ID
+	{ClientID: "7879029", ClientSecret: "aR5NKGmm03GYrCiNKsaw"}, // VK_MVK_APP_ID
+	{ClientID: "52461373", ClientSecret: "o557NLIkAErNhakXrQ7A"}, // VK_WEB_VKVIDEO_APP_ID
+	{ClientID: "52649896", ClientSecret: "WStp4ihWG4l3nmXZgIbC"}, // VK_MVK_VKVIDEO_APP_ID
+	{ClientID: "51781872", ClientSecret: "IjjCNl4L4Tf5QZEXIHKK"}, // VK_ID_AUTH_APP
+}
+
 // TurnCredentials stores cached TURN credentials
 type TurnCredentials struct {
 	Username   string
@@ -198,12 +213,41 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 	defer vkRequestMu.Unlock()
 
 	user, pass, addr, err := fetchVkCreds(ctx, link, streamID)
-	time.Sleep(minRequestInterval)
+	//time.Sleep(minRequestInterval)
 	return user, pass, addr, err
 }
 
 // fetchVkCreds performs the actual VK/OK API calls to fetch credentials
 func fetchVkCreds(ctx context.Context, link string, streamID int) (string, string, string, error) {
+	var lastErr error
+
+	// Try each credentials pair until success
+	for _, creds := range vkCredentialsList {
+		turnLog("[STREAM %d] [VK Auth] Trying credentials: client_id=%s", streamID, creds.ClientID)
+
+		user, pass, addr, err := getTokenChain(ctx, link, streamID, creds)
+		if err == nil {
+			turnLog("[STREAM %d] [VK Auth] Success with client_id=%s", streamID, creds.ClientID)
+			return user, pass, addr, nil
+		}
+
+		lastErr = err
+		turnLog("[STREAM %d] [VK Auth] Failed with client_id=%s: %v", streamID, creds.ClientID, err)
+
+		// Check if it's a rate limit error - wait and try next credentials
+		if strings.Contains(err.Error(), "error_code:29") || strings.Contains(err.Error(), "Rate limit") {
+			turnLog("[STREAM %d] [VK Auth] Rate limit detected, trying next credentials...", streamID)
+		}
+        time.Sleep(minRequestInterval)
+	}
+
+	return "", "", "", fmt.Errorf("all VK credentials failed: %w", lastErr)
+}
+
+// getTokenChain performs the VK/OK API token chain with given credentials
+func getTokenChain(ctx context.Context, link string, streamID int, creds VKCredentials) (string, string, string, error) {
+	//var token1, token2, token3, token4, token5 string
+
 	doRequest := func(data string, requestURL string) (resp map[string]interface{}, err error) {
 		// Resolve host via DNS cache with cascading fallback
 		parsedURL, err := url.Parse(requestURL)
@@ -236,8 +280,21 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 
 		// Set original host for HTTP Host header
 		req.Host = domain
-		req.Header.Add("User-Agent", "Mozilla/5.0 (Android 12; Mobile; rv:144.0)")
-		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+		// Set headers like real VK Android Chrome browser
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		req.Header.Set("Origin", "https://m.vk.ru")
+		req.Header.Set("Referer", "https://m.vk.ru/")
+		req.Header.Set("sec-ch-ua-platform", "\"Android\"")
+		req.Header.Set("sec-ch-ua", "\"Chromium\";v=\"146\", \"Not-A.Brand\";v=\"24\", \"Google Chrome\";v=\"146\"")
+		req.Header.Set("sec-ch-ua-mobile", "?1")
+		req.Header.Set("DNT", "1")
+		req.Header.Set("Sec-Fetch-Site", "same-site")
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+		req.Header.Set("Sec-GPC", "1")
 
 		// Create HTTP client with custom TLS config for certificate verification
 		client := &http.Client{
@@ -249,7 +306,7 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 					Control:   protectControl,
 				}).DialContext,
 				TLSClientConfig: &tls.Config{
-					ServerName: domain,  // Use domain for certificate verification
+					ServerName: domain, // Use domain for certificate verification
 				},
 			},
 		}
@@ -272,31 +329,78 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 		return resp, nil
 	}
 
-	// Step 1: Get messages anonymous token (single call, no payload needed)
-	data := "client_id=6287487&token_type=messages&client_secret=QbYic1K3lEV5kTGiqlq2&version=1&app_id=6287487"
+
+/*
+    // token 1
+	data := fmt.Sprintf("client_secret=%s&client_id=%s&scopes=audio_anonymous%%2Cvideo_anonymous%%2Cphotos_anonymous%%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=5.247&app_id=%s", creds.ClientSecret, creds.ClientID, creds.ClientID)
+	resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
+	if err != nil {
+		turnLog("[STREAM %d] [VK Auth] Token 1 request failed: %v, response: %v", streamID, err, resp)
+		return "", "", "", err
+	}
+	turnLog("[STREAM %d] [VK Auth] Token 1 response: %v", streamID, resp)
+	dataMap, ok := resp["data"].(map[string]interface{})
+	if !ok || dataMap == nil {
+		turnLog("[STREAM %d] [VK Auth] Invalid data structure in response", streamID)
+		return "", "", "", fmt.Errorf("invalid response structure for token1: %v", resp)
+	}
+	token1, ok := dataMap["access_token"].(string)
+	if !ok {
+		turnLog("[STREAM %d] [VK Auth] access_token not found in data: %v", streamID, dataMap)
+		return "", "", "", fmt.Errorf("token1 not found in response: %v", resp)
+	}
+	turnLog("[STREAM %d] [VK Auth] Token 1 (anonym_token) received", streamID)
+
+    // token 2
+	data = fmt.Sprintf("access_token=%s", token1)
+	resp, err = doRequest(data, fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload?v=5.264&client_id=%s", creds.ClientID))
+	if err != nil { return "", "", "", err }
+	responseMap := resp["response"].(map[string]interface{})
+	if responseMap == nil { return "", "", "", fmt.Errorf("invalid response structure for token2: %v", resp) }
+	token2, ok := responseMap["payload"].(string)
+	if !ok { return "", "", "", fmt.Errorf("token2 not found in response: %v", resp) }
+	turnLog("[STREAM %d] [VK Auth] Token 2 (payload) received", streamID)
+*/
+    // token 3
+	//data = fmt.Sprintf("client_id=%s&token_type=messages&payload=%s&client_secret=%s&version=1&app_id=%s", creds.ClientID, url.QueryEscape(token2), creds.ClientSecret, creds.ClientID)
+	data := fmt.Sprintf("client_id=%s&token_type=messages&client_secret=%s&version=1&app_id=%s", creds.ClientID, creds.ClientSecret, creds.ClientID)
 	resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
 	if err != nil { return "", "", "", err }
-	token1 := resp["data"].(map[string]interface{})["access_token"].(string)
+	dataMap := resp["data"].(map[string]interface{})
+	if dataMap == nil { return "", "", "", fmt.Errorf("invalid response structure for token3: %v", resp) }
+	token3, ok := dataMap["access_token"].(string)
+	if !ok { return "", "", "", fmt.Errorf("token3 not found in response: %v", resp) }
+	turnLog("[STREAM %d] [VK Auth] Token 3 (anonym_token) received", streamID)
 
-	// Step 2: Get call anonymous token
-	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", url.QueryEscape(link), token1)
-	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getAnonymousToken?v=5.264")
+    // token 4
+	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", url.QueryEscape(link), token3)
+	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.274&client_id=%s", creds.ClientID)
+	resp, err = doRequest(data, urlAddr)
 	if err != nil { return "", "", "", err }
-	token2 := resp["response"].(map[string]interface{})["token"].(string)
+	responseMap := resp["response"].(map[string]interface{})
+	if responseMap == nil { return "", "", "", fmt.Errorf("invalid response structure for token4: %v", resp) }
+	token4, ok := responseMap["token"].(string)
+	if !ok { return "", "", "", fmt.Errorf("token4 not found in response: %v", resp) }
+	turnLog("[STREAM %d] [VK Auth] Token 4 (messages token) received", streamID)
 
-	// Step 3: Get session key via auth.anonymLogin
+    // token 5
 	data = fmt.Sprintf("session_data=%%7B%%22version%%22%%3A2%%2C%%22device_id%%22%%3A%%22%s%%22%%2C%%22client_version%%22%%3A1.1%%2C%%22client_type%%22%%3A%%22SDK_JS%%22%%7D&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA", uuid.New())
 	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
 	if err != nil { return "", "", "", err }
-	token3 := resp["session_key"].(string)
+	token5, ok := resp["session_key"].(string)
+	if !ok { return "", "", "", fmt.Errorf("token5 not found in response: %v", resp) }
+	turnLog("[STREAM %d] [VK Auth] Token 5 (session_key) received", streamID)
 
-	// Step 4: Join conversation and get TURN credentials
-	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", url.QueryEscape(link), token2, token3)
+    // final 6
+	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&capabilities=2F7F&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", url.QueryEscape(link), token4, token5)
 	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
 	if err != nil { return "", "", "", err }
+	turnLog("[STREAM %d] [VK Auth] TURN credentials received", streamID)
 
 	ts := resp["turn_server"].(map[string]interface{})
+	if ts == nil { return "", "", "", fmt.Errorf("turn_server not found in response: %v", resp) }
 	urls := ts["urls"].([]interface{})
+	if urls == nil || len(urls) == 0 { return "", "", "", fmt.Errorf("invalid urls in turn_server: %v", ts) }
 	address := strings.TrimPrefix(strings.TrimPrefix(strings.Split(urls[0].(string), "?")[0], "turn:"), "turns:")
 
 	// Resolve TURN server address via cascading DNS (if it's a domain)
@@ -316,5 +420,9 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 		}
 	}
 
-	return ts["username"].(string), ts["credential"].(string), address, nil
+	username, ok := ts["username"].(string)
+	if !ok || username == "" { return "", "", "", fmt.Errorf("username not found in turn_server: %v", ts) }
+	credential, ok := ts["credential"].(string)
+	if !ok || credential == "" { return "", "", "", fmt.Errorf("credential not found in turn_server: %v", ts) }
+	return username, credential, address, nil
 }
