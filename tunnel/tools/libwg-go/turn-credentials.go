@@ -226,6 +226,8 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 		turnLog("[STREAM %d] [VK Auth] Trying credentials: client_id=%s", streamID, creds.ClientID)
 
 		user, pass, addr, err := getTokenChain(ctx, link, streamID, creds)
+		time.Sleep(minRequestInterval)
+
 		if err == nil {
 			turnLog("[STREAM %d] [VK Auth] Success with client_id=%s", streamID, creds.ClientID)
 			return user, pass, addr, nil
@@ -238,7 +240,6 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 		if strings.Contains(err.Error(), "error_code:29") || strings.Contains(err.Error(), "Rate limit") {
 			turnLog("[STREAM %d] [VK Auth] Rate limit detected, trying next credentials...", streamID)
 		}
-        time.Sleep(minRequestInterval)
 	}
 
 	return "", "", "", fmt.Errorf("all VK credentials failed: %w", lastErr)
@@ -400,10 +401,9 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getCallPreview?v=5.274&client_id="+creds.ClientID)
 	if err != nil {
 		turnLog("[STREAM %d] [VK Auth] getCallPreview request failed: %v", streamID, err)
-		return "", "", "", err
-	}
-	// Ignore getCallPreview errors - it's optional
-	turnLog("[STREAM %d] [VK Auth] getCallPreview completed (optional)", streamID)
+	} else {
+	    turnLog("[STREAM %d] [VK Auth] getCallPreview completed (optional)", streamID)
+    }
 
     // token 4
 	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", url.QueryEscape(link), token3)
