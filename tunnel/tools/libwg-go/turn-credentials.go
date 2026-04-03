@@ -396,9 +396,9 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 	}
 	turnLog("[STREAM %d] [VK Auth] Token 3 (anonym_token) received", streamID)
 
-    // getCallPreview - emulate browser behavior (HAR entry 129)
+    // getCallPreview - emulate browser behavior (HAR entry 189)
 	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&fields=photo_200&access_token=%s", url.QueryEscape(link), token3)
-	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getCallPreview?v=5.274&client_id="+creds.ClientID)
+	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getCallPreview?v=5.275&client_id="+creds.ClientID)
 	if err != nil {
 		turnLog("[STREAM %d] [VK Auth] getCallPreview request failed: %v", streamID, err)
 	} else {
@@ -407,16 +407,56 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 
     // token 4
 	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", url.QueryEscape(link), token3)
-	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.274&client_id=%s", creds.ClientID)
+	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.275&client_id=%s", creds.ClientID)
 	resp, err = doRequest(data, urlAddr)
-	if err != nil {
+	// Check for VK API error in response (doRequest returns both resp and err)
+	if errMsg, ok := resp["error"].(map[string]interface{}); ok {
+		// Check if it's a captcha error that we can solve
+		captchaErr := ParseVkCaptchaError(errMsg)
+		if captchaErr != nil && captchaErr.IsCaptchaError() {
+			turnLog("[STREAM %d] [VK Auth] Token 4: Captcha detected, solving...", streamID)
+
+			// Solve the captcha
+			successToken, solveErr := solveVkCaptcha(ctx, captchaErr, streamID)
+			if solveErr != nil {
+				turnLog("[STREAM %d] [VK Auth] Token 4: Captcha solving failed: %v", streamID, solveErr)
+				return "", "", "", fmt.Errorf("captcha solving failed: %w", solveErr)
+			}
+
+			// Retry Token 4 with captcha solution parameters (as in HAR entry 259)
+			turnLog("[STREAM %d] [VK Auth] Token 4: Retrying with captcha solution...", streamID)
+			data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123"+
+				"&captcha_key="+
+				"&captcha_sid=%s"+
+				"&is_sound_captcha=0"+
+				"&success_token=%s"+
+				"&captcha_ts=%s"+
+				"&captcha_attempt=%s"+
+				"&access_token=%s",
+				url.QueryEscape(link),
+				captchaErr.CaptchaSid,
+				successToken,
+				captchaErr.CaptchaTs,
+				captchaErr.CaptchaAttempt,
+				token3)
+			resp, err = doRequest(data, urlAddr)
+			if err != nil {
+				turnLog("[STREAM %d] [VK Auth] Token 4 retry failed: %v", streamID, err)
+				return "", "", "", err
+			}
+			// Check for error in retry response
+			if errMsg2, ok := resp["error"].(map[string]interface{}); ok {
+				turnLog("[STREAM %d] [VK Auth] Token 4 retry still has error: %v", streamID, errMsg2)
+				return "", "", "", fmt.Errorf("VK API error (token4 retry): %v", errMsg2)
+			}
+		} else {
+			turnLog("[STREAM %d] [VK Auth] Token 4 VK API error: %v", streamID, errMsg)
+			return "", "", "", fmt.Errorf("VK API error (token4): %v", errMsg)
+		}
+	} else if err != nil {
+		// Non-VK error (network, DNS, etc.)
 		turnLog("[STREAM %d] [VK Auth] Token 4 request failed: %v", streamID, err)
 		return "", "", "", err
-	}
-	// Check for VK API error in response
-	if errMsg, ok := resp["error"].(map[string]interface{}); ok {
-		turnLog("[STREAM %d] [VK Auth] Token 4 VK API error: %v", streamID, errMsg)
-		return "", "", "", fmt.Errorf("VK API error (token4): %v", errMsg)
 	}
 	responseRaw, ok := resp["response"]
 	if !ok {
