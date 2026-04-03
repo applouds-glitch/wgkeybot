@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -60,11 +61,22 @@ const (
 	cacheSafetyMargin  = 60 * time.Second
 	maxCacheErrors     = 3
 	errorWindow        = 10 * time.Second
-	minRequestInterval = 1 * time.Second // Minimum interval between VK API requests
+	streamsPerCache    = 4                 // Number of streams sharing one credentials cache
 )
+
+// getCacheID returns the shared cache ID for a given stream ID
+func getCacheID(streamID int) int {
+	return streamID / streamsPerCache
+}
 
 // vkRequestMu serializes VK API requests to avoid flood control
 var vkRequestMu sync.Mutex
+
+// vkDelayRandom sleeps for a random duration between minMs and maxMs to avoid bot detection
+func vkDelayRandom(minMs, maxMs int) {
+	ms := minMs + rand.Intn(maxMs-minMs+1)
+	time.Sleep(time.Duration(ms) * time.Millisecond)
+}
 
 // credentialsStore manages per-stream credentials caches
 var credentialsStore = struct {
@@ -74,11 +86,13 @@ var credentialsStore = struct {
 	caches: make(map[int]*StreamCredentialsCache),
 }
 
-// getStreamCache returns or creates a cache for the given stream ID
+// getStreamCache returns or creates a shared cache for the given stream ID
 func getStreamCache(streamID int) *StreamCredentialsCache {
+	cacheID := getCacheID(streamID)
+
 	// Try read lock first for fast path
 	credentialsStore.mu.RLock()
-	cache, exists := credentialsStore.caches[streamID]
+	cache, exists := credentialsStore.caches[cacheID]
 	credentialsStore.mu.RUnlock()
 
 	if exists {
@@ -90,12 +104,12 @@ func getStreamCache(streamID int) *StreamCredentialsCache {
 	defer credentialsStore.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if cache, exists = credentialsStore.caches[streamID]; exists {
+	if cache, exists = credentialsStore.caches[cacheID]; exists {
 		return cache
 	}
 
 	cache = &StreamCredentialsCache{}
-	credentialsStore.caches[streamID] = cache
+	credentialsStore.caches[cacheID] = cache
 	return cache
 }
 
@@ -113,6 +127,7 @@ func isAuthError(err error) bool {
 // Returns true if cache was invalidated, false otherwise.
 func handleAuthError(streamID int) bool {
 	cache := getStreamCache(streamID)
+	cacheID := getCacheID(streamID)
 
 	now := time.Now().Unix()
 
@@ -124,11 +139,11 @@ func handleAuthError(streamID int) bool {
 	count := cache.errorCount.Add(1)
 	cache.lastErrorTime.Store(now)
 
-	turnLog("[STREAM %d] Auth error (count=%d/%d)", streamID, count, maxCacheErrors)
+	turnLog("[STREAM %d] Auth error (cache=%d, count=%d/%d)", streamID, cacheID, count, maxCacheErrors)
 
 	// Invalidate cache only after N errors within the time window
 	if count >= maxCacheErrors {
-		turnLog("[VK Auth] Multiple auth errors detected (%d), invalidating cache for stream %d...", count, streamID)
+		turnLog("[VK Auth] Multiple auth errors detected (%d), invalidating cache %d for stream %d...", count, cacheID, streamID)
 		cache.invalidate(streamID)
 		return true
 	}
@@ -149,35 +164,32 @@ func (c *StreamCredentialsCache) invalidate(streamID int) {
 	turnLog("[STREAM %d] [VK Auth] Credentials cache invalidated", streamID)
 }
 
-// invalidateAllCaches invalidates all per-stream caches (called on network change)
+// invalidateAllCaches invalidates all shared caches (called on network change)
 func invalidateAllCaches() {
 	credentialsStore.mu.Lock()
 	defer credentialsStore.mu.Unlock()
 
-	for streamID, cache := range credentialsStore.caches {
-		cache.invalidate(streamID)
-	}
-
-	// Clear the map to free memory
+	// Clear the map — old caches will be garbage collected
 	credentialsStore.caches = make(map[int]*StreamCredentialsCache)
-	turnLog("[VK Auth] All per-stream caches cleared")
+	turnLog("[VK Auth] All shared caches cleared (streams per cache: %d)", streamsPerCache)
 }
 
-// getVkCreds fetches TURN credentials from VK/OK API with per-stream caching
+// getVkCreds fetches TURN credentials from VK/OK API with shared caching
 func getVkCreds(ctx context.Context, link string, streamID int) (string, string, string, error) {
 	cache := getStreamCache(streamID)
+	cacheID := getCacheID(streamID)
 
-	// Check cache with read lock first (fast path)
-	cache.mutex.RLock()
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	// Check cache — another stream may have populated it while waiting
 	if cache.creds.Link == link && time.Now().Before(cache.creds.ExpiresAt) {
 		expires := time.Until(cache.creds.ExpiresAt)
-		cache.mutex.RUnlock()
-		turnLog("[STREAM %d] [VK Auth] Using cached credentials (expires in %v)", streamID, expires)
+		turnLog("[STREAM %d] [VK Auth] Using cached credentials (cache=%d, expires in %v)", streamID, cacheID, expires)
 		return cache.creds.Username, cache.creds.Password, cache.creds.ServerAddr, nil
 	}
-	cache.mutex.RUnlock()
 
-	turnLog("[STREAM %d] [VK Auth] Cache miss, starting credential fetch...", streamID)
+	turnLog("[STREAM %d] [VK Auth] Cache miss (cache=%d), starting credential fetch...", streamID, cacheID)
 
 	// Check context before long fetch
 	select {
@@ -193,7 +205,6 @@ func getVkCreds(ctx context.Context, link string, streamID int) (string, string,
 	}
 
 	// Store in cache
-	cache.mutex.Lock()
 	cache.creds = TurnCredentials{
 		Username:   user,
 		Password:   pass,
@@ -201,9 +212,8 @@ func getVkCreds(ctx context.Context, link string, streamID int) (string, string,
 		ExpiresAt:  time.Now().Add(credentialLifetime - cacheSafetyMargin),
 		Link:       link,
 	}
-	cache.mutex.Unlock()
 
-	turnLog("[STREAM %d] [VK Auth] Success! Credentials cached until %v", streamID, cache.creds.ExpiresAt)
+	turnLog("[STREAM %d] [VK Auth] Success! Credentials cached until %v (cache=%d)", streamID, cache.creds.ExpiresAt, cacheID)
 	return user, pass, addr, nil
 }
 
@@ -213,7 +223,6 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 	defer vkRequestMu.Unlock()
 
 	user, pass, addr, err := fetchVkCreds(ctx, link, streamID)
-	//time.Sleep(minRequestInterval)
 	return user, pass, addr, err
 }
 
@@ -226,7 +235,6 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 		turnLog("[STREAM %d] [VK Auth] Trying credentials: client_id=%s", streamID, creds.ClientID)
 
 		user, pass, addr, err := getTokenChain(ctx, link, streamID, creds)
-		time.Sleep(minRequestInterval)
 
 		if err == nil {
 			turnLog("[STREAM %d] [VK Auth] Success with client_id=%s", streamID, creds.ClientID)
@@ -246,8 +254,8 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 }
 
 // getTokenChain performs the VK/OK API token chain with given credentials
+// Token 1: messages anonym_token → getCallPreview → Token 2 (getAnonymousToken) → Token 3 (OK session_key) → Token 4 (TURN credentials)
 func getTokenChain(ctx context.Context, link string, streamID int, creds VKCredentials) (string, string, string, error) {
-	//var token1, token2, token3, token4, token5 string
 
 	doRequest := func(data string, requestURL string) (resp map[string]interface{}, err error) {
 		// Resolve host via DNS cache with cascading fallback
@@ -282,20 +290,20 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		// Set original host for HTTP Host header
 		req.Host = domain
 		// Set headers like real VK Web Chrome browser (matching HAR capture)
-		req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "*/*")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 		req.Header.Set("Origin", "https://vk.ru")
 		req.Header.Set("Referer", "https://vk.ru/")
-		req.Header.Set("sec-ch-ua-platform", "\"Linux\"")
-		req.Header.Set("sec-ch-ua", "\"Chromium\";v=\"146\", \"Not-A.Brand\";v=\"24\", \"Google Chrome\";v=\"146\"")
+		req.Header.Set("sec-ch-ua-platform", `"Windows"`)
+		req.Header.Set("sec-ch-ua", `"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"`)
 		req.Header.Set("sec-ch-ua-mobile", "?0")
-		req.Header.Set("DNT", "1")
 		req.Header.Set("Sec-Fetch-Site", "same-site")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
-		req.Header.Set("Sec-GPC", "1")
+		req.Header.Set("DNT", "1")
+		req.Header.Set("Priority", "u=1, i")
 
 		// Create HTTP client with custom TLS config for certificate verification
 		client := &http.Client{
@@ -330,74 +338,45 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		return resp, nil
 	}
 
-
-/*
-    // token 1
-	data := fmt.Sprintf("client_secret=%s&client_id=%s&scopes=audio_anonymous%%2Cvideo_anonymous%%2Cphotos_anonymous%%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=5.247&app_id=%s", creds.ClientSecret, creds.ClientID, creds.ClientID)
-	resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
-	if err != nil {
-		turnLog("[STREAM %d] [VK Auth] Token 1 request failed: %v, response: %v", streamID, err, resp)
-		return "", "", "", err
-	}
-	turnLog("[STREAM %d] [VK Auth] Token 1 response: %v", streamID, resp)
-	dataMap, ok := resp["data"].(map[string]interface{})
-	if !ok || dataMap == nil {
-		turnLog("[STREAM %d] [VK Auth] Invalid data structure in response", streamID)
-		return "", "", "", fmt.Errorf("invalid response structure for token1: %v", resp)
-	}
-	token1, ok := dataMap["access_token"].(string)
-	if !ok {
-		turnLog("[STREAM %d] [VK Auth] access_token not found in data: %v", streamID, dataMap)
-		return "", "", "", fmt.Errorf("token1 not found in response: %v", resp)
-	}
-	turnLog("[STREAM %d] [VK Auth] Token 1 (anonym_token) received", streamID)
-
-    // token 2
-	data = fmt.Sprintf("access_token=%s", token1)
-	resp, err = doRequest(data, fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload?v=5.264&client_id=%s", creds.ClientID))
-	if err != nil { return "", "", "", err }
-	responseMap := resp["response"].(map[string]interface{})
-	if responseMap == nil { return "", "", "", fmt.Errorf("invalid response structure for token2: %v", resp) }
-	token2, ok := responseMap["payload"].(string)
-	if !ok { return "", "", "", fmt.Errorf("token2 not found in response: %v", resp) }
-	turnLog("[STREAM %d] [VK Auth] Token 2 (payload) received", streamID)
-*/
-    // token 3
+	// Token 1 (messages anonym_token)
 	data := fmt.Sprintf("client_id=%s&token_type=messages&client_secret=%s&version=1&app_id=%s", creds.ClientID, creds.ClientSecret, creds.ClientID)
 	resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
 	if err != nil {
-		turnLog("[STREAM %d] [VK Auth] Token 3 request failed: %v", streamID, err)
+		turnLog("[STREAM %d] [VK Auth] Token 1 request failed: %v", streamID, err)
 		return "", "", "", err
 	}
 	// Check for VK API error in response
 	if errMsg, ok := resp["error"].(map[string]interface{}); ok {
-		turnLog("[STREAM %d] [VK Auth] Token 3 VK API error: %v", streamID, errMsg)
-		return "", "", "", fmt.Errorf("VK API error (token3): %v", errMsg)
+		turnLog("[STREAM %d] [VK Auth] Token 1 VK API error: %v", streamID, errMsg)
+		return "", "", "", fmt.Errorf("VK API error (token1): %v", errMsg)
 	}
 	dataRaw, ok := resp["data"]
 	if !ok {
-		turnLog("[STREAM %d] [VK Auth] Token 3: 'data' field not found in response: %v", streamID, resp)
-		return "", "", "", fmt.Errorf("invalid response structure for token3: 'data' not found")
+		turnLog("[STREAM %d] [VK Auth] Token 1: 'data' field not found in response: %v", streamID, resp)
+		return "", "", "", fmt.Errorf("invalid response structure for token1: 'data' not found")
 	}
 	dataMap, ok := dataRaw.(map[string]interface{})
 	if !ok || dataMap == nil {
-		turnLog("[STREAM %d] [VK Auth] Token 3: invalid data type: %T", streamID, dataRaw)
-		return "", "", "", fmt.Errorf("invalid response structure for token3: %v", resp)
+		turnLog("[STREAM %d] [VK Auth] Token 1: invalid data type: %T", streamID, dataRaw)
+		return "", "", "", fmt.Errorf("invalid response structure for token1: %v", resp)
 	}
-	token3Raw, ok := dataMap["access_token"]
+	token1Raw, ok := dataMap["access_token"]
 	if !ok {
-		turnLog("[STREAM %d] [VK Auth] Token 3: 'access_token' field not found in data: %v", streamID, dataMap)
-		return "", "", "", fmt.Errorf("token3 not found in response: %v", resp)
+		turnLog("[STREAM %d] [VK Auth] Token 1: 'access_token' field not found in data: %v", streamID, dataMap)
+		return "", "", "", fmt.Errorf("token1 not found in response: %v", resp)
 	}
-	token3, ok := token3Raw.(string)
+	token1, ok := token1Raw.(string)
 	if !ok {
-		turnLog("[STREAM %d] [VK Auth] Token 3: 'access_token' is not a string: %T", streamID, token3Raw)
-		return "", "", "", fmt.Errorf("token3 is not a string: %v", token3Raw)
+		turnLog("[STREAM %d] [VK Auth] Token 1: 'access_token' is not a string: %T", streamID, token1Raw)
+		return "", "", "", fmt.Errorf("token1 is not a string: %v", token1Raw)
 	}
-	turnLog("[STREAM %d] [VK Auth] Token 3 (anonym_token) received", streamID)
+	turnLog("[STREAM %d] [VK Auth] Token 1 (anonym_token) received", streamID)
+
+	// Token 1 → getCallPreview
+	vkDelayRandom(100, 200)
 
     // getCallPreview - emulate browser behavior (HAR entry 189)
-	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&fields=photo_200&access_token=%s", url.QueryEscape(link), token3)
+	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&fields=photo_200&access_token=%s", url.QueryEscape(link), token1)
 	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getCallPreview?v=5.275&client_id="+creds.ClientID)
 	if err != nil {
 		turnLog("[STREAM %d] [VK Auth] getCallPreview request failed: %v", streamID, err)
@@ -405,8 +384,11 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 	    turnLog("[STREAM %d] [VK Auth] getCallPreview completed (optional)", streamID)
     }
 
-    // token 4
-	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", url.QueryEscape(link), token3)
+	// getCallPreview → Token 2
+	vkDelayRandom(500, 1000)
+
+    // Token 2 (getAnonymousToken)
+	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", url.QueryEscape(link), token1)
 	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.275&client_id=%s", creds.ClientID)
 	resp, err = doRequest(data, urlAddr)
 	// Check for VK API error in response (doRequest returns both resp and err)
@@ -414,17 +396,17 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		// Check if it's a captcha error that we can solve
 		captchaErr := ParseVkCaptchaError(errMsg)
 		if captchaErr != nil && captchaErr.IsCaptchaError() {
-			turnLog("[STREAM %d] [VK Auth] Token 4: Captcha detected, solving...", streamID)
+			turnLog("[STREAM %d] [VK Auth] Token 2: Captcha detected, solving...", streamID)
 
 			// Solve the captcha
 			successToken, solveErr := solveVkCaptcha(ctx, captchaErr, streamID)
 			if solveErr != nil {
-				turnLog("[STREAM %d] [VK Auth] Token 4: Captcha solving failed: %v", streamID, solveErr)
+				turnLog("[STREAM %d] [VK Auth] Token 2: Captcha solving failed: %v", streamID, solveErr)
 				return "", "", "", fmt.Errorf("captcha solving failed: %w", solveErr)
 			}
 
-			// Retry Token 4 with captcha solution parameters (as in HAR entry 259)
-			turnLog("[STREAM %d] [VK Auth] Token 4: Retrying with captcha solution...", streamID)
+			// Retry Token 2 with captcha solution parameters (as in HAR entry 259)
+			turnLog("[STREAM %d] [VK Auth] Token 2: Retrying with captcha solution...", streamID)
 			data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123"+
 				"&captcha_key="+
 				"&captcha_sid=%s"+
@@ -438,84 +420,90 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 				successToken,
 				captchaErr.CaptchaTs,
 				captchaErr.CaptchaAttempt,
-				token3)
+				token1)
 			resp, err = doRequest(data, urlAddr)
 			if err != nil {
-				turnLog("[STREAM %d] [VK Auth] Token 4 retry failed: %v", streamID, err)
+				turnLog("[STREAM %d] [VK Auth] Token 2 retry failed: %v", streamID, err)
 				return "", "", "", err
 			}
 			// Check for error in retry response
 			if errMsg2, ok := resp["error"].(map[string]interface{}); ok {
-				turnLog("[STREAM %d] [VK Auth] Token 4 retry still has error: %v", streamID, errMsg2)
-				return "", "", "", fmt.Errorf("VK API error (token4 retry): %v", errMsg2)
+				turnLog("[STREAM %d] [VK Auth] Token 2 retry still has error: %v", streamID, errMsg2)
+				return "", "", "", fmt.Errorf("VK API error (token2 retry): %v", errMsg2)
 			}
 		} else {
-			turnLog("[STREAM %d] [VK Auth] Token 4 VK API error: %v", streamID, errMsg)
-			return "", "", "", fmt.Errorf("VK API error (token4): %v", errMsg)
+			turnLog("[STREAM %d] [VK Auth] Token 2 VK API error: %v", streamID, errMsg)
+			return "", "", "", fmt.Errorf("VK API error (token2): %v", errMsg)
 		}
 	} else if err != nil {
 		// Non-VK error (network, DNS, etc.)
-		turnLog("[STREAM %d] [VK Auth] Token 4 request failed: %v", streamID, err)
+		turnLog("[STREAM %d] [VK Auth] Token 2 request failed: %v", streamID, err)
 		return "", "", "", err
 	}
 	responseRaw, ok := resp["response"]
 	if !ok {
-		turnLog("[STREAM %d] [VK Auth] Token 4: 'response' field not found in response: %v", streamID, resp)
-		return "", "", "", fmt.Errorf("invalid response structure for token4: 'response' not found")
+		turnLog("[STREAM %d] [VK Auth] Token 2: 'response' field not found in response: %v", streamID, resp)
+		return "", "", "", fmt.Errorf("invalid response structure for token2: 'response' not found")
 	}
 	responseMap, ok := responseRaw.(map[string]interface{})
 	if !ok || responseMap == nil {
-		turnLog("[STREAM %d] [VK Auth] Token 4: invalid response type: %T", streamID, responseRaw)
-		return "", "", "", fmt.Errorf("invalid response structure for token4: %v", resp)
+		turnLog("[STREAM %d] [VK Auth] Token 2: invalid response type: %T", streamID, responseRaw)
+		return "", "", "", fmt.Errorf("invalid response structure for token2: %v", resp)
 	}
-	token4Raw, ok := responseMap["token"]
+	token2Raw, ok := responseMap["token"]
 	if !ok {
-		turnLog("[STREAM %d] [VK Auth] Token 4: 'token' field not found in response: %v", streamID, responseMap)
-		return "", "", "", fmt.Errorf("token4 not found in response: %v", resp)
+		turnLog("[STREAM %d] [VK Auth] Token 2: 'token' field not found in response: %v", streamID, responseMap)
+		return "", "", "", fmt.Errorf("token2 not found in response: %v", resp)
 	}
-	token4, ok := token4Raw.(string)
+	token2, ok := token2Raw.(string)
 	if !ok {
-		turnLog("[STREAM %d] [VK Auth] Token 4: 'token' is not a string: %T", streamID, token4Raw)
-		return "", "", "", fmt.Errorf("token4 is not a string: %v", token4Raw)
+		turnLog("[STREAM %d] [VK Auth] Token 2: 'token' is not a string: %T", streamID, token2Raw)
+		return "", "", "", fmt.Errorf("token2 is not a string: %v", token2Raw)
 	}
-	turnLog("[STREAM %d] [VK Auth] Token 4 (messages token) received", streamID)
+	turnLog("[STREAM %d] [VK Auth] Token 2 (messages token) received", streamID)
 
-    // token 5 (auth.anonymLogin - independent request, doesn't need token4)
+	// Token 2 → Token 3
+	vkDelayRandom(100, 200)
+
+    // Token 3 (auth.anonymLogin - independent request, doesn't need token2)
 	sessionData := fmt.Sprintf(`{"version":2,"device_id":"%s","client_version":1.1,"client_type":"SDK_JS"}`, uuid.New())
 	data = fmt.Sprintf("session_data=%s&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA", url.QueryEscape(sessionData))
 	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
 	if err != nil {
-		turnLog("[STREAM %d] [VK Auth] Token 5 request failed: %v", streamID, err)
+		turnLog("[STREAM %d] [VK Auth] Token 3 request failed: %v", streamID, err)
 		return "", "", "", err
 	}
 	// Check for error in response
 	if errMsg, ok := resp["error"].(string); ok && errMsg != "" {
-		turnLog("[STREAM %d] [VK Auth] Token 5 API error: %s", streamID, errMsg)
-		return "", "", "", fmt.Errorf("Token 5 API error: %s", errMsg)
+		turnLog("[STREAM %d] [VK Auth] Token 3 API error: %s", streamID, errMsg)
+		return "", "", "", fmt.Errorf("Token 3 API error: %s", errMsg)
 	}
-	token5Raw, ok := resp["session_key"]
+	token3Raw, ok := resp["session_key"]
 	if !ok {
-		turnLog("[STREAM %d] [VK Auth] Token 5: 'session_key' field not found in response: %v", streamID, resp)
-		return "", "", "", fmt.Errorf("token5 not found in response: %v", resp)
+		turnLog("[STREAM %d] [VK Auth] Token 3: 'session_key' field not found in response: %v", streamID, resp)
+		return "", "", "", fmt.Errorf("token3 not found in response: %v", resp)
 	}
-	token5, ok := token5Raw.(string)
+	token3, ok := token3Raw.(string)
 	if !ok {
-		turnLog("[STREAM %d] [VK Auth] Token 5: 'session_key' is not a string: %T", streamID, token5Raw)
-		return "", "", "", fmt.Errorf("token5 is not a string: %v", token5Raw)
+		turnLog("[STREAM %d] [VK Auth] Token 3: 'session_key' is not a string: %T", streamID, token3Raw)
+		return "", "", "", fmt.Errorf("token3 is not a string: %v", token3Raw)
 	}
-	turnLog("[STREAM %d] [VK Auth] Token 5 (session_key) received", streamID)
+	turnLog("[STREAM %d] [VK Auth] Token 3 (session_key) received", streamID)
 
-    // final 6
-	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&capabilities=2F7F&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", url.QueryEscape(link), token4, token5)
+	// Token 3 → Token 4
+	vkDelayRandom(100, 200)
+
+    // Token 4 (vchat.joinConversationByLink → TURN credentials)
+	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&capabilities=2F7F&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", url.QueryEscape(link), token2, token3)
 	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
 	if err != nil {
-		turnLog("[STREAM %d] [VK Auth] Final request failed: %v", streamID, err)
+		turnLog("[STREAM %d] [VK Auth] Token 4 request failed: %v", streamID, err)
 		return "", "", "", err
 	}
 	// Check for error in response
 	if errMsg, ok := resp["error"].(string); ok && errMsg != "" {
-		turnLog("[STREAM %d] [VK Auth] Final API error: %s", streamID, errMsg)
-		return "", "", "", fmt.Errorf("Final API error: %s", errMsg)
+		turnLog("[STREAM %d] [VK Auth] Token 4 API error: %s", streamID, errMsg)
+		return "", "", "", fmt.Errorf("Token 4 API error: %s", errMsg)
 	}
 	turnLog("[STREAM %d] [VK Auth] TURN credentials received", streamID)
 
@@ -583,5 +571,9 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		turnLog("[STREAM %d] [VK Auth] 'credential' is not a valid string: %T", streamID, credentialRaw)
 		return "", "", "", fmt.Errorf("credential not found in turn_server: %v", ts)
 	}
+
+	// Final delay before returning credentials (matching client behavior)
+	vkDelayRandom(5000, 5000)
+
 	return username, credential, address, nil
 }
