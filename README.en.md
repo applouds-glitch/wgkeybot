@@ -13,8 +13,11 @@ Unauthorized use of the VK Calls infrastructure (TURN servers) without explicit 
 ## Key Features
 
 - **Native Integration**: The TURN client is integrated directly into `libwg-go.so` for maximum performance and minimal battery impact.
-- **VK Authentication**: Automated retrieval of TURN credentials via VK Calls anonymous tokens.
+- **Two Authentication Modes**:
+  - **VK Link** — Automated retrieval of TURN credentials via VK Calls anonymous tokens.
+  - **WB** — Automated retrieval of TURN credentials via WB Stream API (guest registration → room creation → LiveKit ICE).
 - **Multi-Stream Load Balancing**: High performance and reliability with parallel DTLS streams, Session ID aggregation, and round-robin outbound balancing.
+- **Custom DNS Resolver**: All HTTP and WebSocket requests go through a built-in DNS resolver with socket protection via VPN.
 - **MTU Optimization**: Automatic MTU adjustment to 1280 when using TURN to ensure encapsulated packets fit standard network limits.
 - **Auto-Reconnect on Network Change**: Automatic TURN restart when switching between WiFi and 4G/5G with debounce protection.
 - **Fast Network Recovery**: DNS and HTTP connection reset on network change for quick reconnection.
@@ -52,6 +55,7 @@ AllowedIPs = 0.0.0.0/0
 #@wgt:UseUDP = false
 #@wgt:IPPort = 1.2.3.4:56000
 #@wgt:VKLink = https://vk.com/call/join/...
+#@wgt:Mode = vk_link              # Auth mode: vk_link or wb
 #@wgt:StreamNum = 4
 #@wgt:LocalPort = 9000
 
@@ -61,7 +65,7 @@ AllowedIPs = 0.0.0.0/0
 #@wgt:NoDTLS = false                # Disable DTLS (for direct WireGuard server access)
 ```
 
-**Note:** `NoDTLS = true` mode is intended for debugging or direct connection to WireGuard server via TURN. It is incompatible with the proxy server which requires DTLS handshake.
+**Note:** `NoDTLS = false` (default) enables DTLS encryption. Set `NoDTLS = true` only for debugging or direct connection to WireGuard server via TURN without obfuscation.
 
 For more technical details, see [info/TURN_INTEGRATION_DETAILS.md](info/TURN_INTEGRATION_DETAILS.md).
 

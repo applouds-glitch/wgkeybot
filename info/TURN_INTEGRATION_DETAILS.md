@@ -13,10 +13,11 @@
 7. [Хранение настроек](#7-хранение-настроек)
 8. [Архитектура запуска TURN](#8-архитектура-запуска-turn)
 9. [PhysicalNetworkMonitor](#9-physicalnetworkmonitor)
-10. [VK Auth Flow](#10-vk-auth-flow)
-11. [Метрики и диагностика](#11-метрики-и-диагностика)
-12. [DNS Resolver](#12-dns-resolver)
-13. [Per-Stream Кэширование Credentials](#13-per-stream-кэширование-credentials)
+10. [Режимы получения credentials](#10-режимы-получения-credentials)
+11. [VK Auth Flow](#11-vk-auth-flow)
+12. [Метрики и диагностика](#12-метрики-и-диагностика)
+13. [DNS Resolver](#13-dns-resolver)
+14. [Per-Stream Кэширование Credentials](#14-per-stream-кэширование-credentials)
 
 ---
 
@@ -52,7 +53,6 @@
   - Пакеты направляются в первый доступный ready-поток
 
 - **Интегрированная авторизация VK**: Реализован полный цикл получения токенов (VK Calls -> OK.ru -> TURN credentials) внутри Go.
-  - 5-ступенчатый процесс авторизации через VK API и OK.ru
   - Использование `turnHTTPClient` с protected sockets
 
 - **Кэширование TURN credentials (per-stream)**: Каждый поток (stream) имеет свой собственный кэш credentials. Это повышает изоляцию и стабильность работы при множественных потоках.
@@ -127,7 +127,7 @@
 ### `ui/src/main/java/com/wireguard/android/turn/TurnProxyManager.kt`
 
 - **`TurnSettings`**: Модель данных для настроек прокси (VK Link, Peer, Port, Streams).
-  - Данные: `enabled`, `peer`, `vkLink`, `streams`, `useUdp`, `localPort`, `turnIp`, `turnPort`, `noDtls`
+  - Данные: `enabled`, `peer`, `vkLink`, `mode`, `streams`, `useUdp`, `localPort`, `turnIp`, `turnPort`, `noDtls`
   - Методы: `toComments()`, `fromComments()`, `validate()`
 
 - **`TurnConfigProcessor`**: Логика инъекции/извлечения настроек из текста конфигурации. Метод `modifyConfigForActiveTurn` динамически подменяет `Endpoint` на `127.0.0.1`, **принудительно устанавливает MTU в 1280**, и **PersistentKeepalive=25** (для DTLS режима) для компенсации оверхеда инкапсуляции и поддержания соединения.
@@ -386,7 +386,7 @@ GoBackend.setStateInternal()
     → wgTurnProxyStart(..., networkHandle) ← Запуск TURN с handle сети
       → update_current_network() в JNI      ← Кэширование Network object
       → wgNotifyNetworkChange()             ← Инициализация resolver и HTTP client
-      → VK Auth для получения credentials   ← 5-ступенчатый процесс
+      → VK Auth для получения credentials
       → Подключение к TURN серверу (4 потока)
       → DTLS handshake для каждого потока  ← 10с таймаут
       → Session ID handshake (17 байт)     ← UUID + Stream ID
@@ -481,38 +481,123 @@ scope.launch {
 
 ---
 
-## 10. VK Auth Flow
+## 10. Режимы получения credentials
 
-### 5-ступенчатый процесс авторизации
+### Обзор
 
-1. **VK Anonym Token (Step 1)**
-   - URL: `https://login.vk.ru/?act=get_anonym_token`
-   - Params: `client_secret`, `client_id`, `scopes`, `app_id`
-   - Result: `token1` (access_token)
-   - DNS resolution через `hostCache.Resolve()` с защитой сокета
+TURN клиент поддерживает два режима получения TURN credentials, выбираемых через UI:
 
-2. **VK Calls Payload (Step 2)**
-   - URL: `https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload`
-   - Params: `access_token=token1`
-   - Result: `token2` (payload)
-   - HTTP клиент с `protectControl` и TLS config (ServerName для certificate verification)
+| Параметр | VK Link | WB |
+|----------|---------|-----|
+| **Описание** | Получение кредов через VK/OK API | Получение кредов через WB Stream (LiveKit ICE) |
+| **Требует vkLink** | Да (ссылка на VK call) | Нет |
+| **Протокол** | HTTP API VK/OK | WebSocket + LiveKit ICE |
+| **Файл** | `vk.go` | `wb.go` |
 
-3. **VK Anonym Token (Step 2.5)**
-   - URL: `https://login.vk.ru/?act=get_anonym_token`
-   - Params: `client_id`, `token_type=messages`, `payload=token2`, `client_secret`
-   - Result: `token3` (access_token для calls)
+### UI выбор режима
 
-4. **VK Calls Token (Step 3)**
-   - URL: `https://api.vk.ru/method/calls.getAnonymousToken`
-   - Params: `vk_join_link`, `access_token=token3`
-   - Result: `token4` (anonym token для OK.ru)
+В редакторе туннеля (TunnelEditorFragment) добавлен **Spinner** для выбора режима:
+- **VK Link** — отображается поле для ввода VK Calls link
+- **WB** — поле VK Link скрыто (не требуется)
 
-5. **OK.ru Authentication (Step 4-5)**
-   - URL: `https://calls.okcdn.ru/fb.do`
-   - Step 4.1: `auth.anonymLogin` с `session_data` → `token5` (session_key)
-   - Step 4.2: `vchat.joinConversationByLink` с `joinLink`, `anonymToken=token4`, `session_key=token5`
-   - Result: TURN credentials (`username`, `credential`, `urls`)
-   - TURN server address resolution через `hostCache.Resolve()`
+В режиме просмотра (TunnelDetailFragment) отображается текущий режим и скрывается VK Link для режима WB.
+
+### Режим VK Link
+
+При `mode = "vk_link"`:
+1. Пользователь вводит ссылку на VK call (например `https://vk.ru/call/join/...`)
+2. `getVkCreds()` выполняет цепочку API вызовов:
+   - Token 1: `login.vk.ru/?act=get_anonym_token` (messages anonym_token)
+   - getCallPreview: `api.vk.ru/method/calls.getCallPreview`
+   - Token 2: `api.vk.ru/method/calls.getAnonymousToken`
+   - Token 3: `calls.okcdn.ru/fb.do` (auth.anonymLogin)
+   - Token 4: `calls.okcdn.ru/fb.do` (vchat.joinConversationByLink → TURN credentials)
+3. Полученные credentials (username, password, serverAddr) кэшируются на 10 минут
+
+**Файл:** `tunnel/tools/libwg-go/vk.go`
+
+### Режим WB (Wildberries)
+
+При `mode = "wb"`:
+1. `wbFetch()` не требует vkLink (параметр игнорируется)
+2. Выполняется полный цикл WB Stream:
+   - Guest register: `/auth/api/v1/auth/user/guest-register`
+   - Create room: `/api-room/api/v2/room`
+   - Join room: `/api-room/api/v1/room/{roomId}/join`
+   - Get room token: `/api-room-manager/api/v1/room/{roomId}/token`
+   - LiveKit ICE: WebSocket `wss://wbstream01-el.wb.ru:7880/rtc` → парсинг protobuf → TURN credentials
+3. Полученные credentials кэшируются на 10 минут
+
+**Файл:** `tunnel/tools/libwg-go/wb.go`
+
+### Архитектура выбора режима
+
+**Go backend (`turn-client.go`):**
+```go
+var globalGetCreds getCredsFunc  // Глобальная функция для получения кредов
+
+func wgTurnProxyStart(..., modeC *C.char, ...) int32 {
+    mode := C.GoString(modeC)
+    
+    if mode == "wb" {
+        globalGetCreds = func(ctx, link, streamID) {
+            return getCredsCached(ctx, link, streamID, wbFetch)
+        }
+    } else {
+        globalGetCreds = func(ctx, lk, streamID) {
+            return getCredsCached(ctx, lk, streamID, func(ctx, l) {
+                return getVkCreds(ctx, l, streamID)
+            })
+        }
+    }
+}
+```
+
+**Stream.run()** использует `globalGetCreds` вместо жёсткого вызова `getVkCreds`:
+```go
+func (s *stream) run(link string, ...) {
+    user, pass, addr, err := globalGetCreds(sCtx, link, s.id)
+    // ...
+}
+```
+
+### Разделение файлов Go backend
+
+Для лучшей организации кода `turn-credentials.go` разделён на три файла:
+
+| Файл | Содержимое |
+|------|------------|
+| `credentials.go` | Общие типы (`TurnCredentials`, `StreamCredentialsCache`), кэширование (`getCredsCached`, `serializeFetch`), `fetchMu`, константы |
+| `vk.go` | VK-специфичная логика (`VKCredentials`, `getVkCreds`, `fetchVkCreds`, `getTokenChain`, `vkDelayRandom`) |
+| `wb.go` | WB-специфичная логика (`WbTurnCred`, `wbFetch`, `fetchWbCreds`, `wbLkICE`, протобуф-парсеры `wbPbVar`, `wbPbAll`, `wbPbStr`, `wbPbICE`, `wbDedup`) |
+
+### Формат хранения режима
+
+Режим сохраняется в конфиге WireGuard:
+```
+#@wgt:Mode = vk_link
+```
+или
+```
+#@wgt:Mode = wb
+```
+
+А также в JSON файле настроек `<tunnel>.turn.json`:
+```json
+{
+  "enabled": true,
+  "peer": "89.250.227.41:56000",
+  "vkLink": "https://vk.com/call/join/...",
+  "mode": "vk_link",
+  "streams": 4,
+  "useUdp": false,
+  "localPort": 9000
+}
+```
+
+---
+
+## 11. VK Auth Flow
 
 ### Кэширование credentials
 
@@ -709,7 +794,6 @@ credentialsStore (RWMutex)
 5. `Lock()` — запись новых credentials в кэш
 
 **`fetchVkCreds(ctx, link, streamID)`**:
-- Выполняет 5-ступенчатый VK Auth Flow
 - HTTP-запросы к VK API и OK.ru
 - Разрешение доменов через `hostCache.Resolve()`
 - Возвращает username, password, serverAddr
