@@ -30,6 +30,7 @@
 Этот проект построен на базе:
 1. **[Official WireGuard Android](https://git.zx2c4.com/wireguard-android)** — основное приложение VPN и пользовательский интерфейс.
 2. **[vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)** — серверная часть прокси (v2), необходимая для работы данного клиента.
+3. **[lionheart](https://github.com/jaykaiperson/lionheart)** — исходная реализация режима WB для получения TURN credentials.
 
 > **Важно**: Для корректной работы этого клиента (агрегация потоков по Session ID) необходимо использовать серверную часть из форка [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy).
 
@@ -58,16 +59,20 @@ AllowedIPs = 0.0.0.0/0
 #@wgt:IPPort = 1.2.3.4:56000
 #@wgt:VKLink = https://vk.com/call/join/...
 #@wgt:Mode = vk_link              # Режим авторизации: vk_link или wb
+#@wgt:PeerType = proxy_v2          # proxy_v2 | proxy_v1 | wireguard
 #@wgt:StreamNum = 4
 #@wgt:LocalPort = 9000
+#@wgt:StreamsPerCred = 4           # Потоков на один кэш credentials
 
 # Advanced settings (optional)
 #@wgt:TurnIP = 155.212.199.166      # Переопределить IP TURN сервера
 #@wgt:TurnPort = 19302              # Переопределить порт TURN сервера
-#@wgt:NoDTLS = false                # Отключить DTLS (для прямого доступа к серверу WireGuard)
 ```
 
-**Примечание:** Режим `NoDTLS = false` (по умолчанию) включает шифрование DTLS. Установка `NoDTLS = true` предназначена для отладки или прямого подключения к WireGuard серверу через TURN без обфускации.
+**Примечание:** Параметр `PeerType` определяет режим работы:
+- `proxy_v2` (по умолчанию) — DTLS с передачей Session ID для агрегации потоков
+- `proxy_v1` — DTLS без Session ID handshake
+- `wireguard` — без DTLS, прямой relay (для отладки или прямого подключения)
 
 Для получения подробной технической информации см. [info/TURN_INTEGRATION_DETAILS.md](info/TURN_INTEGRATION_DETAILS.md).
 

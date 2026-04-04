@@ -100,7 +100,8 @@ public final class TurnBackend {
             String listenAddr,
             String turnIp,
             int turnPort,
-            int noDtls,
+            String peerType,
+            int streamsPerCred,
             long networkHandle
     );
     public static native void wgTurnProxyStop();

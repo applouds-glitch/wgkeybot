@@ -35,12 +35,13 @@ const (
 	cacheSafetyMargin  = 60 * time.Second
 	maxCacheErrors     = 3
 	errorWindow        = 10 * time.Second
-	streamsPerCache    = 4 // Number of streams sharing one credentials cache
 )
+
+var streamsPerCred = 4 // Number of streams sharing one credentials cache
 
 // getCacheID returns the shared cache ID for a given stream ID
 func getCacheID(streamID int) int {
-	return streamID / streamsPerCache
+	return streamID / streamsPerCred
 }
 
 // credentialsStore manages per-stream credentials caches
@@ -136,7 +137,7 @@ func invalidateAllCaches() {
 
 	// Clear the map — old caches will be garbage collected
 	credentialsStore.caches = make(map[int]*StreamCredentialsCache)
-	turnLog("[VK Auth] All shared caches cleared (streams per cache: %d)", streamsPerCache)
+	turnLog("[VK Auth] All shared caches cleared (streams per cred: %d)", streamsPerCred)
 }
 
 // fetchMu serializes credential fetching to avoid API rate limiting

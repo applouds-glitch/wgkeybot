@@ -267,6 +267,17 @@
         <item>@string/turn_mode_vk_link</item>
         <item>@string/turn_mode_wb</item>
     </string-array>
+    <string name="turn_peer_type">Peer type</string>
+    <string name="turn_peer_address">Peer address</string>
+    <string-array name="turn_peer_type_options">
+        <item>@string/turn_peer_type_proxy_v2</item>
+        <item>@string/turn_peer_type_proxy_v1</item>
+        <item>@string/turn_peer_type_wireguard</item>
+    </string-array>
+    <string name="turn_peer_type_proxy_v2">Proxy v2</string>
+    <string name="turn_peer_type_proxy_v1">Proxy v1</string>
+    <string name="turn_peer_type_wireguard">WireGuard</string>
+    <string name="turn_server_mode">TURN server</string>
     <string name="turn_mode_vk_link">VK Link</string>
     <string name="turn_mode_wb">WB</string>
     <string name="turn_peer">Peer</string>
@@ -283,5 +294,6 @@
     <string name="turn_ip_hint">(auto)</string>
     <string name="turn_port">Turn port</string>
     <string name="turn_port_hint">(auto)</string>
-    <string name="turn_no_dtls">No DTLS (not recommended)</string>
+    <string name="turn_streams_per_cred">Streams per credentials</string>
+    <string name="turn_streams_per_cred_hint">1-16 (default 4)</string>
 </resources>
