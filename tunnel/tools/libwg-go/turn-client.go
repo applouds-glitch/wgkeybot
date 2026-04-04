@@ -102,7 +102,7 @@ var (
 	noDtlsRxErrorCount atomic.Uint64     // Errors in NoDTLS RX
 )
 
-func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- struct{}, turnIp string, turnPort int, noDtls bool) {
+func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- struct{}, turnIp string, turnPort int, peerType string) {
 	for {
 		select {
 		case <-s.ctx.Done(): return
@@ -184,10 +184,12 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 			turnLog("[STREAM %d] Allocated relay address: %s", s.id, relayConn.LocalAddr())
 
 			// Delegate to mode-specific handler
-			if noDtls {
+			if peerType == "wireguard" {
 				return s.runNoDTLS(sCtx, relayConn, peer, okchan)
 			}
-			return s.runDTLS(sCtx, relayConn, peer, okchan)
+			// proxy_v2 and proxy_v1 both use DTLS, but v2 sends session+stream handshake
+			sendHandshake := peerType != "proxy_v1"
+			return s.runDTLS(sCtx, relayConn, peer, okchan, sendHandshake)
 		}()
 
 		if err != nil && s.ctx.Err() == nil {
@@ -261,7 +263,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 }
 
 // runDTLS handles packet relay with DTLS obfuscation
-func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr, okchan chan<- struct{}) error {
+func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr, okchan chan<- struct{}, sendHandshake bool) error {
 	sCtx, sCancel := context.WithCancel(ctx)
 	defer sCancel()
 
@@ -354,16 +356,18 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	dtlsConn.SetDeadline(time.Time{})
 	turnLog("[STREAM %d] DTLS handshake SUCCESS", s.id)
 
-	// Session ID + Stream ID Handshake (17 bytes total)
-	dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	handshakeBuf := make([]byte, 17)
-	copy(handshakeBuf[:16], s.sessionID)
-	handshakeBuf[16] = byte(s.id)
+	// Session ID + Stream ID Handshake (17 bytes total) — only for Proxy v2
+	if sendHandshake {
+		dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		handshakeBuf := make([]byte, 17)
+		copy(handshakeBuf[:16], s.sessionID)
+		handshakeBuf[16] = byte(s.id)
 
-	if _, err := dtlsConn.Write(handshakeBuf); err != nil {
-		return fmt.Errorf("session ID handshake failed: %w", err)
+		if _, err := dtlsConn.Write(handshakeBuf); err != nil {
+			return fmt.Errorf("session ID handshake failed: %w", err)
+		}
+		dtlsConn.SetWriteDeadline(time.Time{})
 	}
-	dtlsConn.SetWriteDeadline(time.Time{})
 
 	s.ready.Store(true)
 	select { case okchan <- struct{}{}: default: }
@@ -433,7 +437,7 @@ var turnMutex sync.Mutex
 // Global credentials function for mode selection (set by wgTurnProxyStart)
 var globalGetCreds getCredsFunc
 //export wgTurnProxyStart
-func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, noDtlsC C.int, networkHandleC C.longlong) int32 {
+func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, networkHandleC C.longlong) int32 {
 	// Force initialization of resolver and HTTP client with current environment
 	wgNotifyNetworkChange()
 
@@ -443,10 +447,11 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	listenAddr := C.GoString(listenAddrC)
 	turnIp := C.GoString(turnIpC)
 	turnPort := int(turnPortC)
-	noDtls := int(noDtlsC) != 0
+	peerType := C.GoString(peerTypeC)
+	streamsPerCred = int(streamsPerCredC)
 	networkHandle := int64(networkHandleC)
 
-	turnLog("[PROXY] Hub starting on %s (streams=%d, mode=%s, noDtls=%v, networkHandle=%d)", listenAddr, int(n), mode, noDtls, networkHandle)
+	turnLog("[PROXY] Hub starting on %s (streams=%d, mode=%s, peerType=%s, streamsPerCred=%d, networkHandle=%d)", listenAddr, int(n), mode, peerType, streamsPerCred, networkHandle)
 	turnMutex.Lock()
 	if currentTurnCancel != nil { currentTurnCancel() }
 	ctx, cancel := context.WithCancel(context.Background())
@@ -455,7 +460,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 
 	// Setup credentials function based on mode
 	if mode == "wb" {
-		turnLog("[PROXY] Using WB (Wildberries) credential mode")
+		turnLog("[PROXY] Using WB credential mode")
 		globalGetCreds = func(ctx context.Context, link string, streamID int) (string, string, string, error) {
 			return getCredsCached(ctx, link, streamID, wbFetch)
 		}
@@ -524,7 +529,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	streams := make([]*stream, int(n))
 	for i := 0; i < int(n); i++ {
 		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 512), out: lc, sessionID: sessionID, cert: &cert}
-		go streams[i].run(link, peer, udp != 0, ok, turnIp, turnPort, noDtls)
+		go streams[i].run(link, peer, udp != 0, ok, turnIp, turnPort, peerType)
 		time.Sleep(200 * time.Millisecond)
 	}
 

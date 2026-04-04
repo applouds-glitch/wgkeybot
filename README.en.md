@@ -28,6 +28,7 @@ Unauthorized use of the VK Calls infrastructure (TURN servers) without explicit 
 This project is built upon the foundations laid by:
 1. **[Official WireGuard Android](https://git.zx2c4.com/wireguard-android)** — The core VPN application and user interface.
 2. **[vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)** — The proxy server implementation (v2) required for this client.
+3. **[lionheart](https://github.com/jaykaiperson/lionheart)** — The original WB mode implementation for TURN credentials retrieval.
 
 > **Important**: This client requires the server-side implementation from the [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy) fork to function correctly (Multi-stream Session ID support).
 
@@ -56,16 +57,20 @@ AllowedIPs = 0.0.0.0/0
 #@wgt:IPPort = 1.2.3.4:56000
 #@wgt:VKLink = https://vk.com/call/join/...
 #@wgt:Mode = vk_link              # Auth mode: vk_link or wb
+#@wgt:PeerType = proxy_v2          # proxy_v2 | proxy_v1 | wireguard
 #@wgt:StreamNum = 4
 #@wgt:LocalPort = 9000
+#@wgt:StreamsPerCred = 4           # Streams per credentials cache
 
 # Advanced settings (optional)
 #@wgt:TurnIP = 155.212.199.166      # Override TURN server IP
 #@wgt:TurnPort = 19302              # Override TURN server port
-#@wgt:NoDTLS = false                # Disable DTLS (for direct WireGuard server access)
 ```
 
-**Note:** `NoDTLS = false` (default) enables DTLS encryption. Set `NoDTLS = true` only for debugging or direct connection to WireGuard server via TURN without obfuscation.
+**Note:** The `PeerType` parameter determines the operating mode:
+- `proxy_v2` (default) — DTLS with Session ID transmission for stream aggregation
+- `proxy_v1` — DTLS without Session ID handshake
+- `wireguard` — no DTLS, direct relay (for debugging or direct connection)
 
 For more technical details, see [info/TURN_INTEGRATION_DETAILS.md](info/TURN_INTEGRATION_DETAILS.md).
 

@@ -91,8 +91,8 @@ object TurnConfigProcessor {
             builder.setInterface(iface)
         }
 
-        // Determine if we should set PersistentKeepalive (when DTLS is enabled)
-        val shouldSetKeepalive = !turnSettings.noDtls
+        // Determine if we should set PersistentKeepalive (when not in wireguard mode)
+        val shouldSetKeepalive = turnSettings.peerType != "wireguard"
         val localPort = turnSettings.localPort
 
         for (peer in config.peers) {

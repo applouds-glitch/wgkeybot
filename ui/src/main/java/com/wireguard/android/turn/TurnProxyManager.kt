@@ -206,7 +206,8 @@ class TurnProxyManager(private val context: Context) {
                     "127.0.0.1:${settings.localPort}",
                     settings.turnIp,
                     settings.turnPort,
-                    if (settings.noDtls) 1 else 0,
+                    settings.peerType,
+                    settings.streamsPerCred,
                     networkHandle
                 )
 

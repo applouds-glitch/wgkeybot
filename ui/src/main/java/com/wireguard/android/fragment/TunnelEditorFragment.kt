@@ -49,8 +49,9 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
         val currentTurn = tunnel?.turnSettings
         binding?.config = ConfigProxy(config, currentTurn)
         binding?.executePendingBindings()
-        // Update spinner selection after config is loaded
+        // Update spinner selections after config is loaded
         updateTurnModeSpinner()
+        updateTurnPeerTypeSpinner()
     }
 
     private fun updateTurnModeSpinner() {
@@ -59,6 +60,20 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
             val modeText = if (currentMode == "wb") getString(R.string.turn_mode_wb) else getString(R.string.turn_mode_vk_link)
             if (turnModeSpinner.text.toString() != modeText) {
                 turnModeSpinner.setText(modeText, false)
+            }
+        }
+    }
+
+    private fun updateTurnPeerTypeSpinner() {
+        binding?.apply {
+            val currentPeerType = config?.turn?.peerType ?: "proxy_v2"
+            val peerTypeText = when (currentPeerType) {
+                "proxy_v1" -> getString(R.string.turn_peer_type_proxy_v1)
+                "wireguard" -> getString(R.string.turn_peer_type_wireguard)
+                else -> getString(R.string.turn_peer_type_proxy_v2)
+            }
+            if (turnPeerTypeSpinner.text.toString() != peerTypeText) {
+                turnPeerTypeSpinner.setText(peerTypeText, false)
             }
         }
     }
@@ -112,6 +127,14 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
             )
             turnModeSpinner.setAdapter(turnModeAdapter)
 
+            // Setup TURN peer type dropdown
+            val turnPeerTypeAdapter = ArrayAdapter.createFromResource(
+                requireContext(),
+                R.array.turn_peer_type_options,
+                android.R.layout.simple_dropdown_item_1line
+            )
+            turnPeerTypeSpinner.setAdapter(turnPeerTypeAdapter)
+
             val currentMode = config?.turn?.mode ?: "vk_link"
             val modeIndex = when (currentMode) {
                 "wb" -> 1
@@ -129,6 +152,30 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
 
             turnModeSpinner.setOnItemClickListener { _, _, position, _ ->
                 config?.turn?.mode = if (position == 1) "wb" else "vk_link"
+            }
+
+            val currentPeerType = config?.turn?.peerType ?: "proxy_v2"
+            val peerTypeIndex = when (currentPeerType) {
+                "proxy_v1" -> 1
+                "wireguard" -> 2
+                else -> 0
+            }
+            if (turnPeerTypeSpinner.text.isNotEmpty()) {
+                val currentText = turnPeerTypeSpinner.text.toString()
+                val existingIndex = turnPeerTypeAdapter.getPosition(currentText)
+                if (existingIndex != peerTypeIndex) {
+                    turnPeerTypeSpinner.setText(turnPeerTypeAdapter.getItem(peerTypeIndex) ?: "", false)
+                }
+            } else {
+                turnPeerTypeSpinner.setText(turnPeerTypeAdapter.getItem(peerTypeIndex) ?: "", false)
+            }
+
+            turnPeerTypeSpinner.setOnItemClickListener { _, _, position, _ ->
+                config?.turn?.peerType = when (position) {
+                    1 -> "proxy_v1"
+                    2 -> "wireguard"
+                    else -> "proxy_v2"
+                }
             }
         }
     }
