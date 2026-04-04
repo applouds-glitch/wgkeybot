@@ -114,8 +114,11 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 			sCtx, sCancel := context.WithCancel(s.ctx)
 			defer sCancel()
 
-			user, pass, addr, err := getVkCreds(sCtx, link, s.id)
-			if err != nil { return fmt.Errorf("VK creds failed: %w", err) }
+			if globalGetCreds == nil {
+				return fmt.Errorf("credentials function not initialized")
+			}
+			user, pass, addr, err := globalGetCreds(sCtx, link, s.id)
+			if err != nil { return fmt.Errorf("TURN creds failed: %w", err) }
 
 			// Override TURN address if provided
 			if turnIp != "" {
@@ -135,7 +138,7 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 			}
 
 			turnLog("[STREAM %d] Dialing TURN server %s...", s.id, addr)
-			// addr is already resolved in getVkCreds() via cascading DNS, so use DialContext without Resolver
+			// addr is already resolved during credential fetch via cascading DNS, so use DialContext without Resolver
 			dialer := &net.Dialer{
 				Timeout: 30 * time.Second,
 				Control: protectControl,
@@ -426,25 +429,45 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 
 var currentTurnCancel context.CancelFunc
 var turnMutex sync.Mutex
+
+// Global credentials function for mode selection (set by wgTurnProxyStart)
+var globalGetCreds getCredsFunc
 //export wgTurnProxyStart
-func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listenAddrC *C.char, turnIpC *C.char, turnPortC int, noDtlsC int, networkHandleC C.longlong) int32 {
+func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, noDtlsC C.int, networkHandleC C.longlong) int32 {
 	// Force initialization of resolver and HTTP client with current environment
 	wgNotifyNetworkChange()
 
 	peerAddr := C.GoString(peerAddrC)
 	vklink := C.GoString(vklinkC)
+	mode := C.GoString(modeC)
 	listenAddr := C.GoString(listenAddrC)
 	turnIp := C.GoString(turnIpC)
 	turnPort := int(turnPortC)
-	noDtls := noDtlsC != 0
+	noDtls := int(noDtlsC) != 0
 	networkHandle := int64(networkHandleC)
 
-	turnLog("[PROXY] Hub starting on %s (streams=%d, noDtls=%v, networkHandle=%d)", listenAddr, n, noDtls, networkHandle)
+	turnLog("[PROXY] Hub starting on %s (streams=%d, mode=%s, noDtls=%v, networkHandle=%d)", listenAddr, int(n), mode, noDtls, networkHandle)
 	turnMutex.Lock()
 	if currentTurnCancel != nil { currentTurnCancel() }
 	ctx, cancel := context.WithCancel(context.Background())
 	currentTurnCancel = cancel
 	turnMutex.Unlock()
+
+	// Setup credentials function based on mode
+	if mode == "wb" {
+		turnLog("[PROXY] Using WB (Wildberries) credential mode")
+		globalGetCreds = func(ctx context.Context, link string, streamID int) (string, string, string, error) {
+			return getCredsCached(ctx, link, streamID, wbFetch)
+		}
+	} else {
+		turnLog("[PROXY] Using VK Link credential mode")
+		parts := strings.Split(vklink, "join/")
+		link := parts[len(parts)-1]
+		if idx := strings.IndexAny(link, "/?#"); idx != -1 { link = link[:idx] }
+		globalGetCreds = func(ctx context.Context, lk string, streamID int) (string, string, string, error) {
+			return getCredsCached(ctx, lk, streamID, fetchVkCreds)
+		}
+	}
 
 	// Resolve peerAddr via cascading DNS (if it's a domain)
 	var peer *net.UDPAddr
@@ -472,9 +495,15 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listen
 		if err != nil { return -1 }
 	}
 
-	parts := strings.Split(vklink, "join/")
-	link := parts[len(parts)-1]
-	if idx := strings.IndexAny(link, "/?#"); idx != -1 { link = link[:idx] }
+	// Determine link for VK mode (for WB mode, link is just "wb")
+	var link string
+	if mode == "wb" {
+		link = "wb"
+	} else {
+		parts := strings.Split(vklink, "join/")
+		link = parts[len(parts)-1]
+		if idx := strings.IndexAny(link, "/?#"); idx != -1 { link = link[:idx] }
+	}
 
 	lc, err := net.ListenPacket("udp", listenAddr)
 	if err != nil { return -1 }
@@ -491,9 +520,9 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, n int, udp int, listen
 		return -1
 	}
 
-	ok := make(chan struct{}, n)
-	streams := make([]*stream, n)
-	for i := 0; i < n; i++ {
+	ok := make(chan struct{}, int(n))
+	streams := make([]*stream, int(n))
+	for i := 0; i < int(n); i++ {
 		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 512), out: lc, sessionID: sessionID, cert: &cert}
 		go streams[i].run(link, peer, udp != 0, ok, turnIp, turnPort, noDtls)
 		time.Sleep(200 * time.Millisecond)

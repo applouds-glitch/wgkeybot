@@ -35,6 +35,13 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         }
 
     @get:Bindable
+    var mode: String = "vk_link"
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.mode)
+        }
+
+    @get:Bindable
     var streams: String = ""
         set(value) {
             field = value
@@ -87,6 +94,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         enabled = parcel.readInt() != 0
         peer = parcel.readString() ?: ""
         vkLink = parcel.readString() ?: ""
+        mode = parcel.readString() ?: "vk_link"
         streams = parcel.readString() ?: ""
         useUdp = parcel.readInt() != 0
         localPort = parcel.readString() ?: ""
@@ -103,6 +111,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             enabled = other.enabled
             peer = other.peer
             vkLink = other.vkLink
+            mode = other.mode
             streams = other.streams.toString()
             useUdp = other.useUdp
             localPort = other.localPort.toString()
@@ -118,6 +127,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         dest.writeInt(if (enabled) 1 else 0)
         dest.writeString(peer)
         dest.writeString(vkLink)
+        dest.writeString(mode)
         dest.writeString(streams)
         dest.writeInt(if (useUdp) 1 else 0)
         dest.writeString(localPort)
@@ -152,7 +162,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             if (!peer.contains(':')) {
                 throw BadConfigException(BadConfigException.Section.PEER, BadConfigException.Location.ENDPOINT, BadConfigException.Reason.INVALID_VALUE, peer)
             }
-            if (vkLink.isBlank()) {
+            if (mode != "wb" && vkLink.isBlank()) {
                 throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.MISSING_ATTRIBUTE, vkLink)
             }
         }
@@ -161,6 +171,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             enabled = enabled,
             peer = peer.trim(),
             vkLink = vkLink.trim(),
+            mode = mode,
             streams = parsedStreams,
             useUdp = useUdp,
             localPort = parsedPort,

@@ -16,6 +16,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.Toast
 import androidx.core.os.BundleCompat
@@ -47,6 +48,19 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
     private fun onConfigLoaded(config: Config) {
         val currentTurn = tunnel?.turnSettings
         binding?.config = ConfigProxy(config, currentTurn)
+        binding?.executePendingBindings()
+        // Update spinner selection after config is loaded
+        updateTurnModeSpinner()
+    }
+
+    private fun updateTurnModeSpinner() {
+        binding?.apply {
+            val currentMode = config?.turn?.mode ?: "vk_link"
+            val modeText = if (currentMode == "wb") getString(R.string.turn_mode_wb) else getString(R.string.turn_mode_vk_link)
+            if (turnModeSpinner.text.toString() != modeText) {
+                turnModeSpinner.setText(modeText, false)
+            }
+        }
     }
 
     private fun onConfigSaved(savedTunnel: Tunnel, throwable: Throwable?) {
@@ -88,6 +102,35 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         requireActivity().addMenuProvider(this, viewLifecycleOwner, Lifecycle.State.RESUMED)
+
+        // Setup TURN mode dropdown
+        binding?.apply {
+            val turnModeAdapter = ArrayAdapter.createFromResource(
+                requireContext(),
+                R.array.turn_mode_options,
+                android.R.layout.simple_dropdown_item_1line
+            )
+            turnModeSpinner.setAdapter(turnModeAdapter)
+
+            val currentMode = config?.turn?.mode ?: "vk_link"
+            val modeIndex = when (currentMode) {
+                "wb" -> 1
+                else -> 0
+            }
+            if (turnModeSpinner.text.isNotEmpty()) {
+                val currentText = turnModeSpinner.text.toString()
+                val existingIndex = turnModeAdapter.getPosition(currentText)
+                if (existingIndex != modeIndex) {
+                    turnModeSpinner.setText(turnModeAdapter.getItem(modeIndex) ?: "", false)
+                }
+            } else {
+                turnModeSpinner.setText(turnModeAdapter.getItem(modeIndex) ?: "", false)
+            }
+
+            turnModeSpinner.setOnItemClickListener { _, _, position, _ ->
+                config?.turn?.mode = if (position == 1) "wb" else "vk_link"
+            }
+        }
     }
 
     override fun onDestroyView() {

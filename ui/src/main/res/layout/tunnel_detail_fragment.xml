@@ -352,13 +352,32 @@
                         tools:text="1.2.3.4:56000" />
 
                     <TextView
+                        android:id="@+id/turn_mode_label"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/turn_mode"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toBottomOf="@+id/turn_peer_text" />
+
+                    <TextView
+                        android:id="@+id/turn_mode_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text='@{tunnel.turnSettings.mode.equals("wb") ? @string/turn_mode_wb : @string/turn_mode_vk_link}'
+                        android:textAppearance="?attr/textAppearanceBodyLarge"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toBottomOf="@+id/turn_mode_label" />
+
+                    <TextView
                         android:id="@+id/turn_vk_link_label"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
                         android:text="@string/turn_vk_link"
+                        android:visibility='@{tunnel.turnSettings.mode.equals("wb") ? android.view.View.GONE : android.view.View.VISIBLE}'
                         app:layout_constraintStart_toStartOf="parent"
-                        app:layout_constraintTop_toBottomOf="@+id/turn_peer_text" />
+                        app:layout_constraintTop_toBottomOf="@+id/turn_mode_text" />
 
                     <TextView
                         android:id="@+id/turn_vk_link_text"
@@ -368,6 +387,7 @@
                         android:singleLine="true"
                         android:text="@{tunnel.turnSettings.vkLink}"
                         android:textAppearance="?attr/textAppearanceBodyLarge"
+                        android:visibility='@{tunnel.turnSettings.mode.equals("wb") ? android.view.View.GONE : android.view.View.VISIBLE}'
                         app:layout_constraintStart_toStartOf="parent"
                         app:layout_constraintTop_toBottomOf="@+id/turn_vk_link_label"
                         tools:text="https://vk.ru/call/join/..." />

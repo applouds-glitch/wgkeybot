@@ -30,10 +30,11 @@ class TurnSettingsStore(private val context: Context) {
             FileInputStream(file).use { stream ->
                 val bytes = stream.readBytes()
                 val json = JSONObject(String(bytes, StandardCharsets.UTF_8))
-                TurnSettings(
+                val settings = TurnSettings(
                     enabled = json.optBoolean("enabled", false),
                     peer = json.optString("peer", ""),
                     vkLink = json.optString("vkLink", ""),
+                    mode = json.optString("mode", "vk_link"),
                     streams = json.optInt("streams", 4),
                     useUdp = json.optBoolean("useUdp", false),
                     localPort = json.optInt("localPort", 9000),
@@ -41,6 +42,7 @@ class TurnSettingsStore(private val context: Context) {
                     turnPort = json.optInt("turnPort", 0),
                     noDtls = json.optBoolean("noDtls", false),
                 )
+                settings
             }
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to load TURN settings for tunnel $name", t)
@@ -61,6 +63,7 @@ class TurnSettingsStore(private val context: Context) {
             .put("enabled", settings.enabled)
             .put("peer", settings.peer)
             .put("vkLink", settings.vkLink)
+            .put("mode", settings.mode)
             .put("streams", settings.streams)
             .put("useUdp", settings.useUdp)
             .put("localPort", settings.localPort)

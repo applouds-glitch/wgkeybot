@@ -92,8 +92,8 @@ func (e *VkCaptchaError) IsCaptchaError() bool {
 }
 
 // solveVkCaptcha solves the VK Not Robot Captcha and returns success_token
-func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID int) (string, error) {
-	turnLog("[STREAM %d] [Captcha] Solving Not Robot Captcha...", streamID)
+func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError) (string, error) {
+	turnLog("[Captcha] Solving Not Robot Captcha...")
 
 	// HAR: Token 2 error → Captcha HTML = 2.72s (browser page load + user perception)
 	time.Sleep(1500*time.Millisecond + time.Duration(rand.Intn(1000))*time.Millisecond)
@@ -104,29 +104,29 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID in
 	}
 
 	// Step 1: Fetch the captcha HTML page to get powInput and cookies
-	powInput, difficulty, cookies, err := fetchPowInput(ctx, captchaErr.RedirectUri, streamID)
+	powInput, difficulty, cookies, err := fetchPowInput(ctx, captchaErr.RedirectUri)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch PoW input: %w", err)
 	}
 
-	turnLog("[STREAM %d] [Captcha] PoW input: %s, difficulty: %d", streamID, powInput, difficulty)
+	turnLog("[Captcha] PoW input: %s, difficulty: %d", powInput, difficulty)
 
 	// Step 2: Solve PoW
 	hash := solvePoW(powInput, difficulty)
-	turnLog("[STREAM %d] [Captcha] PoW solved: hash=%s", streamID, hash)
+	turnLog("[Captcha] PoW solved: hash=%s", hash)
 
 	// Step 3: Call captchaNotRobot API with cookies from captcha page
-	successToken, err := callCaptchaNotRobot(ctx, sessionToken, hash, cookies, streamID)
+	successToken, err := callCaptchaNotRobot(ctx, sessionToken, hash, cookies)
 	if err != nil {
 		return "", fmt.Errorf("captchaNotRobot API failed: %w", err)
 	}
 
-	turnLog("[STREAM %d] [Captcha] Success! Got success_token", streamID)
+	turnLog("[Captcha] Success! Got success_token")
 	return successToken, nil
 }
 
 // fetchPowInput fetches the captcha HTML page and extracts powInput, difficulty, and cookies
-func fetchPowInput(ctx context.Context, redirectUri string, streamID int) (string, int, string, error) {
+func fetchPowInput(ctx context.Context, redirectUri string) (string, int, string, error) {
 	parsedURL, err := url.Parse(redirectUri)
 	if err != nil {
 		return "", 0, "", fmt.Errorf("failed to parse redirect_uri: %w", err)
@@ -185,7 +185,7 @@ func fetchPowInput(ctx context.Context, redirectUri string, streamID int) (strin
 	}
 	cookieHeader := strings.Join(cookies, "; ")
 	if cookieHeader != "" {
-		turnLog("[STREAM %d] [Captcha] Captcha page set %d cookie(s)", streamID, len(cookies))
+		turnLog("[Captcha] Captcha page set %d cookie(s)", len(cookies))
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -235,7 +235,7 @@ func solvePoW(powInput string, difficulty int) string {
 }
 
 // callCaptchaNotRobot executes all 4 steps of the captchaNotRobot API
-func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, cookies string, streamID int) (string, error) {
+func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, cookies string) (string, error) {
 	// Helper to make VK API requests
 	vkReq := func(method string, postData string) (map[string]interface{}, error) {
 		requestURL := "https://api.vk.ru/method/" + method + "?v=5.131"
@@ -322,7 +322,7 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, cookies string
 		url.QueryEscape(sessionToken), url.QueryEscape(domain))
 
 	// Step 1: settings
-	turnLog("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
+	turnLog("[Captcha] Step 1/4: settings")
 	_, err := vkReq("captchaNotRobot.settings", baseParams)
 	if err != nil {
 		return "", fmt.Errorf("settings failed: %w", err)
@@ -331,7 +331,7 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, cookies string
 	time.Sleep(100*time.Millisecond + time.Duration(rand.Intn(100))*time.Millisecond)
 	
 	// Step 2: componentDone
-	turnLog("[STREAM %d] [Captcha] Step 2/4: componentDone", streamID)
+	turnLog("[Captcha] Step 2/4: componentDone")
 	// Generate random browser fingerprint (32 hex chars like MD5)
 	browserFp := fmt.Sprintf("%016x%016x", rand.Int63(), rand.Int63())
 	// Device info matching HAR capture
@@ -347,7 +347,7 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, cookies string
 	time.Sleep(1500*time.Millisecond + time.Duration(rand.Intn(1000))*time.Millisecond)
 
 	// Step 3: check (the main one)
-	turnLog("[STREAM %d] [Captcha] Step 3/4: check", streamID)
+	turnLog("[Captcha] Step 3/4: check")
 	// Fake cursor data (few points simulating mouse movement)
 	cursorJSON := `[{"x":950,"y":500},{"x":945,"y":510},{"x":940,"y":520},{"x":938,"y":525},{"x":938,"y":525}]`
 	// answer = base64 of "{}" for checkbox captcha (matching HAR: e30=)
@@ -399,11 +399,11 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, cookies string
 	}
 
 	// Step 4: endSession
-	turnLog("[STREAM %d] [Captcha] Step 4/4: endSession", streamID)
+	turnLog("[Captcha] Step 4/4: endSession")
 	_, err = vkReq("captchaNotRobot.endSession", baseParams)
 	if err != nil {
 		// Not critical, we already have success_token
-		turnLog("[STREAM %d] [Captcha] Warning: endSession failed: %v", streamID, err)
+		turnLog("[Captcha] Warning: endSession failed: %v", err)
 	}
 
 	return successToken, nil

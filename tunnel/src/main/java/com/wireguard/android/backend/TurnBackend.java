@@ -94,6 +94,7 @@ public final class TurnBackend {
     public static native int wgTurnProxyStart(
             String peerAddr,
             String vklink,
+            String mode,
             int n,
             int useUdp,
             String listenAddr,

@@ -321,15 +321,36 @@
                         </com.google.android.material.textfield.TextInputLayout>
 
                         <com.google.android.material.textfield.TextInputLayout
+                            android:id="@+id/turn_mode_layout"
+                            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_margin="4dp"
+                            android:hint="@string/turn_mode"
+                            android:enabled="@{config.turn.enabled}"
+                            app:layout_constraintEnd_toEndOf="parent"
+                            app:layout_constraintStart_toStartOf="parent"
+                            app:layout_constraintTop_toBottomOf="@id/turn_peer_layout">
+
+                            <AutoCompleteTextView
+                                android:id="@+id/turn_mode_spinner"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:inputType="none"
+                                android:enabled="@{config.turn.enabled}" />
+                        </com.google.android.material.textfield.TextInputLayout>
+
+                        <com.google.android.material.textfield.TextInputLayout
                             android:id="@+id/turn_vk_link_layout"
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_margin="4dp"
                             android:hint="@string/turn_vk_link"
                             android:enabled="@{config.turn.enabled}"
+                            android:visibility="@{config.turn.mode.equals(`vk_link`) ? android.view.View.VISIBLE : android.view.View.GONE}"
                             app:expandedHintEnabled="false"
                             app:layout_constraintStart_toStartOf="parent"
-                            app:layout_constraintTop_toBottomOf="@id/turn_peer_layout"
+                            app:layout_constraintTop_toBottomOf="@id/turn_mode_layout"
                             app:layout_constraintEnd_toEndOf="parent">
 
                             <com.google.android.material.textfield.TextInputEditText

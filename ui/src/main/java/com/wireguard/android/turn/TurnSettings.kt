@@ -13,6 +13,7 @@ data class TurnSettings(
     val enabled: Boolean = false,
     val peer: String = "",
     val vkLink: String = "",
+    val mode: String = "vk_link",
     val streams: Int = 4,
     val useUdp: Boolean = false,
     val localPort: Int = 9000,
@@ -28,6 +29,7 @@ data class TurnSettings(
             "#@wgt:UseUDP = $useUdp",
             "#@wgt:IPPort = $peer",
             "#@wgt:VKLink = $vkLink",
+            "#@wgt:Mode = $mode",
             "#@wgt:StreamNum = $streams",
             "#@wgt:LocalPort = $localPort"
         )
@@ -42,6 +44,7 @@ data class TurnSettings(
             var enabled = false
             var peer = ""
             var vkLink = ""
+            var mode = "vk_link"
             var streams = 4
             var useUdp = false
             var localPort = 9000
@@ -63,6 +66,7 @@ data class TurnSettings(
                     "useudp" -> useUdp = value.toBoolean()
                     "ipport" -> peer = value
                     "vklink" -> vkLink = value
+                    "mode" -> mode = value
                     "streamnum" -> streams = value.toIntOrNull() ?: 4
                     "localport" -> localPort = value.toIntOrNull() ?: 9000
                     "turnip" -> turnIp = value
@@ -70,14 +74,16 @@ data class TurnSettings(
                     "nodtls" -> noDtls = value.toBoolean()
                 }
             }
-            return if (foundAny) TurnSettings(enabled, peer, vkLink, streams, useUdp, localPort, turnIp, turnPort, noDtls) else null
+            return if (foundAny) TurnSettings(enabled, peer, vkLink, mode, streams, useUdp, localPort, turnIp, turnPort, noDtls) else null
         }
 
         fun validate(settings: TurnSettings): TurnSettings {
             if (!settings.enabled) return settings
 
             require(settings.peer.isNotBlank()) { "TURN peer is empty" }
-            require(settings.vkLink.isNotBlank()) { "VK link is empty" }
+            if (settings.mode != "wb") {
+                require(settings.vkLink.isNotBlank()) { "VK link is empty" }
+            }
             require(settings.streams in 1..16) { "Streams must be between 1 and 16" }
             require(settings.localPort in 1..65535) { "Local port must be between 1 and 65535" }
 
