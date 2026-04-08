@@ -33,3 +33,9 @@
 -keepclasseswithmembers class * {
     @androidx.annotation.Keep <init>(...);
 }
+
+# Keep TurnBackend methods called from JNI via reflection
+-keep class com.wireguard.android.backend.TurnBackend {
+    public static void setCaptchaHandler(java.util.function.Function);
+    public static java.lang.String onCaptchaRequired(java.lang.String);
+}

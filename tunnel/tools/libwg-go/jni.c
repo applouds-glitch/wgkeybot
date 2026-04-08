@@ -36,6 +36,10 @@ static jobject connectivity_manager_instance_global;
 static jobject current_network_global = NULL;
 static jlong current_network_handle = 0;
 
+// Captcha handler
+static jclass turn_backend_class_global = NULL;
+static jmethodID on_captcha_required_method = NULL;
+
 
 // Helper to update the cached Network object
 static void update_current_network(JNIEnv *env, jlong handle)
@@ -98,22 +102,34 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetVpnSe
 		file_descriptor_class_global = NULL;
 		connectivity_manager_instance_global = NULL;
 		current_network_global = NULL;
+		// NOTE: Do NOT reset turn_backend_class_global / on_captcha_required_method here.
+		// TurnBackend is a Java class independent of VpnService lifecycle.
 	}
 	if (vpn_service) {
 		vpn_service_global = (*env)->NewGlobalRef(env, vpn_service);
 		jclass vpn_service_class = (*env)->GetObjectClass(env, vpn_service_global);
 		protect_method = (*env)->GetMethodID(env, vpn_service_class, "protect", "(I)Z");
 		get_system_service_method = (*env)->GetMethodID(env, vpn_service_class, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
-		
+
+		// Cache TurnBackend class and captcha method
+		if (!turn_backend_class_global) {
+			jclass tb_class = (*env)->FindClass(env, "com/wireguard/android/backend/TurnBackend");
+			if (tb_class) {
+				turn_backend_class_global = (*env)->NewGlobalRef(env, tb_class);
+				on_captcha_required_method = (*env)->GetStaticMethodID(env, turn_backend_class_global, "onCaptchaRequired", "(Ljava/lang/String;)Ljava/lang/String;");
+				(*env)->DeleteLocalRef(env, tb_class);
+			}
+		}
+
 		jclass cm_class = (*env)->FindClass(env, "android/net/ConnectivityManager");
 		connectivity_manager_class_global = (*env)->NewGlobalRef(env, cm_class);
 		get_all_networks_method = (*env)->GetMethodID(env, connectivity_manager_class_global, "getAllNetworks", "()[Landroid/net/Network;");
-		
+
 		jclass n_class = (*env)->FindClass(env, "android/net/Network");
 		network_class_global = (*env)->NewGlobalRef(env, n_class);
 		get_network_handle_method = (*env)->GetMethodID(env, network_class_global, "getNetworkHandle", "()J");
 		bind_socket_method = (*env)->GetMethodID(env, network_class_global, "bindSocket", "(Ljava/io/FileDescriptor;)V");
-		
+
 		jclass fd_class = (*env)->FindClass(env, "java/io/FileDescriptor");
 		file_descriptor_class_global = (*env)->NewGlobalRef(env, fd_class);
 		file_descriptor_init = (*env)->GetMethodID(env, file_descriptor_class_global, "<init>", "()V");
@@ -268,4 +284,55 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProx
 {
 	update_current_network(env, 0);
 	wgTurnProxyStop();
+}
+
+// Called from Go to request captcha solving from Android UI.
+// Blocks until the user solves the captcha or timeout.
+// Returns a malloc'd string that the caller (Go) must free.
+const char* requestCaptcha(const char* redirect_uri)
+{
+	JNIEnv *env;
+	int attached = 0;
+	const char* result = NULL;
+
+	if (!java_vm || !turn_backend_class_global || !on_captcha_required_method) {
+		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
+			"requestCaptcha: JNI not initialized (vm=%p, class=%p, method=%p)",
+			java_vm, turn_backend_class_global, on_captcha_required_method);
+		return NULL;
+	}
+
+	if ((*java_vm)->GetEnv(java_vm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
+		if ((*java_vm)->AttachCurrentThread(java_vm, &env, NULL) != 0) {
+			__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
+				"requestCaptcha: AttachCurrentThread failed");
+			return NULL;
+		}
+		attached = 1;
+	}
+
+	jstring j_uri = (*env)->NewStringUTF(env, redirect_uri);
+	jstring j_result = (jstring)(*env)->CallStaticObjectMethod(env, turn_backend_class_global,
+		on_captcha_required_method, j_uri);
+	(*env)->DeleteLocalRef(env, j_uri);
+
+	if ((*env)->ExceptionCheck(env)) {
+		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
+			"requestCaptcha: exception occurred");
+		(*env)->ExceptionClear(env);
+	} else if (j_result != NULL) {
+		const char* str = (*env)->GetStringUTFChars(env, j_result, NULL);
+		if (str && strlen(str) > 0) {
+			result = strdup(str);
+		}
+		(*env)->ReleaseStringUTFChars(env, j_result, str);
+		(*env)->DeleteLocalRef(env, j_result);
+	}
+
+	if (attached)
+		(*java_vm)->DetachCurrentThread(java_vm);
+
+	__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI",
+		"requestCaptcha: returning %s", result ? "token" : "NULL");
+	return result;
 }

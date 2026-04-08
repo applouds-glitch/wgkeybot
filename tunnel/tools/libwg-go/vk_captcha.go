@@ -5,6 +5,12 @@
 
 package main
 
+/*
+#include <stdlib.h>
+extern const char* requestCaptcha(const char* redirect_uri);
+*/
+import "C"
+
 import (
 	"context"
 	"crypto/sha256"
@@ -21,7 +27,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unsafe"
 )
 
 // VkCaptchaError represents a VK captcha error
@@ -91,10 +99,51 @@ func (e *VkCaptchaError) IsCaptchaError() bool {
 	return e.ErrorCode == 14 && e.RedirectUri != "" && e.SessionToken != ""
 }
 
+// captchaMutex serializes captcha solving to avoid multiple concurrent attempts
+var captchaMutex sync.Mutex
+
 // solveVkCaptcha solves the VK Not Robot Captcha and returns success_token
+// First tries automatic solution, falls back to WebView if it fails
 func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError) (string, error) {
+	// Serialize captcha solving to avoid multiple concurrent attempts
+	captchaMutex.Lock()
+	defer captchaMutex.Unlock()
+
 	turnLog("[Captcha] Solving Not Robot Captcha...")
 
+	// Step 1: Try automatic solution
+	turnLog("[Captcha] Attempting automatic solution...")
+	successToken, err := solveVkCaptchaAutomatic(ctx, captchaErr)
+	if err == nil && successToken != "" {
+		turnLog("[Captcha] Automatic solution SUCCESS!")
+		return successToken, nil
+	}
+
+	turnLog("[Captcha] Automatic solution FAILED: %v", err)
+	turnLog("[Captcha] Falling back to WebView...")
+
+	// Step 2: Fall back to WebView
+	turnLog("[Captcha] Opening WebView for manual solving...")
+	redirectURICStr := C.CString(captchaErr.RedirectUri)
+	defer C.free(unsafe.Pointer(redirectURICStr))
+	
+	cToken := C.requestCaptcha(redirectURICStr)
+	if cToken == nil {
+		return "", fmt.Errorf("WebView captcha solving failed: returned nil token")
+	}
+	defer C.free(unsafe.Pointer(cToken))
+	
+	successToken = C.GoString(cToken)
+	if successToken == "" {
+		return "", fmt.Errorf("WebView captcha solving failed: returned empty token")
+	}
+
+	turnLog("[Captcha] WebView solution SUCCESS! Got success_token")
+	return successToken, nil
+}
+
+// solveVkCaptchaAutomatic performs the automatic captcha solving without UI
+func solveVkCaptchaAutomatic(ctx context.Context, captchaErr *VkCaptchaError) (string, error) {
 	sessionToken := captchaErr.SessionToken
 	if sessionToken == "" {
 		return "", fmt.Errorf("no session_token in redirect_uri")

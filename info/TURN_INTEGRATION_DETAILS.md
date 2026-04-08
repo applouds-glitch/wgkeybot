@@ -19,6 +19,7 @@
 13. [DNS Resolver](#13-dns-resolver)
 14. [Per-Stream Кэширование Credentials](#14-per-stream-кэширование-credentials)
 15. [UI структура карточки TURN](#15-ui-структура-карточки-turn)
+16. [VK Captcha с WebView Fallback](#16-vk-captcha-с-webview-fallback)
 
 ---
 
@@ -902,3 +903,300 @@ func getCacheID(streamID int) int {
 - **Options** — UDP: true/false, Streams: N, Streams/Cred: N
 
 Ссылка VK Calls link в карточке просмотра не отображается.
+
+---
+
+## 16. VK Captcha с WebView Fallback
+
+### Обзор
+
+При получении ошибки `error_code:14` (требуется капча) от VK API во время получения токенов, приложение сначала пытается решить капчу автоматически, а при неудаче открывает `WebView` с страницей `not_robot_captcha`.
+
+### Архитектура
+
+**Поток обработки:**
+
+```
+VK API возвращает error_code:14
+    ↓
+ParseVkCaptchaError() - парсинг ошибки
+    ↓
+solveVkCaptcha() - запуск решения капчи
+    ↓
+solveVkCaptchaAutomatic() - попытка автоматического решения
+    ├─ Успех → возврат success_token
+    └─ Неудача → fallback на WebView
+         ↓
+    C.requestCaptcha(redirect_uri) - JNI вызов
+         ↓
+    TurnBackend.onCaptchaRequired(redirectUri) - Java метод
+         ↓
+    captchaHandler.apply(redirectUri) - вызов обработчика
+         ↓
+    CaptchaActivity.solveCaptcha() - открытие WebView
+         ↓
+    Пользователь решает капчу вручную
+         ↓
+    success_token возвращается в Go
+```
+
+### Компоненты
+
+#### 1. Go слой (`vk_captcha.go`)
+
+**`VkCaptchaError`** - структура ошибки капчи:
+- `ErrorCode` (14 для капчи)
+- `RedirectUri` - URL для открытия WebView
+- `SessionToken` - токен сессии из redirect_uri
+- `CaptchaSid`, `CaptchaTs`, `CaptchaAttempt` - параметры капчи
+- `IsSoundCaptchaAvailable` - флап звуковой капчи
+
+**`solveVkCaptcha(ctx, captchaErr)`** - основная функция:
+- Сначала вызывает `solveVkCaptchaAutomatic()` для попытки автоматического решения
+- При неудаче вызывает `C.requestCaptcha(redirect_uri)` для открытия WebView
+- Использует `captchaMutex` для сериализации (избежание множественных попыток)
+- Блокирует поток до получения результата или ошибки
+
+**`solveVkCaptchaAutomatic(ctx, captchaErr)`** - автоматическое решение:
+- Извлекает `powInput` и `difficulty` из HTML страницы капчи
+- Решает Proof-of-Work (SHA-256 хеш с префиксом из '0')
+- Вызывает `captchaNotRobot` API в 4 шага:
+  1. `settings` - получение настроек
+  2. `componentDone` - отправка fingerprint устройства
+  3. `check` - основной запрос с PoW hash и данными курсора
+  4. `endSession` - завершение сессии
+- Возвращает `success_token` из ответа
+
+#### 2. JNI слой (`jni.c`)
+
+**Глобальные переменные:**
+```c
+static jclass turn_backend_class_global = NULL;
+static jmethodID on_captcha_required_method = NULL;
+```
+
+**`requestCaptcha(const char* redirect_uri)`**:
+- Вызывается из Go кода при необходимости WebView
+- AttachCurrentThread (если поток не прикреплен к JVM)
+- Находит `TurnBackend.onCaptchaRequired` метод
+- Вызывает Java метод с `redirectUri`
+- Копирует результат через `strdup()`
+- Освобождает локальные ссылки и отсоединяет поток
+- Возвращает `success_token` как C string (caller должен free)
+
+**Инициализация в `wgSetVpnService()`**:
+```c
+jclass tb_class = (*env)->FindClass(env, "com/wireguard/android/backend/TurnBackend");
+turn_backend_class_global = (*env)->NewGlobalRef(env, tb_class);
+on_captcha_required_method = (*env)->GetStaticMethodID(
+    env, turn_backend_class_global, 
+    "onCaptchaRequired", 
+    "(Ljava/lang/String;)Ljava/lang/String;"
+);
+```
+
+#### 3. Java слой (`TurnBackend.java`)
+
+**Поля:**
+```java
+private static volatile Function<String, String> captchaHandler;
+```
+
+**`setCaptchaHandler(Function<String, String> handler)`**:
+- Устанавливает обработчик для вызова при необходимости WebView
+- Вызывается из `Application.onCreate()`
+
+**`onCaptchaRequired(String redirectUri)`**:
+- Статический метод, вызываемый из JNI
+- Блокирует поток до получения результата от `captchaHandler`
+- Возвращает `success_token` или `null` при ошибке
+
+#### 4. Android UI (`CaptchaActivity.kt`)
+
+**Назначение:** Отображает WebView для ручного решения капчи пользователем.
+
+**Ключевые особенности:**
+
+1. **Привязка к физической сети (bypass VPN):**
+   - Использует `ConnectivityManager.bindProcessToNetwork(activeNetwork)`
+   - WebView загружает страницу капчи через физический интерфейс, минуя VPN kill-switch
+   - При уничтожении активности сетевая привязка сбрасывается
+
+2. **JavaScript перехват:**
+   - Инжектирует код для перехвата `XMLHttpRequest` и `fetch` API
+   - Отслеживает вызовы `captchaNotRobot.check`
+   - Извлекает `success_token` из ответа
+   - Вызывает `@JavascriptInterface fun onCaptchaSuccess(token)`
+
+3. **Блокирующий вызов:**
+   - `CaptchaActivity.solveCaptcha(context, redirectUri)` - статический метод
+   - Запускает `CaptchaActivity` через `startActivity()`
+   - Ждет результат через `CompletableDeferred` с таймаутом 5 минут
+   - Возвращает `success_token` или `null` при таймауте/ошибке
+
+4. **Обработка ошибок:**
+   - `onBackPressed()` - отмена капчи (возврат null)
+   - `onDestroy()` - завершение deferred с null если не решена
+   - Таймаут 5 минут для избежания бесконечного ожидания
+
+**JavaScript код перехвата:**
+```javascript
+// Перехват XMLHttpRequest
+var originalOpen = XMLHttpRequest.prototype.open;
+XMLHttpRequest.prototype.open = function(method, url) {
+    this._url = url;
+    return originalOpen.apply(this, arguments);
+};
+
+XMLHttpRequest.prototype.send = function(body) {
+    var xhr = this;
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4 && xhr._url.indexOf('captchaNotRobot.check') !== -1) {
+            var response = JSON.parse(xhr.responseText);
+            if (response.response && response.response.success_token) {
+                window.CaptchaCheck.onCaptchaSuccess(response.response.success_token);
+            }
+        }
+    };
+    return originalSend.apply(this, arguments);
+};
+
+// Перехват fetch API
+var originalFetch = window.fetch;
+window.fetch = function() {
+    var url = arguments[0];
+    return originalFetch.apply(this, arguments).then(function(response) {
+        if (url.indexOf('captchaNotRobot.check') !== -1) {
+            response.clone().json().then(function(data) {
+                if (data.response && data.response.success_token) {
+                    window.CaptchaCheck.onCaptchaSuccess(data.response.success_token);
+                }
+            });
+        }
+        return response;
+    });
+};
+```
+
+#### 5. Регистрация обработчика (`Application.kt`)
+
+В `onCreate()` после загрузки библиотеки:
+```kotlin
+TurnBackend.setCaptchaHandler { redirectUri ->
+    CaptchaActivity.solveCaptcha(applicationContext, redirectUri)
+}
+```
+
+#### 6. AndroidManifest.xml
+
+Регистрация активности:
+```xml
+<activity
+    android:name=".activity.CaptchaActivity"
+    android:exported="false"
+    android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+    android:configChanges="orientation|screenSize|keyboardHidden" />
+```
+
+### VK Auth Flow с капчей
+
+**В `vk.go` - `getTokenChain()`:**
+
+```go
+resp, err = doRequest(data, urlAddr)  // calls.getAnonymousToken
+if errMsg, ok := resp["error"].(map[string]interface{}); ok {
+    captchaErr := ParseVkCaptchaError(errMsg)
+    if captchaErr != nil && captchaErr.IsCaptchaError() {
+        // Капча обнаруена
+        successToken, solveErr := solveVkCaptcha(ctx, captchaErr)
+        if solveErr != nil {
+            return "", "", "", fmt.Errorf("captcha solving failed: %w", solveErr)
+        }
+        
+        // Повторный запрос с success_token
+        data = fmt.Sprintf("vk_join_link=..."+
+            "&captcha_sid=%s"+
+            "&success_token=%s"+
+            "&captcha_ts=%s"+
+            "&captcha_attempt=%s"+
+            "&access_token=%s",
+            captchaErr.CaptchaSid,
+            successToken,
+            captchaErr.CaptchaTs,
+            captchaErr.CaptchaAttempt,
+            token1)
+        resp, err = doRequest(data, urlAddr)
+    }
+}
+```
+
+### Логирование
+
+```
+[VK Auth] Token 2: Captcha detected, solving...
+[Captcha] Attempting automatic solution...
+[Captcha] PoW input: abc123, difficulty: 2
+[Captcha] PoW solved: hash=00a1b2c3...
+[Captcha] Step 1/4: settings
+[Captcha] Step 2/4: componentDone
+[Captcha] Step 3/4: check
+[Captcha] Step 4/4: endSession
+[Captcha] Automatic solution SUCCESS!
+
+// Или при fallback:
+[Captcha] Automatic solution FAILED: captchaNotRobot API failed: timeout
+[Captcha] Falling back to WebView...
+[Captcha] Opening WebView for manual solving...
+WireGuard/JNI: requestCaptcha: called with redirect_uri=https://...
+WireGuard/CaptchaActivity: solveCaptcha called with redirectUri=https://...
+WireGuard/CaptchaActivity: Loading captcha page: https://...
+WireGuard/CaptchaActivity: Captcha interceptor injected
+WireGuard/CaptchaActivity: Captcha solved! Got success_token (length=32)
+WireGuard/JNI: requestCaptcha: got result token (length=32)
+[Captcha] WebView solution SUCCESS! Got success_token
+[VK Auth] Token 2: Retrying with captcha solution...
+[VK Auth] Token 2 (messages token) received
+```
+
+### Строковые ресурсы
+
+```xml
+<string name="captcha_title">Verify You Are Human</string>
+<string name="captcha_loading">Loading captcha…</string>
+<string name="captcha_error">Failed to solve captcha. Please try again.</string>
+<string name="captcha_instructions">Please complete the verification to continue</string>
+```
+
+### Технические особенности
+
+1. **Сериализация через mutex:** 
+   - `captchaMutex` в Go предотвращает одновременные попытки решения капчи
+   - Избегает конфликта нескольких потоков TURN
+
+2. **Блокирующий вызов:**
+   - Go → JNI → Java вызов блокирует поток до результата
+   - Таймаут 5 минут для избежания бесконечного ожидания
+   - Использует `CompletableDeferred` + `runBlocking` в Kotlin
+
+3. **Bypass VPN:**
+   - `bindProcessToNetwork()` привязывает WebView к физической сети
+   - Гарантирует загрузку страницы капчи даже при активном VPN kill-switch
+   - Сбрасывается при уничтожении активности
+
+4. **Перехват ответа:**
+   - JavaScript инжектируется после загрузки страницы
+   - Перехватывает оба API (XMLHttpRequest и fetch)
+   - Извлекает `success_token` из JSON ответа
+
+5. **Fallback логика:**
+   - Сначала пытается решить автоматически (PoW + API вызовы)
+   - При любой ошибке автоматического решения открывается WebView
+   - Пользователь решает капчу вручную
+
+### Преимущества
+
+- **Автоматическое решение** - большинство капч решается без участия пользователя
+- **Fallback на WebView** - гарантия решения даже при сбое автоматического
+- **Изоляция** - mutex предотвращает конфликты при множественных запросах
+- **Bypass VPN** - WebView работает через физическую сеть, игнорируя туннель
+- **Таймауты** - защита от бесконечного ожидания
