@@ -47,6 +47,32 @@ jobs:
         echo "version=$VERSION_NAME" >> $GITHUB_OUTPUT
         echo "Version: $VERSION_NAME"
 
+    - name: Generate release notes
+      id: release_notes
+      run: |
+        # Get the previous tag
+        PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        
+        # Generate release notes from commits
+        if [ -n "$PREVIOUS_TAG" ]; then
+          echo "Generating notes from $PREVIOUS_TAG to HEAD"
+          COMMITS=$(git log --pretty=format:"- %s (%h)" $PREVIOUS_TAG..HEAD)
+        else
+          echo "No previous tag found, using all commits"
+          COMMITS=$(git log --pretty=format:"- %s (%h)")
+        fi
+        
+        # Write to file
+        cat > RELEASE_NOTES.md << EOF
+        ## What's Changed
+
+        $COMMITS
+
+        **Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${{ github.ref_name }}
+        EOF
+        
+        echo "release_notes_file=RELEASE_NOTES.md" >> $GITHUB_OUTPUT
+
     - name: Rename APK
       run: mv ui/build/outputs/apk/release/ui-release.apk ui/build/outputs/apk/release/wg-turn-v${{ steps.version.outputs.version }}.apk
 
@@ -68,6 +94,6 @@ jobs:
         files: ${{ steps.sign_app.outputs.signedReleaseFile }}
         draft: false
         prerelease: false
-        generate_release_notes: true
+        body_path: ${{ steps.release_notes.outputs.release_notes_file }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
