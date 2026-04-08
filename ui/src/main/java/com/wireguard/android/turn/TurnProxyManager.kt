@@ -236,14 +236,16 @@ class TurnProxyManager(private val context: Context) {
             activeTunnelName = null
             activeSettings = null
             lastKnownNetwork = null
-            
+
             // Reset VpnService reference
             TurnBackend.onVpnServiceCreated(null)
+
+            // Stop TURN proxy BEFORE acquiring mutex to avoid deadlock with startup wait
+            TurnBackend.wgTurnProxyStop()
 
             operationMutex.lock()
             try {
                 val instance = instances[tunnelName] ?: return@withContext
-                TurnBackend.wgTurnProxyStop()
                 instance.running = false
                 val msg = "TURN stopped for tunnel \"$tunnelName\""
                 Log.d(TAG, msg)

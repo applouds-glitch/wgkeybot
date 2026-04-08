@@ -115,6 +115,11 @@ func resolveWithOrderedServers(ctx context.Context, domain string) (string, erro
 
 	// Try all servers in order starting from last successful
 	for i := 0; i < len(dnsServers); i++ {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
 		idx := (i + startIndex) % len(dnsServers)
 		server := dnsServers[idx]
 		turnLog("[DNS] Trying server %d (%v, %s) for %s", idx, server.Type, server.IP, domain)

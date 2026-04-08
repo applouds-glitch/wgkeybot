@@ -198,7 +198,11 @@ func (s *stream) run(link string, peer *net.UDPAddr, udp bool, okchan chan<- str
 
 		if err != nil && s.ctx.Err() == nil {
 			turnLog("[STREAM %d] Error: %v. Reconnecting in 1s...", s.id, err)
-			time.Sleep(1 * time.Second)
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-time.After(1 * time.Second):
+			}
 		}
 	}
 }
@@ -593,9 +597,8 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	case <-ok:
 		turnLog("[PROXY] First stream is ready, tunnel can start")
 		return 0
-	case <-time.After(30 * time.Second):
-		turnLog("[PROXY] TIMEOUT waiting for any stream to be ready")
-		cancel()
+	case <-ctx.Done():
+		turnLog("[PROXY] PROXY startup cancelled")
 		return -1
 	}
 }
