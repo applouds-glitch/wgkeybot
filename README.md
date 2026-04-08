@@ -67,12 +67,18 @@ AllowedIPs = 0.0.0.0/0
 # Advanced settings (optional)
 #@wgt:TurnIP = 155.212.199.166      # Переопределить IP TURN сервера
 #@wgt:TurnPort = 19302              # Переопределить порт TURN сервера
+#@wgt:WatchdogTimeout = 30          # Таймаут неактивности (сек, 0=отключен)
 ```
 
 **Примечание:** Параметр `PeerType` определяет режим работы:
-- `proxy_v2` (по умолчанию) — DTLS с передачей Session ID для агрегации потоков
-- `proxy_v1` — DTLS без Session ID handshake
-- `wireguard` — без DTLS, прямой relay (для отладки или прямого подключения)
+- `proxy_v2` (по умолчанию) — DTLS с передачей Session ID для агрегации потоков (сервер: [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy))
+- `proxy_v1` — DTLS без Session ID handshake (сервер: [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy))
+- `wireguard` — без DTLS, прямой relay (NoDTLS, для отладки или прямого подключения)
+
+**Watchdog Timeout:** Параметр `WatchdogTimeout` активирует контроль неактивности для DTLS режима:
+- `0` (по умолчанию) — watchdog отключен
+- `≥5` — таймаут в секундах; если пакеты не получаются от TURN сервера в течение указанного времени, соединение переподключается
+- Применяется только к режимам `proxy_v2` и `proxy_v1`
 
 Для получения подробной технической информации см. [info/TURN_INTEGRATION_DETAILS.md](info/TURN_INTEGRATION_DETAILS.md).
 

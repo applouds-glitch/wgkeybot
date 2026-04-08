@@ -82,6 +82,7 @@ type stream struct {
 	ready     atomic.Bool
 	sessionID []byte
 	cert      *tls.Certificate
+	watchdogTimeout int
 }
 
 const iPacketBuffMaxSize = 2048;
@@ -385,11 +386,11 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			case <-sCtx.Done(): return
 			case b := <-s.in:
 
-				// Watchdog
-				if time.Since(time.Unix(lastRx.Load(), 0)) > 30*time.Second {
+				// Watchdog (only active if watchdogTimeout > 0)
+				if s.watchdogTimeout > 0 && time.Since(time.Unix(lastRx.Load(), 0)) > time.Duration(s.watchdogTimeout)*time.Second {
 				    packetPool.Put(b[:cap(b)])
 					dtlsTxDropCount.Add(1)
-					turnLog("[STREAM %d] TX watchdog timeout", s.id)
+					turnLog("[STREAM %d] TX watchdog timeout (%ds)", s.id, s.watchdogTimeout)
 					return
 				}
 
@@ -437,7 +438,7 @@ var turnMutex sync.Mutex
 // Global credentials function for mode selection (set by wgTurnProxyStart)
 var globalGetCreds getCredsFunc
 //export wgTurnProxyStart
-func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, networkHandleC C.longlong) int32 {
+func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, networkHandleC C.longlong) int32 {
 	// Force initialization of resolver and HTTP client with current environment
 	wgNotifyNetworkChange()
 
@@ -449,9 +450,10 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	turnPort := int(turnPortC)
 	peerType := C.GoString(peerTypeC)
 	streamsPerCred = int(streamsPerCredC)
+	watchdogTimeout := int(watchdogTimeoutC)
 	networkHandle := int64(networkHandleC)
 
-	turnLog("[PROXY] Hub starting on %s (streams=%d, mode=%s, peerType=%s, streamsPerCred=%d, networkHandle=%d)", listenAddr, int(n), mode, peerType, streamsPerCred, networkHandle)
+	turnLog("[PROXY] Hub starting on %s (streams=%d, mode=%s, peerType=%s, streamsPerCred=%d, watchdogTimeout=%d, networkHandle=%d)", listenAddr, int(n), mode, peerType, streamsPerCred, watchdogTimeout, networkHandle)
 	turnMutex.Lock()
 	if currentTurnCancel != nil { currentTurnCancel() }
 	ctx, cancel := context.WithCancel(context.Background())
@@ -528,7 +530,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	ok := make(chan struct{}, int(n))
 	streams := make([]*stream, int(n))
 	for i := 0; i < int(n); i++ {
-		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 512), out: lc, sessionID: sessionID, cert: &cert}
+		streams[i] = &stream{ctx: ctx, id: i, in: make(chan []byte, 512), out: lc, sessionID: sessionID, cert: &cert, watchdogTimeout: watchdogTimeout}
 		go streams[i].run(link, peer, udp != 0, ok, turnIp, turnPort, peerType)
 		time.Sleep(200 * time.Millisecond)
 	}

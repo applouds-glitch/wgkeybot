@@ -77,6 +77,13 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         }
 
     @get:Bindable
+    var watchdogTimeout: String = ""
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.watchdogTimeout)
+        }
+
+    @get:Bindable
     var peerType: String = "proxy_v2"
         set(value) {
             field = value
@@ -107,6 +114,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         localPort = parcel.readString() ?: ""
         turnIp = parcel.readString() ?: ""
         turnPort = parcel.readString() ?: ""
+        watchdogTimeout = parcel.readString() ?: ""
         peerType = parcel.readString() ?: "proxy_v2"
         streamsPerCred = parcel.readString() ?: ""
         advancedExpanded = parcel.readInt() != 0
@@ -125,6 +133,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             localPort = other.localPort.toString()
             turnIp = other.turnIp
             turnPort = if (other.turnPort > 0) other.turnPort.toString() else ""
+            watchdogTimeout = if (other.watchdogTimeout > 0) other.watchdogTimeout.toString() else ""
             peerType = other.peerType
             streamsPerCred = other.streamsPerCred.toString()
         }
@@ -142,6 +151,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         dest.writeString(localPort)
         dest.writeString(turnIp)
         dest.writeString(turnPort)
+        dest.writeString(watchdogTimeout)
         dest.writeString(peerType)
         dest.writeString(streamsPerCred)
         dest.writeInt(if (advancedExpanded) 1 else 0)
@@ -152,6 +162,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         val parsedStreams = streams.toIntOrNull() ?: 4
         val parsedPort = localPort.toIntOrNull() ?: 9000
         val parsedTurnPort = turnPort.toIntOrNull() ?: 0
+        val parsedWatchdogTimeout = watchdogTimeout.toIntOrNull() ?: 0
         val parsedStreamsPerCred = streamsPerCred.toIntOrNull() ?: 4
 
         if (enabled) {
@@ -165,6 +176,10 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
 
             if (turnPort.isNotEmpty() && parsedTurnPort !in 1..65535) {
                 throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, turnPort)
+            }
+
+            if (watchdogTimeout.isNotEmpty() && parsedWatchdogTimeout > 0 && parsedWatchdogTimeout < 5) {
+                throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, watchdogTimeout)
             }
 
             if (parsedStreamsPerCred !in 1..16) {
@@ -194,6 +209,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             turnPort = parsedTurnPort,
             peerType = peerType,
             streamsPerCred = parsedStreamsPerCred,
+            watchdogTimeout = parsedWatchdogTimeout,
         )
         if (enabled) {
             TurnSettings.validate(settings)

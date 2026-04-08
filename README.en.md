@@ -65,12 +65,18 @@ AllowedIPs = 0.0.0.0/0
 # Advanced settings (optional)
 #@wgt:TurnIP = 155.212.199.166      # Override TURN server IP
 #@wgt:TurnPort = 19302              # Override TURN server port
+#@wgt:WatchdogTimeout = 30          # Inactivity timeout (sec, 0=disabled)
 ```
 
 **Note:** The `PeerType` parameter determines the operating mode:
-- `proxy_v2` (default) — DTLS with Session ID transmission for stream aggregation
-- `proxy_v1` — DTLS without Session ID handshake
-- `wireguard` — no DTLS, direct relay (for debugging or direct connection)
+- `proxy_v2` (default) — DTLS with Session ID transmission for stream aggregation (server: [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy))
+- `proxy_v1` — DTLS without Session ID handshake (server: [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy))
+- `wireguard` — no DTLS, direct relay (NoDTLS, for debugging or direct connection)
+
+**Watchdog Timeout:** The `WatchdogTimeout` parameter enables inactivity monitoring for DTLS mode:
+- `0` (default) — watchdog disabled
+- `≥5` — timeout in seconds; if no packets are received from the TURN server within this time, the connection is re-established
+- Applies only to `proxy_v2` and `proxy_v1` modes
 
 For more technical details, see [info/TURN_INTEGRATION_DETAILS.md](info/TURN_INTEGRATION_DETAILS.md).
 

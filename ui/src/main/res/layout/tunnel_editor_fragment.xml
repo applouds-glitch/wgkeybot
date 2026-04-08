@@ -515,6 +515,26 @@
                             </LinearLayout>
 
                             <com.google.android.material.textfield.TextInputLayout
+                                android:id="@+id/turn_watchdog_timeout_layout"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_margin="4dp"
+                                android:enabled="@{config.turn.enabled}"
+                                android:hint="@string/turn_watchdog_timeout"
+                                app:expandedHintEnabled="false">
+
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/turn_watchdog_timeout_text"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:enabled="@{config.turn.enabled}"
+                                    android:imeOptions="actionNext"
+                                    android:inputType="number"
+                                    android:hint="@string/turn_watchdog_timeout_hint"
+                                    android:text="@={config.turn.watchdogTimeout}" />
+                            </com.google.android.material.textfield.TextInputLayout>
+
+                            <com.google.android.material.textfield.TextInputLayout
                                 android:id="@+id/turn_local_port_layout"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"

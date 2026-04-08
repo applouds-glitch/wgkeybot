@@ -35,7 +35,7 @@
 - **`wgTurnProxyStart/Stop`**: Экспортированные методы для управления жизненным циклом прокси-сервера.
   - Принимает `networkHandle` (long long) для привязки к конкретному Network
   - Вызывает `update_current_network()` для кэширования Network object перед запуском
-  - Параметры: `peerAddr`, `vklink`, `mode`, `n` (streams), `udp`, `listenAddr`, `turnIp`, `turnPort`, `peerType`, `streamsPerCred`, `networkHandle`
+  - Параметры: `peerAddr`, `vklink`, `mode`, `n` (streams), `udp`, `listenAddr`, `turnIp`, `turnPort`, `peerType`, `streamsPerCred`, `watchdogTimeout`, `networkHandle`
 
 - **`wgNotifyNetworkChange()`**: Функция для сброса DNS resolver и HTTP-соединений при переключении сети (WiFi <-> 4G). Обеспечивает быстрое восстановление соединения после смены сетевого интерфейса.
 
@@ -349,6 +349,31 @@ AllowedIPs = 0.0.0.0/0
 #@wgt:StreamsPerCred = 4
 ```
 
+### Watchdog Timeout
+
+Таймаут неактивности для DTLS режима (в секундах). Если в течение указанного времени не получено ни одного пакета от TURN сервера (RX), передача пакетов (TX) прекращается до восстановления соединения.
+
+**Значения:**
+- `0` — watchdog отключен (по умолчанию)
+- `≥5` — таймаут в секундах
+
+**Пример:**
+```
+#@wgt:WatchdogTimeout = 30
+```
+
+**Принцип работы:**
+- Применяется только в режиме DTLS (`peerType != "wireguard"`)
+- Проверяется время последнего полученного пакета (RX) перед отправкой каждого пакета (TX)
+- Если разница превышает watchdogTimeout секунд, TX goroutine завершается с логом `[STREAM X] TX watchdog timeout (Xs)`
+- Это приводит к реконнекту через 1 секунду и получению новых credentials
+- В режиме без DTLS (wireguard) watchdog не используется
+
+**Назначение:**
+- Обнаружение "зависших" DTLS соединений
+- Быстрое восстановление после длительных потерь сети
+- Предотвращение отправки пакетов в мертвое соединение
+
 ### PersistentKeepalive (автоматический)
 
 При включённом DTLS режиме (`peerType != "wireguard"`), `TurnConfigProcessor.modifyConfigForActiveTurn` **автоматически устанавливает PersistentKeepalive=25** для всех пиров.
@@ -425,7 +450,7 @@ GoBackend.setStateInternal()
   → TurnProxyManager.onTunnelEstablished() ← TURN запускается ПОСЛЕ туннеля
     → PhysicalNetworkMonitor.currentNetwork ← Получение текущего network handle
     → TurnBackend.waitForVpnServiceRegistered() ← Ждём JNI
-    → wgTurnProxyStart(..., peerType, streamsPerCred, networkHandle)
+    → wgTurnProxyStart(..., peerType, streamsPerCred, watchdogTimeout, networkHandle)
       → update_current_network() в JNI      ← Кэширование Network object
       → wgNotifyNetworkChange()             ← Инициализация resolver и HTTP client
       → VK Auth для получения credentials

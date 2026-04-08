@@ -149,6 +149,7 @@ public final class TurnBackend {
             int turnPort,
             String peerType,
             int streamsPerCred,
+            int watchdogTimeout,
             long networkHandle
     );
     public static native void wgTurnProxyStop();

@@ -208,6 +208,7 @@ class TurnProxyManager(private val context: Context) {
                     settings.turnPort,
                     settings.peerType,
                     settings.streamsPerCred,
+                    settings.watchdogTimeout,
                     networkHandle
                 )
 
