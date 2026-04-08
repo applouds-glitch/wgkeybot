@@ -296,4 +296,8 @@
     <string name="turn_port_hint">(auto)</string>
     <string name="turn_streams_per_cred">Streams per credentials</string>
     <string name="turn_streams_per_cred_hint">1-16 (default 4)</string>
+    <string name="captcha_title">Verify You Are Human</string>
+    <string name="captcha_loading">Loading captcha…</string>
+    <string name="captcha_error">Failed to solve captcha. Please try again.</string>
+    <string name="captcha_instructions">Please complete the verification to continue</string>
 </resources>
