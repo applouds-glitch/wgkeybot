@@ -54,14 +54,11 @@ func init() {
 
 //export wgNotifyNetworkChange
 func wgNotifyNetworkChange() {
-	// Invalidate all per-stream credentials caches on network change
-	invalidateAllCaches()
-
 	// Clear DNS cache
 	ClearCache()
 
 	turnHTTPClient.CloseIdleConnections()
-	turnLog("[NETWORK] Network change notified: HTTP connections cleared, credentials cache invalidated, DNS cache cleared")
+	turnLog("[NETWORK] Network change notified: HTTP connections cleared, DNS cache cleared")
 }
 
 var turnHTTPClient = &http.Client{
