@@ -6,6 +6,7 @@
 package main
 
 // #cgo LDFLAGS: -llog
+// #include <stdlib.h>
 // #include <android/log.h>
 import "C"
 
@@ -32,22 +33,16 @@ type AndroidLogger struct {
 	tag   *C.char
 }
 
-func cstring(s string) *C.char {
-	b, err := unix.BytePtrFromString(s)
-	if err != nil {
-		b := [1]C.char{}
-		return &b[0]
-	}
-	return (*C.char)(unsafe.Pointer(b))
-}
-
 func (l AndroidLogger) Printf(format string, args ...interface{}) {
-	C.__android_log_write(l.level, l.tag, cstring(fmt.Sprintf(format, args...)))
+	s := C.CString(fmt.Sprintf(format, args...))
+	defer C.free(unsafe.Pointer(s))
+	C.__android_log_write(l.level, l.tag, s)
 }
 
 type TunnelHandle struct {
 	device *device.Device
 	uapi   net.Listener
+	tag    *C.char
 }
 
 var tunnelHandles map[int32]TunnelHandle
@@ -58,6 +53,7 @@ func init() {
 	signal.Notify(signals, unix.SIGUSR2)
 	go func() {
 		buf := make([]byte, os.Getpagesize())
+		tag := C.CString("WireGuard/GoBackend/Stacktrace")
 		for {
 			select {
 			case <-signals:
@@ -66,7 +62,9 @@ func init() {
 					n--
 				}
 				buf[n] = 0
-				C.__android_log_write(C.ANDROID_LOG_ERROR, cstring("WireGuard/GoBackend/Stacktrace"), (*C.char)(unsafe.Pointer(&buf[0])))
+				s := C.CString(string(buf[:n]))
+				C.__android_log_write(C.ANDROID_LOG_ERROR, tag, s)
+				C.free(unsafe.Pointer(s))
 			}
 		}
 	}()
@@ -74,7 +72,7 @@ func init() {
 
 //export wgTurnOn
 func wgTurnOn(interfaceName string, tunFd int32, settings string) int32 {
-	tag := cstring("WireGuard/GoBackend/" + interfaceName)
+	tag := C.CString("WireGuard/GoBackend/" + interfaceName)
 	logger := &device.Logger{
 		Verbosef: AndroidLogger{level: C.ANDROID_LOG_DEBUG, tag: tag}.Printf,
 		Errorf:   AndroidLogger{level: C.ANDROID_LOG_ERROR, tag: tag}.Printf,
@@ -142,7 +140,7 @@ func wgTurnOn(interfaceName string, tunFd int32, settings string) int32 {
 		device.Close()
 		return -1
 	}
-	tunnelHandles[i] = TunnelHandle{device: device, uapi: uapi}
+	tunnelHandles[i] = TunnelHandle{device: device, uapi: uapi, tag: tag}
 	return i
 }
 
@@ -157,6 +155,9 @@ func wgTurnOff(tunnelHandle int32) {
 		handle.uapi.Close()
 	}
 	handle.device.Close()
+	if handle.tag != nil {
+		C.free(unsafe.Pointer(handle.tag))
+	}
 }
 
 //export wgGetSocketV4
