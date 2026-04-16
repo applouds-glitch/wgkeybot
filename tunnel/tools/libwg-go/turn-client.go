@@ -36,9 +36,10 @@ import (
 	"github.com/pion/turn/v5"
 )
 
+var turnClientTag = C.CString("WireGuard/TurnClient")
+
 func turnLog(format string, args ...interface{}) {
-	tag := cstring("WireGuard/TurnClient")
-	l := AndroidLogger{level: C.ANDROID_LOG_INFO, tag: tag}
+	l := AndroidLogger{level: C.ANDROID_LOG_INFO, tag: turnClientTag}
 	l.Printf(format, args...)
 }
 
