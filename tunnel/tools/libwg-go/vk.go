@@ -95,16 +95,17 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials) (strin
 			return nil, err
 		}
 
+		profile := getRandomProfile()
 		req.Host = domain
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+		req.Header.Set("User-Agent", profile.UserAgent)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "*/*")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 		req.Header.Set("Origin", "https://vk.ru")
 		req.Header.Set("Referer", "https://vk.ru/")
-		req.Header.Set("sec-ch-ua-platform", `"Windows"`)
-		req.Header.Set("sec-ch-ua", `"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"`)
-		req.Header.Set("sec-ch-ua-mobile", "?0")
+		req.Header.Set("sec-ch-ua-platform", profile.SecChUaPlatform)
+		req.Header.Set("sec-ch-ua", profile.SecChUa)
+		req.Header.Set("sec-ch-ua-mobile", profile.SecChUaMobile)
 		req.Header.Set("Sec-Fetch-Site", "same-site")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
@@ -183,17 +184,39 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials) (strin
 
 	vkDelayRandom(500, 1000)
 
-	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123&access_token=%s", url.QueryEscape(link), token1)
+	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=%s&access_token=%s", url.QueryEscape(link), url.QueryEscape(generateName()), token1)
 	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.275&client_id=%s", creds.ClientID)
 	resp, err = doRequest(data, urlAddr)
+	var successToken string
+	var solveErr error
+
 	if errMsg, ok := resp["error"].(map[string]interface{}); ok {
 		captchaErr := ParseVkCaptchaError(errMsg)
 		if captchaErr != nil && captchaErr.IsCaptchaError() {
 			turnLog("[VK Auth] Token 2: Captcha detected, solving...")
-			successToken, solveErr := solveVkCaptcha(ctx, captchaErr)
-			if solveErr != nil {
-				return "", "", "", fmt.Errorf("captcha solving failed: %w", solveErr)
+
+			// Try tlsclient-based captcha solving first
+			solver, err := NewCaptchaTlsClientSolver()
+			if err == nil {
+				defer solver.Close()
+				successToken, solveErr = solver.Solve(ctx, captchaErr)
+				if solveErr == nil {
+					turnLog("[VK Auth] Captcha solved via TLSClient")
+				} else {
+					turnLog("[VK Auth] TLSClient captcha failed: %v, trying automatic...", solveErr)
+				}
+			} else {
+				turnLog("[VK Auth] Failed to create TLSClient solver: %v", err)
 			}
+
+			// Try automatic solution if TLSClient failed
+			if successToken == "" {
+				successToken, solveErr = solveVkCaptcha(ctx, captchaErr)
+				if solveErr != nil {
+					return "", "", "", fmt.Errorf("captcha solving failed: %w", solveErr)
+				}
+			}
+
 			turnLog("[VK Auth] Token 2: Retrying with captcha solution...")
 			data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123"+
 				"&captcha_key="+
