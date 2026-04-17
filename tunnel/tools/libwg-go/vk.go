@@ -63,9 +63,16 @@ func fetchVkCreds(ctx context.Context, link string) (string, string, string, err
 	}
 	defer client.CloseIdleConnections()
 
+	profile := Profile{
+		UserAgent:       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+		SecChUa:         `"Not(A:Brand";v="99", "Google Chrome";v="146", "Chromium";v="146"`,
+		SecChUaMobile:   "?0",
+		SecChUaPlatform: `"Windows"`,
+	}
+
 	var lastErr error
 	for _, creds := range vkCredentialsList {
-		user, pass, addr, err := getTokenChain(ctx, link, creds, client)
+		user, pass, addr, err := getTokenChain(ctx, link, creds, client, profile)
 		if err == nil {
 			return user, pass, addr, nil
 		}
@@ -78,7 +85,7 @@ func fetchVkCreds(ctx context.Context, link string) (string, string, string, err
 }
 
 // getTokenChain performs the VK/OK API token chain with given credentials
-func getTokenChain(ctx context.Context, link string, creds VKCredentials, client tlsclient.HttpClient) (string, string, string, error) {
+func getTokenChain(ctx context.Context, link string, creds VKCredentials, client tlsclient.HttpClient, profile Profile) (string, string, string, error) {
 
 	doRequest := func(data string, requestURL string) (resp map[string]interface{}, err error) {
 		parsedURL, err := url.Parse(requestURL)
@@ -106,7 +113,6 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 			return nil, err
 		}
 
-		profile := getRandomProfile()
 		req.Host = domain
 		req.Header.Set("User-Agent", profile.UserAgent)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -193,7 +199,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 			turnLog("[VK Auth] Token 2: Captcha detected, solving...")
 
 			// Try tlsclient-based captcha solving first
-			solver, err := NewCaptchaTlsClientSolver(client)
+			solver, err := NewCaptchaTlsClientSolver(client, profile)
 			if err == nil {
 				defer solver.Close()
 				successToken, solveErr = solver.Solve(ctx, captchaErr)

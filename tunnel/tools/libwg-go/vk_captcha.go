@@ -267,10 +267,13 @@ type CaptchaTlsClientSolver struct {
 }
 
 // NewCaptchaTlsClientSolver creates a new captcha solver with provided tlsclient
-func NewCaptchaTlsClientSolver(client tlsclient.HttpClient) (*CaptchaTlsClientSolver, error) {
+func NewCaptchaTlsClientSolver(client tlsclient.HttpClient, profile Profile) (*CaptchaTlsClientSolver, error) {
+	if client == nil {
+		return nil, fmt.Errorf("tlsclient cannot be nil")
+	}
 	return &CaptchaTlsClientSolver{
 		client:  client,
-		profile: getRandomProfile(),
+		profile: profile,
 	}, nil
 }
 
