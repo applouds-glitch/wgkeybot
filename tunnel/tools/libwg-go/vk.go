@@ -5,6 +5,12 @@
 
 package main
 
+/*
+#include <stdlib.h>
+extern const char* requestCaptcha(const char* redirect_uri);
+*/
+import "C"
+
 import (
 	"bytes"
 	"context"
@@ -13,10 +19,11 @@ import (
 	"io"
 	"math/rand"
 	"net"
-	"net/url"
+	neturl "net/url"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	tlsclient "github.com/kiper292/tls-client"
@@ -38,50 +45,90 @@ var vkCredentialsList = []VKCredentials{
 // vkRequestMu serializes VK API requests to avoid flood control
 var vkRequestMu sync.Mutex
 
+type captchaSolveMode int
+
+const (
+	captchaSolveModeAuto captchaSolveMode = iota
+	captchaSolveModeSliderPOC
+	captchaSolveModeManual
+)
+
+func captchaSolveModeForAttempt(attempt int, manualOnly bool, enableSliderPOC bool) (captchaSolveMode, bool) {
+	if manualOnly {
+		return captchaSolveModeManual, attempt == 0
+	}
+
+	switch attempt {
+	case 0:
+		return captchaSolveModeAuto, true
+	case 1:
+		if enableSliderPOC {
+			return captchaSolveModeSliderPOC, true
+		}
+		return captchaSolveModeManual, true
+	case 2:
+		if enableSliderPOC {
+			return captchaSolveModeManual, true
+		}
+	}
+
+	return 0, false
+}
+
+func captchaSolveModeLabel(mode captchaSolveMode) string {
+	switch mode {
+	case captchaSolveModeAuto:
+		return "auto captcha"
+	case captchaSolveModeSliderPOC:
+		return "auto captcha slider POC"
+	case captchaSolveModeManual:
+		return "manual captcha"
+	default:
+		return "captcha"
+	}
+}
+
 // vkDelayRandom sleeps for a random duration between minMs and maxMs to avoid bot detection
 func vkDelayRandom(minMs, maxMs int) {
 	ms := minMs + rand.Intn(maxMs-minMs+1)
 	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
 
-// fetchVkCreds performs the actual VK/OK API calls to fetch credentials
-func fetchVkCreds(ctx context.Context, link string) (string, string, string, error) {
-	customDialer := net.Dialer{
-		Timeout:   30 * time.Second,
+func getCustomNetDialer() net.Dialer {
+	return net.Dialer{
+		Timeout:   20 * time.Second,
 		KeepAlive: 30 * time.Second,
 		Control:   protectControl,
 	}
+}
 
-	// Custom dial context that resolves domains via DNS cache before TLS connection
-	dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, _, err := net.SplitHostPort(addr)
-		if err != nil {
-			host = addr
-		}
-
-		// Resolve domain via DNS cache for VPN bypass
-		resolvedIP, err := hostCache.Resolve(ctx, host)
-		if err != nil {
-			return nil, fmt.Errorf("DNS resolution failed for %s: %w", host, err)
-		}
-
-		// Dial to resolved IP with protection
-		dialer := &net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-			Control:  protectControl,
-		}
-		return dialer.DialContext(ctx, network, resolvedIP+":443")
+// Custom dial context that resolves domains via DNS cache
+func getCustomDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+		port = "443"
 	}
+
+	resolvedIP, err := hostCache.Resolve(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("DNS resolution failed for %s: %w", host, err)
+	}
+
+	dialer := getCustomNetDialer()
+	return dialer.DialContext(ctx, network, net.JoinHostPort(resolvedIP, port))
+}
+
+// fetchVkCreds performs the actual VK/OK API calls to fetch credentials
+func fetchVkCreds(ctx context.Context, link string) (string, string, string, error) {
 
 	client, err := tlsclient.NewHttpClient(
 		tlsclient.NewNoopLogger(),
 		tlsclient.WithTimeoutSeconds(20),
 		tlsclient.WithClientProfile(profiles.Chrome_146),
-		tlsclient.WithDialer(customDialer),
-		tlsclient.WithDialContext(dialContext),
+		tlsclient.WithDialer(getCustomNetDialer()),
+		tlsclient.WithDialContext(getCustomDialContext),
 	)
-	
 	
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to create tlsclient: %w", err)
@@ -112,54 +159,55 @@ func fetchVkCreds(ctx context.Context, link string) (string, string, string, err
 // getTokenChain performs the VK/OK API token chain with given credentials
 func getTokenChain(ctx context.Context, link string, creds VKCredentials, client tlsclient.HttpClient, profile Profile) (string, string, string, error) {
 
-	doRequest := func(data string, requestURL string) (resp map[string]interface{}, err error) {
-		parsedURL, err := url.Parse(requestURL)
+	doRequest := func(data string, url string) (resp map[string]interface{}, err error) {
+		parsedURL, err := neturl.Parse(url)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse URL: %w", err)
+			return nil, fmt.Errorf("parse request URL: %w", err)
 		}
-
 		domain := parsedURL.Hostname()
 
-		req, err := fhttp.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewBuffer([]byte(data)))
+		req, err := fhttp.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer([]byte(data)))
 		if err != nil {
 			return nil, err
 		}
 
-		// Set Host header for proper SNI in TLS handshake (dialContext handles DNS resolution)
 		req.Host = domain
-		req.Header.Set("User-Agent", profile.UserAgent)
+		applyBrowserProfileFhttp(req, profile)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "*/*")
-		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 		req.Header.Set("Origin", "https://vk.ru")
 		req.Header.Set("Referer", "https://vk.ru/")
-		req.Header.Set("sec-ch-ua-platform", profile.SecChUaPlatform)
-		req.Header.Set("sec-ch-ua", profile.SecChUa)
-		req.Header.Set("sec-ch-ua-mobile", profile.SecChUaMobile)
 		req.Header.Set("Sec-Fetch-Site", "same-site")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
-		req.Header.Set("DNT", "1")
 		req.Header.Set("Priority", "u=1, i")
 
 		httpResp, err := client.Do(req)
 		if err != nil {
 			return nil, err
 		}
-		defer httpResp.Body.Close()
+		defer func() {
+			if closeErr := httpResp.Body.Close(); closeErr != nil {
+				turnLog("close response body: %s", closeErr)
+			}
+		}()
+
 		body, err := io.ReadAll(httpResp.Body)
 		if err != nil {
 			return nil, err
 		}
-		if err = json.Unmarshal(body, &resp); err != nil {
+
+		err = json.Unmarshal(body, &resp)
+		if err != nil {
 			return nil, err
-		}
-		if errMsg, ok := resp["error"].(map[string]interface{}); ok {
-			return resp, fmt.Errorf("VK error: %v", errMsg)
 		}
 		return resp, nil
 	}
 
+	name := generateName()
+	escapedName := neturl.QueryEscape(name)
+
+	// Token 1
 	data := fmt.Sprintf("client_id=%s&token_type=messages&client_secret=%s&version=1&app_id=%s", creds.ClientID, creds.ClientSecret, creds.ClientID)
 	resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
 	if err != nil {
@@ -190,7 +238,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 
 	vkDelayRandom(100, 200)
 
-	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&fields=photo_200&access_token=%s", url.QueryEscape(link), token1)
+	// Token 1 -> getCallPreview
+	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&fields=photo_200&access_token=%s", neturl.QueryEscape(link), token1)
 	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getCallPreview?v=5.275&client_id="+creds.ClientID)
 	if err != nil {
 		turnLog("[VK Auth] getCallPreview request failed: %v", err)
@@ -200,89 +249,153 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 
 	vkDelayRandom(500, 1000)
 
-	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=%s&access_token=%s", url.QueryEscape(link), url.QueryEscape(generateName()), token1)
+	// Token 2
+	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
 	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.275&client_id=%s", creds.ClientID)
-	resp, err = doRequest(data, urlAddr)
-	var successToken string
-	var solveErr error
 
-	if errMsg, ok := resp["error"].(map[string]interface{}); ok {
-		captchaErr := ParseVkCaptchaError(errMsg)
-		if captchaErr != nil && captchaErr.IsCaptchaError() {
-			turnLog("[VK Auth] Token 2: Captcha detected, solving...")
-
-			// Try tlsclient-based captcha solving first
-			solver, err := NewCaptchaTlsClientSolver(client, profile)
-			if err == nil {
-				defer solver.Close()
-				successToken, solveErr = solver.Solve(ctx, captchaErr)
-				if solveErr == nil {
-					turnLog("[VK Auth] Captcha solved via TLSClient")
-				} else {
-					turnLog("[VK Auth] TLSClient captcha failed: %v, trying automatic...", solveErr)
-				}
-			} else {
-				turnLog("[VK Auth] Failed to create TLSClient solver: %v", err)
-			}
-
-			// Try automatic solution if TLSClient failed
-			if successToken == "" {
-				successToken, solveErr = solveVkCaptcha(ctx, captchaErr)
-				if solveErr != nil {
-					return "", "", "", fmt.Errorf("captcha solving failed: %w", solveErr)
-				}
-			}
-
-			turnLog("[VK Auth] Token 2: Retrying with captcha solution...")
-			data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=123"+
-				"&captcha_key="+
-				"&captcha_sid=%s"+
-				"&is_sound_captcha=0"+
-				"&success_token=%s"+
-				"&captcha_ts=%s"+
-				"&captcha_attempt=%s"+
-				"&access_token=%s",
-				url.QueryEscape(link),
-				captchaErr.CaptchaSid,
-				successToken,
-				captchaErr.CaptchaTs,
-				captchaErr.CaptchaAttempt,
-				token1)
-			resp, err = doRequest(data, urlAddr)
-			if err != nil {
-				return "", "", "", err
-			}
-			if errMsg2, ok := resp["error"].(map[string]interface{}); ok {
-				return "", "", "", fmt.Errorf("VK API error (token2 retry): %v", errMsg2)
-			}
-		} else {
-			return "", "", "", fmt.Errorf("VK API error (token2): %v", errMsg)
+	manualCaptcha := true
+	autoCaptchaSliderPOC := true
+	streamID := 0
+	
+	var token2 string
+	for attempt := 0; ; attempt++ {
+		resp, err = doRequest(data, urlAddr)
+		if err != nil {
+			return "", "", "", err
 		}
-	} else if err != nil {
-		return "", "", "", err
-	}
-	responseRaw, ok := resp["response"]
-	if !ok {
-		return "", "", "", fmt.Errorf("invalid response structure for token2: 'response' not found")
-	}
-	responseMap, ok := responseRaw.(map[string]interface{})
-	if !ok || responseMap == nil {
-		return "", "", "", fmt.Errorf("invalid response structure for token2: %v", resp)
-	}
-	token2Raw, ok := responseMap["token"]
-	if !ok {
-		return "", "", "", fmt.Errorf("token2 not found in response: %v", resp)
-	}
-	token2, ok := token2Raw.(string)
-	if !ok {
-		return "", "", "", fmt.Errorf("token2 is not a string: %v", token2Raw)
-	}
-	turnLog("[VK Auth] Token 2 (messages token) received")
 
+		if errObj, hasErr := resp["error"].(map[string]interface{}); hasErr {
+			captchaErr := ParseVkCaptchaError(errObj)
+			if captchaErr != nil && captchaErr.IsCaptchaError() {
+				solveMode, hasSolveMode := captchaSolveModeForAttempt(attempt, manualCaptcha, autoCaptchaSliderPOC)
+				if !hasSolveMode {
+					turnLog("[STREAM %d] [Captcha] No more solve modes available (attempt %d)", streamID, attempt+1)
+
+					// Engage global lockout to protect API
+					//globalCaptchaLockout.Store(time.Now().Add(60 * time.Second).Unix())
+
+					//if connectedStreams.Load() == 0 {
+					//	turnLog("[STREAM %d] [FATAL] 0 connected streams and captcha solve modes exhausted.", streamID)
+					//	return "", "", "", fmt.Errorf("FATAL_CAPTCHA_FAILED_NO_STREAMS")
+					//}
+
+					return "", "", "", fmt.Errorf("CAPTCHA_WAIT_REQUIRED")
+				}
+
+				var successToken string
+				var captchaKey string
+				var solveErr error
+
+				switch solveMode {
+				case captchaSolveModeAuto:
+					if captchaErr.SessionToken != "" && captchaErr.RedirectURI != "" {
+						successToken, solveErr = solveVkCaptcha(ctx, captchaErr, streamID, client, profile, false)
+						if solveErr != nil {
+							turnLog("[STREAM %d] [Captcha] Auto captcha failed: %v", streamID, solveErr)
+						}
+					} else {
+						solveErr = fmt.Errorf("missing fields for auto solve")
+					}
+				case captchaSolveModeSliderPOC:
+					if captchaErr.SessionToken != "" && captchaErr.RedirectURI != "" {
+						successToken, solveErr = solveVkCaptcha(ctx, captchaErr, streamID, client, profile, true)
+						if solveErr != nil {
+							turnLog("[STREAM %d] [Captcha] Auto captcha slider POC failed: %v", streamID, solveErr)
+						}
+					} else {
+						solveErr = fmt.Errorf("missing fields for slider POC auto solve")
+					}
+				case captchaSolveModeManual:
+					turnLog("[STREAM %d] [Captcha] Triggering manual captcha fallback...", streamID)
+				
+					// Step 2: Fall back to WebView
+					turnLog("[Captcha] Opening WebView for manual solving...")
+					redirectURICStr := C.CString(captchaErr.RedirectURI)
+					defer C.free(unsafe.Pointer(redirectURICStr))
+				
+					cToken := C.requestCaptcha(redirectURICStr)
+					if cToken == nil {
+						solveErr = fmt.Errorf("WebView captcha solving failed: returned nil token")
+					}
+					defer C.free(unsafe.Pointer(cToken))
+				
+					successToken = C.GoString(cToken)
+					if successToken == "" {
+						solveErr = fmt.Errorf("WebView captcha solving failed: returned empty token")
+					} else {
+						solveErr = nil;
+						turnLog("[Captcha] WebView solution SUCCESS! Got success_token")
+					}
+				}
+
+				// If solving failed (auto or manual) or timed out
+				if solveErr != nil {
+					turnLog("[STREAM %d] [Captcha] %s failed (attempt %d): %v", streamID, captchaSolveModeLabel(solveMode), attempt+1, solveErr)
+
+					nextSolveMode, hasNextSolveMode := captchaSolveModeForAttempt(attempt+1, manualCaptcha, autoCaptchaSliderPOC)
+					if hasNextSolveMode {
+						turnLog("[STREAM %d] [Captcha] Falling back to %s...", streamID, captchaSolveModeLabel(nextSolveMode))
+						continue
+					}
+
+					// Engage global lockout to protect API
+					//globalCaptchaLockout.Store(time.Now().Add(60 * time.Second).Unix())
+
+					// If we have 0 streams alive, this is fatal
+					//if connectedStreams.Load() == 0 {
+					//	turnLog("[STREAM %d] [FATAL] 0 connected streams and manual captcha failed/timed out.", streamID)
+					//	return "", "", "", fmt.Errorf("FATAL_CAPTCHA_FAILED_NO_STREAMS")
+					//}
+
+					return "", "", "", fmt.Errorf("CAPTCHA_WAIT_REQUIRED")
+				}
+
+				if captchaErr.CaptchaAttempt == "0" || captchaErr.CaptchaAttempt == "" {
+					captchaErr.CaptchaAttempt = "1"
+				}
+
+				if captchaKey != "" {
+					data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&captcha_key=%s&captcha_sid=%s&access_token=%s",
+						link, escapedName, neturl.QueryEscape(captchaKey), captchaErr.CaptchaSid, token1)
+				} else {
+					data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&captcha_key=&captcha_sid=%s&is_sound_captcha=0&success_token=%s&captcha_ts=%s&captcha_attempt=%s&access_token=%s",
+						link, escapedName, captchaErr.CaptchaSid, neturl.QueryEscape(successToken), captchaErr.CaptchaTs, captchaErr.CaptchaAttempt, token1)
+				}
+				continue
+			}
+			return "", "", "", fmt.Errorf("VK API error: %v", errObj)
+		}
+		
+		responseRaw, okLoop := resp["response"]
+		if !okLoop {
+			return "", "", "", fmt.Errorf("invalid response structure for token2: 'response' not found, response: %v", resp)
+		}
+		
+		respMap, okLoop := responseRaw.(map[string]interface{})
+		if !okLoop {
+			return "", "", "", fmt.Errorf("unexpected getAnonymousToken response: %v", resp)
+		}
+
+		token2Raw, okToken2 := respMap["token"]
+		if !okToken2 {
+			return "", "", "", fmt.Errorf("token2 not found in response: %v", resp)
+		}
+		
+		token2, okLoop = token2Raw.(string)
+		if !okLoop {
+			return "", "", "", fmt.Errorf("token2 is not a string: %v", token2Raw)
+		}
+		
+		break
+	} // end of for
+
+	turnLog("[VK Auth] Token 2 (messages token) received")
+	
 	vkDelayRandom(100, 200)
 
+	// Token 3
 	sessionData := fmt.Sprintf(`{"version":2,"device_id":"%s","client_version":1.1,"client_type":"SDK_JS"}`, uuid.New())
-	data = fmt.Sprintf("session_data=%s&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA", url.QueryEscape(sessionData))
+	data = fmt.Sprintf("session_data=%s&method=auth.anonymLogin&format=JSON&application_key=CGMMEJLGDIHBABABA", neturl.QueryEscape(sessionData))
 	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
 	if err != nil {
 		return "", "", "", err
@@ -302,7 +415,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 
 	vkDelayRandom(100, 200)
 
-	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&capabilities=2F7F&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", url.QueryEscape(link), token2, token3)
+	// Token 4 -> TURN Creds
+	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&capabilities=2F7F&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", neturl.QueryEscape(link), token2, token3)
 	resp, err = doRequest(data, "https://calls.okcdn.ru/fb.do")
 	if err != nil {
 		return "", "", "", err
