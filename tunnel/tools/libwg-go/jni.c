@@ -231,19 +231,27 @@ int wgProtectSocket(int fd)
 
 JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_GoBackend_wgTurnOn(JNIEnv *env, jclass c, jstring ifname, jint tun_fd, jstring settings)
 {
-	const char *ifname_str = (*env)->GetStringUTFChars(env, ifname, 0);
-	size_t ifname_len = (*env)->GetStringUTFLength(env, ifname);
-	const char *settings_str = (*env)->GetStringUTFChars(env, settings, 0);
-	size_t settings_len = (*env)->GetStringUTFLength(env, settings);
+	const char *ifname_jni = (*env)->GetStringUTFChars(env, ifname, 0);
+	const char *settings_jni = (*env)->GetStringUTFChars(env, settings, 0);
+
+	// Duplicate strings to avoid MTE issues with JNI-tagged pointers during Go execution
+	char *ifname_str = ifname_jni ? strdup(ifname_jni) : NULL;
+	char *settings_str = settings_jni ? strdup(settings_jni) : NULL;
+
 	int ret = wgTurnOn((struct go_string){
 		.str = ifname_str,
-		.n = ifname_len
+		.n = ifname_str ? (long)strlen(ifname_str) : 0
 	}, tun_fd, (struct go_string){
 		.str = settings_str,
-		.n = settings_len
+		.n = settings_str ? (long)strlen(settings_str) : 0
 	});
-	(*env)->ReleaseStringUTFChars(env, ifname, ifname_str);
-	(*env)->ReleaseStringUTFChars(env, settings, settings_str);
+
+	(*env)->ReleaseStringUTFChars(env, ifname, ifname_jni);
+	(*env)->ReleaseStringUTFChars(env, settings, settings_jni);
+
+	free(ifname_str);
+	free(settings_str);
+
 	return ret;
 }
 
@@ -286,22 +294,39 @@ JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_GoBackend_wgVersion
 
 JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jstring mode, jint n, jint useUdp, jstring listen_addr, jstring turn_ip, jint turn_port, jstring peer_type, jint streams_per_cred, jint watchdog_timeout, jlong network_handle)
 {
-	const char *peer_addr_str = (*env)->GetStringUTFChars(env, peer_addr, 0);
-	const char *vklink_str = (*env)->GetStringUTFChars(env, vklink, 0);
-	const char *mode_str = (*env)->GetStringUTFChars(env, mode, 0);
-	const char *listen_addr_str = (*env)->GetStringUTFChars(env, listen_addr, 0);
-	const char *turn_ip_str = (*env)->GetStringUTFChars(env, turn_ip, 0);
-	const char *peer_type_str = (*env)->GetStringUTFChars(env, peer_type, 0);
+	const char *peer_addr_jni = (*env)->GetStringUTFChars(env, peer_addr, 0);
+	const char *vklink_jni = (*env)->GetStringUTFChars(env, vklink, 0);
+	const char *mode_jni = (*env)->GetStringUTFChars(env, mode, 0);
+	const char *listen_addr_jni = (*env)->GetStringUTFChars(env, listen_addr, 0);
+	const char *turn_ip_jni = (*env)->GetStringUTFChars(env, turn_ip, 0);
+	const char *peer_type_jni = (*env)->GetStringUTFChars(env, peer_type, 0);
+
+	// Duplicate strings to avoid MTE issues with JNI-tagged pointers during Go execution
+	char *peer_addr_str = peer_addr_jni ? strdup(peer_addr_jni) : NULL;
+	char *vklink_str = vklink_jni ? strdup(vklink_jni) : NULL;
+	char *mode_str = mode_jni ? strdup(mode_jni) : NULL;
+	char *listen_addr_str = listen_addr_jni ? strdup(listen_addr_jni) : NULL;
+	char *turn_ip_str = turn_ip_jni ? strdup(turn_ip_jni) : NULL;
+	char *peer_type_str = peer_type_jni ? strdup(peer_type_jni) : NULL;
 
 	update_current_network(env, network_handle);
 
 	int ret = wgTurnProxyStart(peer_addr_str, vklink_str, mode_str, (int)n, (int)useUdp, listen_addr_str, turn_ip_str, (int)turn_port, peer_type_str, (int)streams_per_cred, (int)watchdog_timeout, (long long)network_handle);
-	(*env)->ReleaseStringUTFChars(env, peer_addr, peer_addr_str);
-	(*env)->ReleaseStringUTFChars(env, vklink, vklink_str);
-	(*env)->ReleaseStringUTFChars(env, mode, mode_str);
-	(*env)->ReleaseStringUTFChars(env, listen_addr, listen_addr_str);
-	(*env)->ReleaseStringUTFChars(env, turn_ip, turn_ip_str);
-	(*env)->ReleaseStringUTFChars(env, peer_type, peer_type_str);
+
+	(*env)->ReleaseStringUTFChars(env, peer_addr, peer_addr_jni);
+	(*env)->ReleaseStringUTFChars(env, vklink, vklink_jni);
+	(*env)->ReleaseStringUTFChars(env, mode, mode_jni);
+	(*env)->ReleaseStringUTFChars(env, listen_addr, listen_addr_jni);
+	(*env)->ReleaseStringUTFChars(env, turn_ip, turn_ip_jni);
+	(*env)->ReleaseStringUTFChars(env, peer_type, peer_type_jni);
+
+	free(peer_addr_str);
+	free(vklink_str);
+	free(mode_str);
+	free(listen_addr_str);
+	free(turn_ip_str);
+	free(peer_type_str);
+
 	return ret;
 }
 
