@@ -26,21 +26,18 @@ import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.util.ErrorMessages
 import kotlinx.coroutines.launch
 
-/**
- * Base class for fragments that need to know the currently-selected tunnel. Only does anything when
- * attached to a `BaseActivity`.
- */
 abstract class BaseFragment : Fragment(), OnSelectedTunnelChangedListener {
     private var pendingTunnel: ObservableTunnel? = null
     private var pendingTunnelUp: Boolean? = null
-    private val permissionActivityResultLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        val tunnel = pendingTunnel
-        val checked = pendingTunnelUp
-        if (tunnel != null && checked != null)
-            setTunnelStateWithPermissionsResult(tunnel, checked)
-        pendingTunnel = null
-        pendingTunnelUp = null
-    }
+    private val permissionActivityResultLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            val tunnel = pendingTunnel
+            val checked = pendingTunnelUp
+            if (tunnel != null && checked != null)
+                setTunnelStateWithPermissionsResult(tunnel, checked)
+            pendingTunnel = null
+            pendingTunnelUp = null
+        }
 
     protected var selectedTunnel: ObservableTunnel?
         get() = (activity as? BaseActivity)?.selectedTunnel
@@ -77,9 +74,7 @@ abstract class BaseFragment : Fragment(), OnSelectedTunnelChangedListener {
                     }
                 } catch (e: Throwable) {
                     val message = activity.getString(R.string.error_prepare, ErrorMessages[e])
-                    Snackbar.make(view, message, Snackbar.LENGTH_LONG)
-                        .setAnchorView(view.findViewById(R.id.create_fab))
-                        .show()
+                    Snackbar.make(view, message, Snackbar.LENGTH_LONG).show()
                     Log.e(TAG, message, e)
                 }
             }
@@ -98,9 +93,7 @@ abstract class BaseFragment : Fragment(), OnSelectedTunnelChangedListener {
                 val message = activity.getString(messageResId, error)
                 val view = view
                 if (view != null)
-                    Snackbar.make(view, message, Snackbar.LENGTH_LONG)
-                        .setAnchorView(view.findViewById(R.id.create_fab))
-                        .show()
+                    Snackbar.make(view, message, Snackbar.LENGTH_LONG).show()
                 else
                     Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
                 Log.e(TAG, message, e)

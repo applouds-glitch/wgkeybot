@@ -56,12 +56,6 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent">
 
-            <ImageView
-                android:layout_width="320dp"
-                android:layout_height="67dp"
-                android:contentDescription="@string/app_name"
-                android:scaleType="fitXY"
-                app:srcCompat="@drawable/tv_logo_banner" />
 
         </com.google.android.material.card.MaterialCardView>
 
