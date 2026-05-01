@@ -6,25 +6,31 @@ package com.wireguard.android.activity
 
 import android.content.Intent
 import android.os.Bundle
-import android.view.Menu
-import android.view.MenuItem
 import android.view.View
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.addCallback
 import androidx.appcompat.app.ActionBar
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
 import androidx.fragment.app.commit
+import androidx.lifecycle.lifecycleScope
+import com.wireguard.android.Application
 import com.wireguard.android.R
+import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.fragment.TunnelDetailFragment
-import com.wireguard.android.fragment.TunnelEditorFragment
+import com.wireguard.android.fragment.TunnelListFragment
 import com.wireguard.android.model.ObservableTunnel
+import com.wireguard.config.Config
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
+import org.json.JSONObject
 
-/**
- * CRUD interface for WireGuard tunnels. This activity serves as the main entry point to the
- * WireGuard application, and contains several fragments for listing, viewing details of, and
- * editing the configuration and interface state of WireGuard tunnels.
- */
 class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener {
     private var actionBar: ActionBar? = null
     private var isTwoPaneLayout = false
@@ -32,16 +38,12 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
 
     private fun handleBackPressed() {
         val backStackEntries = supportFragmentManager.backStackEntryCount
-        // If the two-pane layout does not have an editor open, going back should exit the app.
         if (isTwoPaneLayout && backStackEntries <= 1) {
             finish()
             return
         }
-
         if (backStackEntries >= 1)
             supportFragmentManager.popBackStack()
-
-        // Deselect the current tunnel on navigating back from the detail pane to the one-pane list.
         if (backStackEntries == 1)
             selectedTunnel = null
     }
@@ -50,7 +52,6 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         val backStackEntries = supportFragmentManager.backStackEntryCount
         backPressedCallback?.isEnabled = backStackEntries >= 1
         if (actionBar == null) return
-        // Do not show the home menu when the two-pane layout is at the detail view (see above).
         val minBackStackEntries = if (isTwoPaneLayout) 2 else 1
         actionBar!!.setDisplayHomeAsUpEnabled(backStackEntries >= minBackStackEntries)
     }
@@ -63,37 +64,94 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         supportFragmentManager.addOnBackStackChangedListener(this)
         backPressedCallback = onBackPressedDispatcher.addCallback(this) { handleBackPressed() }
         onBackStackChanged()
+        handleDeeplinkIntent(intent)
     }
 
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.main_activity, menu)
-        return true
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleDeeplinkIntent(intent)
     }
 
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        return when (item.itemId) {
-            android.R.id.home -> {
-                // The back arrow in the action bar should act the same as the back button.
-                onBackPressedDispatcher.onBackPressed()
-                true
-            }
+    private fun handleDeeplinkIntent(intent: Intent) {
+        val uri = intent.data ?: return
+        if (uri.scheme != "wgkeybot" || uri.host != "import") return
 
-            R.id.menu_action_edit -> {
-                supportFragmentManager.commit {
-                    replace(if (isTwoPaneLayout) R.id.detail_container else R.id.list_detail_container, TunnelEditorFragment())
-                    setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
-                    addToBackStack(null)
+        val token = uri.getQueryParameter("token") ?: run {
+            Toast.makeText(this, "Deeplink: отсутствует параметр token", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (token.isBlank()) {
+            Toast.makeText(this, "Deeplink: пустой token", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        lifecycleScope.launch {
+            try {
+                val configText = withContext(Dispatchers.IO) {
+                    fetchConfigByToken(token)
                 }
-                true
-            }
-            // This menu item is handled by the editor fragment.
-            R.id.menu_action_save -> false
-            R.id.menu_settings -> {
-                startActivity(Intent(this, SettingsActivity::class.java))
-                true
-            }
 
-            else -> super.onOptionsItemSelected(item)
+                if (!configText.contains("[Interface]") || !configText.contains("[Peer]")) {
+                    throw IllegalArgumentException("Сервер вернул некорректный конфиг")
+                }
+
+                val config = Config.parse(configText.byteInputStream())
+                val tunnelManager = Application.getTunnelManager()
+                val existing = tunnelManager.getTunnels().firstOrNull { it.name == TUNNEL_NAME }
+                val isUpdate = existing != null
+
+                if (existing?.state == Tunnel.State.UP) {
+                    existing.setStateAsync(Tunnel.State.DOWN)
+                }
+                existing?.deleteAsync()
+                tunnelManager.create(TUNNEL_NAME, config)
+
+                val message = if (isUpdate) "Конфиг wgkeybot обновлён" else "Конфиг wgkeybot сохранён"
+                Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
+
+                val fragment = supportFragmentManager.findFragmentById(R.id.list_detail_container)
+                if (fragment is TunnelListFragment) {
+                    fragment.refreshState()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Ошибка импорта: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    @Throws(Exception::class)
+    private fun fetchConfigByToken(token: String): String {
+        val url = URL("https://key.shadowgate.online/api/config/$token")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 15_000
+            readTimeout = 15_000
+            setRequestProperty("Accept", "application/json")
+        }
+        return try {
+            val code = connection.responseCode
+            val stream = if (code in 200..299) {
+                connection.inputStream
+            } else {
+                connection.errorStream ?: throw IllegalStateException("HTTP $code")
+            }
+            val body = BufferedReader(InputStreamReader(stream)).use { it.readText() }
+            if (code !in 200..299) throw IllegalStateException("HTTP $code: $body")
+
+            // Парсим JSON и достаём поле config
+            val json = JSONObject(body)
+            if (!json.getBoolean("ok")) {
+                throw IllegalStateException("Server error: ${json.optString("error")}")
+            }
+            json.getString("config").trim()
+
+        } finally {
+            connection.disconnect()
         }
     }
 
@@ -102,22 +160,16 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         newTunnel: ObservableTunnel?
     ): Boolean {
         val fragmentManager = supportFragmentManager
-        if (fragmentManager.isStateSaved) {
-            return false
-        }
+        if (fragmentManager.isStateSaved) return false
 
         val backStackEntries = fragmentManager.backStackEntryCount
         if (newTunnel == null) {
-            // Clear everything off the back stack (all editors and detail fragments).
             fragmentManager.popBackStackImmediate(0, FragmentManager.POP_BACK_STACK_INCLUSIVE)
             return true
         }
         if (backStackEntries == 2) {
-            // Pop the editor off the back stack to reveal the detail fragment. Use the immediate
-            // method to avoid the editor picking up the new tunnel while it is still visible.
             fragmentManager.popBackStackImmediate()
         } else if (backStackEntries == 0) {
-            // Create and show a new detail fragment.
             fragmentManager.commit {
                 add(if (isTwoPaneLayout) R.id.detail_container else R.id.list_detail_container, TunnelDetailFragment())
                 setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
@@ -125,5 +177,9 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
             }
         }
         return true
+    }
+
+    companion object {
+        private const val TUNNEL_NAME = "wgkeybot"
     }
 }
