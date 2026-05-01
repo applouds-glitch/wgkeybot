@@ -46,7 +46,7 @@ jobs:
         echo "Version: $VERSION_NAME"
 
     - name: Rename APK
-      run: mv ui/build/outputs/apk/release/ui-release.apk ui/build/outputs/apk/release/wg-turn-v${{ steps.version.outputs.version }}.apk
+      run: mv ui/build/outputs/apk/release/ui-release.apk ui/build/outputs/apk/release/wgkeybot-v${{ steps.version.outputs.version }}.apk
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
