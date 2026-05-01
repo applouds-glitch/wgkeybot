@@ -33,7 +33,7 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
       with:
-        packages: 'build-tools;29.0.3'
+        packages: 'build-tools;34.0.0'
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
@@ -48,34 +48,32 @@ jobs:
         echo "version=$VERSION_NAME" >> $GITHUB_OUTPUT
         echo "Version: $VERSION_NAME"
 
-    - name: Generate release notes
-      id: release_notes
-      run: |
-        # Get the previous tag (sorted by creation date, excluding current tag)
-        PREVIOUS_TAG=$(git tag --sort=-creatordate | grep -v "^${{ github.ref_name }}$" | head -n 1)
+- name: Generate release notes
+  id: release_notes
+  run: |
+    PREVIOUS_TAG=$(git tag --sort=-creatordate | grep -v "^${{ github.ref_name }}$" | head -n 1)
 
-        # Generate release notes from commits
-        if [ -n "$PREVIOUS_TAG" ]; then
-          echo "Generating notes from $PREVIOUS_TAG to HEAD"
-          COMMITS=$(git log --pretty=format:"- %s (%h)" $PREVIOUS_TAG..HEAD)
-        else
-          echo "No previous tag found, using all commits"
-          COMMITS=$(git log --pretty=format:"- %s (%h)")
-        fi
+    if [ -n "$PREVIOUS_TAG" ]; then
+      echo "Generating notes from $PREVIOUS_TAG to HEAD"
+      COMMITS=$(git log --pretty=format:"- %s (%h)" $PREVIOUS_TAG..HEAD)
+      CHANGELOG_LINK="https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${{ github.ref_name }}"
+    else
+      echo "No previous tag found, using all commits"
+      COMMITS=$(git log --pretty=format:"- %s (%h)")
+      CHANGELOG_LINK="Initial release"
+    fi
 
-        # Write to file
-        cat > RELEASE_NOTES.md << EOF
-        ## What's Changed
+    cat > RELEASE_NOTES.md << EOF
+    ## What's Changed
 
-        $COMMITS
+    $COMMITS
 
-        **Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${{ github.ref_name }}
-        EOF
+    $CHANGELOG_LINK
+    EOF
 
-        echo "release_notes_file=RELEASE_NOTES.md" >> $GITHUB_OUTPUT
-
+    echo "release_notes_file=RELEASE_NOTES.md" >> $GITHUB_OUTPUT
     - name: Rename APK
-      run: mv ui/build/outputs/apk/release/ui-release.apk ui/build/outputs/apk/release/wg-turn-v${{ steps.version.outputs.version }}.apk
+      run: mv ui/build/outputs/apk/release/ui-release.apk ui/build/outputs/apk/release/wgkeybot-v${{ steps.version.outputs.version }}.apk
 
     - name: Sign APK
       uses: r0adkll/sign-android-release@v1
