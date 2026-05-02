@@ -93,6 +93,19 @@
                 android:textColor="?attr/colorOnSurfaceVariant"
                 android:gravity="center" />
 
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/split_tunnel_button"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="48dp"
+                android:text="Раздельное туннелирование"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:alpha="0.9"
+                android:visibility="gone"
+                app:strokeColor="?attr/colorOnSurfaceVariant"
+                app:strokeWidth="1dp" />
+
 
             <!-- Нет ключа -->
             <TextView

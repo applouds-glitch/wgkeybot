@@ -302,4 +302,5 @@
     <string name="captcha_loading">Loading captcha…</string>
     <string name="captcha_error">Failed to solve captcha. Please try again.</string>
     <string name="captcha_instructions">Please complete the verification to continue</string>
+    <string name="excluded_applications">Раздельное туннелирование</string>
 </resources>
