@@ -30,6 +30,7 @@ import com.wireguard.android.util.ErrorMessages
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.text.TextWatcher
 
 class AppListDialogFragment : DialogFragment() {
     private val appData = ObservableKeyedArrayList<String, ApplicationData>()
@@ -37,6 +38,7 @@ class AppListDialogFragment : DialogFragment() {
     private var initiallyExcluded = false
     private var button: Button? = null
     private var tabs: TabLayout? = null
+    private val allAppData = mutableListOf<ApplicationData>()
 
     private fun loadData() {
         val activity = activity ?: return
@@ -49,6 +51,10 @@ class AppListDialogFragment : DialogFragment() {
                     packageInfos.forEach {
                         val packageName = it.packageName
                         val appInfo = it.applicationInfo ?: return@forEach
+                        // Пропускаем системные приложения
+                        val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                        val isUpdatedSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+                        if (isSystem && !isUpdatedSystem) return@forEach
                         val appData =
                             ApplicationData(appInfo.loadIcon(pm), appInfo.loadLabel(pm).toString(), packageName, currentlySelectedApps.contains(packageName))
                         applicationData.add(appData)
@@ -62,6 +68,8 @@ class AppListDialogFragment : DialogFragment() {
                 }
                 applicationData.sortWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
                 withContext(Dispatchers.Main.immediate) {
+                    allAppData.clear()
+                    allAppData.addAll(applicationData)
                     appData.clear()
                     appData.addAll(applicationData)
                     setButtonText()
@@ -103,6 +111,7 @@ class AppListDialogFragment : DialogFragment() {
         }
     }
 
+
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
         val alertDialogBuilder = MaterialAlertDialogBuilder(requireActivity())
         val binding = AppListDialogFragmentBinding.inflate(requireActivity().layoutInflater, null, false)
@@ -122,6 +131,24 @@ class AppListDialogFragment : DialogFragment() {
         alertDialogBuilder.setNeutralButton(R.string.toggle_all) { _, _ -> }
         binding.fragment = this
         binding.appData = appData
+        // Поиск
+        binding.searchInput.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val query = s?.toString()?.trim()?.lowercase() ?: ""
+                appData.clear()
+                if (query.isEmpty()) {
+                    appData.addAll(allAppData)
+                } else {
+                    appData.addAll(allAppData.filter {
+                        it.name.lowercase().contains(query) ||
+                                it.packageName.lowercase().contains(query)
+                    })
+                }
+                setButtonText()
+            }
+        })
         loadData()
         val dialog = alertDialogBuilder.create()
         dialog.setOnShowListener {
