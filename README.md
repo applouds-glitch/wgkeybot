@@ -1,121 +1,35 @@
-# WireGuard Android с VK TURN Proxy
+# wgkeybot
 
-[English version (README.en.md)](README.en.md)
+<img src="assets/screenshot.png" width="400"/>
 
-Это специализированный форк официального клиента [WireGuard Android](https://git.zx2c4.com/wireguard-android) с интегрированной поддержкой **VK TURN Proxy**.
+Android-приложение для быстрого подключения к WireGuard-конфигу, полученному через бот `@wg_key_bot`.
 
-Проект позволяет инкапсулировать трафик WireGuard в потоки DTLS/TURN, используя инфраструктуру VK Calls. Это обеспечивает надежный способ обхода сетевых ограничений при сохранении высокой производительности и стабильности.
+## Возможности
 
-## Важное предупреждение
+- Подключение и отключение VPN в один тап
+- Отображение статуса соединения и базовой статистики
+- Поддержка раздельного туннелирования по приложениям
+- Режимы include/exclude для списка приложений
+- Русская локализация интерфейса
 
-**Данный проект создан исключительно в учебных и исследовательских целях.**
+## Как использовать
 
-Использование инфраструктуры VK Calls (TURN-серверов) без явного разрешения со стороны правообладателя может нарушать Условия использования сервиса и правила платформы VK. Автор проекта не несет ответственности за любой ущерб или нарушение правил, возникшее в результате использования данного программного обеспечения. Проект демонстрирует техническую возможность интеграции протоколов и не предназначен для нецелевого использования ресурсов сторонних сервисов.
+1. Получи ключ через `@wg_key_bot`
+2. Импортируй или создай туннель в приложении
+3. Нажми кнопку подключения на главном экране
+4. При необходимости открой раздельное туннелирование и выбери приложения, которые должны идти через VPN
 
-## Ключевые особенности
+## Раздельное туннелирование
 
-- **Нативная интеграция**: TURN-клиент встроен напрямую в `libwg-go.so` для максимальной производительности и минимального расхода заряда батареи.
-- **Два режима авторизации**:
-  - **VK Link** — получение учетных данных TURN через анонимные токены VK Calls.
-  - **WB** — получение учетных данных TURN через WB Stream API (гостевая регистрация → создание комнаты → LiveKit ICE).
-- **Многопоточная балансировка**: Высокая производительность и надежность за счет параллельных потоков DTLS, агрегации по Session ID и Round-Robin балансировки исходящего трафика.
-- **Кастомный DNS резолвер**: Все HTTP и WebSocket запросы проходят через встроенный DNS резолвер с защитой сокетов через VPN.
-- **Оптимизация MTU**: Автоматическая установка MTU в 1280 при использовании TURN для стабильной работы инкапсулированных пакетов.
-- **Автоматический рестарт при смене сети**: TURN автоматически переподключается при переключении между WiFi и 4G/5G с защитой от частых перезапусков (debounce).
-- **Быстрое восстановление сети**: Сброс DNS и HTTP-соединений при смене сети для ускоренного переподключения.
-- **Удобная настройка**: Параметры TURN хранятся прямо в стандартных `.conf` файлах WireGuard в виде специальных комментариев-метаданных (`#@wgt:`).
+Приложение позволяет выбрать:
+- только приложения, которые должны идти через VPN;
+- или приложения, которые нужно исключить из туннеля.
 
-## Благодарности
+Для удобства доступен поиск по названию приложения и имени пакета.
 
-Этот проект построен на базе:
-1. **[Official WireGuard Android](https://git.zx2c4.com/wireguard-android)** — основное приложение VPN и пользовательский интерфейс.
-2. **[vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy)** — автор идеи и вдохновитель проекта.
-3. **[lionheart](https://github.com/jaykaiperson/lionheart)** — исходная реализация режима WB для получения TURN credentials.
+## Получение конфига
 
-> **Важно**: Для корректной работы этого клиента (агрегация потоков по Session ID) рекомендуется использовать серверную часть v2 из форка [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy).
+Если ключ ещё не создан, используй Telegram-бота: `@wg_key_bot`.
 
-## Сборка
 
-```bash
-# Требуется Go 1.25+ и Android NDK 29
-$ git clone --recurse-submodules https://github.com/your-repo/wireguard-turn-android
-$ cd wireguard-turn-android
-$ ./gradlew assembleRelease
-```
-
-## Настройка
-
-Вы можете включить прокси в редакторе туннеля. Настройки будут добавлены в секцию Peer вашей конфигурации:
-
-```ini
-[Peer]
-PublicKey = <key>
-Endpoint = vpn.example.com:51820
-AllowedIPs = 0.0.0.0/0
-
-# [Peer] TURN extensions
-#@wgt:EnableTURN = true
-#@wgt:UseUDP = false
-#@wgt:IPPort = 1.2.3.4:56000
-#@wgt:VKLink = https://vk.com/call/join/...
-#@wgt:Mode = vk_link              # Режим авторизации: vk_link или wb
-#@wgt:PeerType = proxy_v2          # proxy_v2 | proxy_v1 | wireguard
-#@wgt:StreamNum = 4
-#@wgt:LocalPort = 9000
-#@wgt:StreamsPerCred = 4           # Потоков на один кэш credentials
-
-# Advanced settings (optional)
-#@wgt:TurnIP = 155.212.199.166      # Переопределить IP TURN сервера
-#@wgt:TurnPort = 19302              # Переопределить порт TURN сервера
-#@wgt:WatchdogTimeout = 30          # Таймаут неактивности (сек, 0=отключен)
-```
-
-**Примечание:** Параметр `PeerType` определяет режим работы:
-- `proxy_v2` (по умолчанию) — DTLS с передачей Session ID для агрегации потоков (сервер: [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy))
-- `proxy_v1` — DTLS без Session ID handshake (сервер: [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy))
-- `wireguard` — без DTLS, прямой relay (NoDTLS, для отладки или прямого подключения)
-
-**Watchdog Timeout:** Параметр `WatchdogTimeout` активирует контроль неактивности для DTLS режима:
-- `0` (по умолчанию) — watchdog отключен
-- `≥5` — таймаут в секундах; если пакеты не получаются от TURN сервера в течение указанного времени, соединение переподключается
-- Применяется только к режимам `proxy_v2` и `proxy_v1`
-
-Для получения подробной технической информации см. [info/TURN_INTEGRATION_DETAILS.md](info/TURN_INTEGRATION_DETAILS.md).
-
-## Donations / Поддержать разработчика
-
-Are welcome here:
-
-<img width="16" height="16" alt="bitcoin" src="https://github.com/user-attachments/assets/ea73b5cc-cba4-4428-8704-d5345acf58d4" /> BTC:
-```plaintext
-1ERKmMSyfxtKNNpU3TeaYCaJfDKY9s8jdX
-```
-
-<img width="16" height="16" alt="ethereum" src="https://github.com/user-attachments/assets/2a2fcba2-66d9-4eb9-a5e7-35e6889f76f0" /> ETH Ethereum (ERC20):
-```plaintext
-0xfa8fdae60010e3d6b446d7479a9ccacfc56c0936
-```
-
-<img width="16" height="16" alt="tether" src="https://github.com/user-attachments/assets/9f88aa41-fcfd-48ea-ae5a-c0bef933666d" /> USDT TRON (TRC20):
-```plaintext
-TMgojRMiya1nJ2uEtw8u7p5YZ9J7Ykdmd9
-```
-
-<img width="16" height="16" alt="tether" src="https://github.com/user-attachments/assets/9f88aa41-fcfd-48ea-ae5a-c0bef933666d" /> USDT APTOS:
-```plaintext
-0x741a8b707b75aa57dc603fa30d1c4750198866b0e9eb6d9a7a1a7dde8ec7f4d2
-```
-
-<img width="16" height="16" alt="tontoken" src="https://github.com/user-attachments/assets/14e9293f-5ca2-49fe-b5ae-4bf48be065a4" /> TON / USDT TON:
-```plaintext
-UQD0BQTBSVo19hrjKyXnRc61MXW0j9dTZaLEXOUJwxLT2qRQ
-```
-
-<img width="16" height="16" alt="litecoin" src="https://github.com/user-attachments/assets/193b09c3-eca6-4feb-b887-a603813c11eb" /> LTC:
-```plaintext
-La2H1YD2zKxqhsziGrx74anjJYwAQJ67er
-```
-
-## Участие в проекте
-
-Для перевода интерфейса используйте оригинальный [WireGuard Crowdin](https://crowdin.com/project/WireGuard). При обнаружении технических ошибок, связанных с интеграцией TURN, пожалуйста, создавайте Issue в этом репозитории.
+Проект основан на https://github.com/kiper292/wireguard-turn-android
