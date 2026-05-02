@@ -19,6 +19,7 @@ import com.wireguard.android.databinding.TunnelListFragmentBinding
 import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.updater.SnackbarUpdateShower
 import com.wireguard.android.util.ErrorMessages
+import com.wireguard.android.viewmodel.ConfigProxy
 import kotlinx.coroutines.launch
 import androidx.activity.result.contract.ActivityResultContracts
 import com.wireguard.android.backend.GoBackend
@@ -29,7 +30,6 @@ class TunnelListFragment : BaseFragment() {
 
     private var binding: TunnelListFragmentBinding? = null
     private val snackbarUpdateShower = SnackbarUpdateShower(this)
-
     private var pendingTunnel: ObservableTunnel? = null
 
     private val vpnPermissionLauncher =
@@ -47,11 +47,10 @@ class TunnelListFragment : BaseFragment() {
                     } catch (e: Exception) {
                         showSnackbar(ErrorMessages[e])
                     } finally {
-                        binding?.vpnToggleButton?.isEnabled = true  // разблокируем
+                        binding?.vpnToggleButton?.isEnabled = true
                     }
                 }
             } else {
-                // пользователь отказал
                 stopPulseAnimation()
                 binding?.vpnToggleButton?.isEnabled = true
             }
@@ -82,19 +81,15 @@ class TunnelListFragment : BaseFragment() {
 
                     when {
                         lastHandshakeMs == 0L -> {
-                            // Handshake ещё не было
                             statusText = "⏳ Ожидание ответа\nот сервера…"
                             statusColor = android.R.color.darker_gray
-                            // продолжаем пульсировать
                         }
                         secondsAgo > 180 -> {
-                            // Последний handshake был >3 минут назад — соединение потеряно
                             statusText = "⚠️ Соединение потеряно\nПоследний ответ: ${formatAgo(secondsAgo)} назад"
                             statusColor = R.color.md_theme_light_error
-                            startPulseAnimation() // снова пульсируем
+                            startPulseAnimation()
                         }
                         else -> {
-                            // Всё хорошо
                             statusText = "✓ Соединение установлено\n↓ ${formatBytes(rx)}  ↑ ${formatBytes(tx)}"
                             statusColor = R.color.md_theme_light_primary
                             stopPulseAnimation()
@@ -125,7 +120,6 @@ class TunnelListFragment : BaseFragment() {
         statsJob = null
         stopPulseAnimation()
     }
-
 
     private fun formatBytes(bytes: Long): String {
         return when {
@@ -167,6 +161,9 @@ class TunnelListFragment : BaseFragment() {
                 startPulseAnimation()
                 toggleWgKeybot()
             }
+            splitTunnelButton.setOnClickListener {
+                openSplitTunnelDialog()
+            }
             snackbarUpdateShower.attach(mainContainer, vpnToggleButton)
         }
         return binding?.root
@@ -197,20 +194,104 @@ class TunnelListFragment : BaseFragment() {
                     if (intent != null) {
                         pendingTunnel = tunnel
                         vpnPermissionLauncher.launch(intent)
-                        return@launch  // isEnabled разблокируется в launcher
+                        return@launch
                     }
                 }
 
                 tunnel.setStateAsync(newState)
                 updateButtonState()
             } catch (e: Exception) {
-                stopPulseAnimation() // ошибка — останавливаем
+                stopPulseAnimation()
                 showSnackbar(ErrorMessages[e])
             } finally {
                 binding?.vpnToggleButton?.isEnabled = true
             }
         }
     }
+
+    // ── Split tunneling ────────────────────────────────────────────────────────
+
+    private fun openSplitTunnelDialog() {
+        lifecycleScope.launch {
+            try {
+                val tunnel = Application.getTunnelManager().getTunnels()
+                    .firstOrNull { it.name == TUNNEL_NAME }
+                if (tunnel == null) {
+                    showSnackbar("Конфиг wgkeybot не найден.")
+                    return@launch
+                }
+                val config = tunnel.getConfigAsync()
+                val proxy = ConfigProxy(config, tunnel.turnSettings)
+
+                var isExcluded = true
+                var selectedApps = ArrayList(proxy.`interface`.excludedApplications)
+                if (selectedApps.isEmpty()) {
+                    selectedApps = ArrayList(proxy.`interface`.includedApplications)
+                    if (selectedApps.isNotEmpty()) isExcluded = false
+                }
+
+                childFragmentManager.setFragmentResultListener(
+                    AppListDialogFragment.REQUEST_SELECTION,
+                    viewLifecycleOwner
+                ) { _, bundle ->
+                    val newSelections = bundle.getStringArray(AppListDialogFragment.KEY_SELECTED_APPS)
+                        ?: return@setFragmentResultListener
+                    val excluded = bundle.getBoolean(AppListDialogFragment.KEY_IS_EXCLUDED)
+                    saveSplitTunnelApps(proxy, newSelections.toList(), excluded)
+                }
+
+                AppListDialogFragment.newInstance(selectedApps, isExcluded)
+                    .show(childFragmentManager, null)
+
+            } catch (e: Exception) {
+                showSnackbar(ErrorMessages[e])
+            }
+        }
+    }
+
+    private fun saveSplitTunnelApps(proxy: ConfigProxy, newSelections: List<String>, excluded: Boolean) {
+        lifecycleScope.launch {
+            try {
+                val tunnel = Application.getTunnelManager().getTunnels()
+                    .firstOrNull { it.name == TUNNEL_NAME }
+                if (tunnel == null) {
+                    showSnackbar("Конфиг wgkeybot не найден.")
+                    return@launch
+                }
+
+                if (excluded) {
+                    proxy.`interface`.includedApplications.clear()
+                    proxy.`interface`.excludedApplications.apply {
+                        clear()
+                        addAll(newSelections)
+                    }
+                } else {
+                    proxy.`interface`.excludedApplications.clear()
+                    proxy.`interface`.includedApplications.apply {
+                        clear()
+                        addAll(newSelections)
+                    }
+                }
+
+                val newConfig = proxy.resolve()
+                val newTurnSettings = proxy.resolveTurnSettings()
+                Application.getTunnelManager().setTunnelConfig(tunnel, newConfig, newTurnSettings)
+
+                updateButtonState()
+                showSnackbar(
+                    when {
+                        newSelections.isEmpty() -> "Все приложения через VPN"
+                        excluded -> "Исключено приложений: ${newSelections.size}"
+                        else -> "Только ${newSelections.size} прил. через VPN"
+                    }
+                )
+            } catch (e: Exception) {
+                showSnackbar(ErrorMessages[e])
+            }
+        }
+    }
+
+    // ── UI state ───────────────────────────────────────────────────────────────
 
     private fun updateButtonState() {
         lifecycleScope.launch {
@@ -219,13 +300,12 @@ class TunnelListFragment : BaseFragment() {
                 .firstOrNull { it.name == TUNNEL_NAME }
 
             if (tunnel == null) {
-                // Скрываем всё связанное с кнопкой
                 binding.buttonContainer.visibility = View.GONE
                 binding.vpnHintLabel.visibility = View.GONE
                 binding.vpnStatusTitle.visibility = View.GONE
                 binding.vpnStatusLabel.visibility = View.GONE
+                binding.splitTunnelButton.visibility = View.GONE
 
-                // Показываем подсказку про бота
                 binding.botLinkLabel.visibility = View.VISIBLE
                 binding.botLinkButton.visibility = View.VISIBLE
                 binding.botLinkButton.setOnClickListener {
@@ -237,49 +317,46 @@ class TunnelListFragment : BaseFragment() {
                 }
                 stopStatsPolling()
             } else {
-                // Конфиг есть — показываем кнопку, скрываем подсказку
                 binding.buttonContainer.visibility = View.VISIBLE
                 binding.vpnHintLabel.visibility = View.VISIBLE
                 binding.vpnStatusTitle.visibility = View.VISIBLE
                 binding.vpnStatusLabel.visibility = View.VISIBLE
+                binding.splitTunnelButton.visibility = View.VISIBLE
 
-                // Скрываем подсказку про бота
                 binding.botLinkLabel.visibility = View.GONE
                 binding.botLinkButton.visibility = View.GONE
 
+                // Текст кнопки split tunneling
+                val config = tunnel.getConfigAsync()
+                binding.splitTunnelButton.text = when {
+                    config.`interface`.includedApplications.isNotEmpty() ->
+                        "Только: ${config.`interface`.includedApplications.size} прил."
+                    config.`interface`.excludedApplications.isNotEmpty() ->
+                        "Исключено: ${config.`interface`.excludedApplications.size} прил."
+                    else -> "Раздельное туннелирование"
+                }
 
                 val isUp = tunnel.state == Tunnel.State.UP
-                binding.vpnToggleButton.apply {
-//                    text = if (isUp) "Отключить" else "Подключить"
-                    backgroundTintList = context.getColorStateList(
-                        if (isUp) R.color.md_theme_light_error
-                        else R.color.md_theme_light_primary
-                    )
-                }
                 if (isUp) {
                     startStatsPolling(tunnel)
                 } else {
                     stopStatsPolling()
                     binding.vpnStatusLabel.text = "Отключено"
                     binding.vpnStatusLabel.setTextColor(
-                        requireContext().getColor(android.R.color.white) // или colorOnSurface
+                        requireContext().getColor(android.R.color.white)
                     )
                 }
 
-
-// Цвет кнопки
                 binding.vpnToggleButton.backgroundTintList = context?.getColorStateList(
                     if (isUp) R.color.md_theme_light_error
                     else R.color.md_theme_light_primary
                 )
 
-// Иконка
                 binding.vpnToggleButton.setIconResource(
                     if (isUp) R.drawable.ic_vpn_close
                     else R.drawable.ic_vpn_arrow
                 )
 
-// Статус
                 binding.vpnStatusLabel.text = when (tunnel.state) {
                     Tunnel.State.UP     -> "Подключено"
                     Tunnel.State.DOWN   -> "Отключено"
@@ -289,15 +366,15 @@ class TunnelListFragment : BaseFragment() {
                 binding.vpnStatusLabel.setTextColor(
                     requireContext().getColor(
                         if (isUp) R.color.md_theme_light_primary
-                        else android.R.color.white  // или colorOnSurface
+                        else android.R.color.white
                     )
                 )
 
-// Подсказка
                 binding.vpnHintLabel.text = if (isUp) "Нажмите для отключения" else "Нажмите для подключения"
             }
         }
     }
+
     fun refreshState() {
         updateButtonState()
     }
