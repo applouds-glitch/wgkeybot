@@ -1,4 +1,5 @@
 /.gradle/
+.idea/
 /.idea/*.xml
 /.idea/caches/
 /.idea/dictionaries/
