@@ -1,4 +1,3 @@
-# wgkeybot
 
 <img src="assets/screenshot.png" width="400"/>
 
