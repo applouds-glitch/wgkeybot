@@ -69,19 +69,19 @@ data class TurnSettings(
                 val value = parts[1].trim()
 
                 when (key) {
-                    "enableturn" -> enabled = value.toBoolean()
-                    "useudp" -> useUdp = value.toBoolean()
-                    "ipport" -> peer = value
-                    "vklink" -> vkLink = value
-                    "mode" -> mode = value
-                    "streamnum" -> streams = value.toIntOrNull() ?: 4
-                    "localport" -> localPort = value.toIntOrNull() ?: 9000
-                    "turnip" -> turnIp = value
-                    "turnport" -> turnPort = value.toIntOrNull() ?: 0
-                    "watchdogtimeout" -> watchdogTimeout = value.toIntOrNull() ?: 0
-                    "nodtls" -> noDtlsLegacy = value.toBoolean()  // legacy, for backward compatibility
-                    "peertype" -> peerType = value
-                    "streamspercred" -> streamsPerCred = value.toIntOrNull() ?: 4
+                    "enableturn"     -> enabled          = value.toBoolean()
+                    "useudp"         -> useUdp           = value.toBoolean()
+                    "ipport"         -> peer             = value
+                    "vklink"         -> vkLink           = value
+                    "mode"           -> mode             = value
+                    "streamnum"      -> streams          = (value.toIntOrNull() ?: 4).coerceIn(1, 16)
+                    "localport"      -> localPort        = (value.toIntOrNull() ?: 9000).coerceIn(1, 65535)
+                    "turnip"         -> turnIp           = value
+                    "turnport"       -> turnPort         = (value.toIntOrNull() ?: 0).let { if (it == 0) 0 else it.coerceIn(1, 65535) }
+                    "watchdogtimeout"-> watchdogTimeout  = (value.toIntOrNull() ?: 0).let { if (it == 0) 0 else it.coerceIn(5, Int.MAX_VALUE) }
+                    "nodtls"         -> noDtlsLegacy     = value.toBoolean()
+                    "peertype"       -> peerType         = value
+                    "streamspercred" -> streamsPerCred   = (value.toIntOrNull() ?: 4).coerceIn(1, 16)
                 }
             }
 
