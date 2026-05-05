@@ -10,7 +10,7 @@ import androidx.databinding.Bindable
 import com.wireguard.android.BR
 import com.wireguard.android.databinding.Keyed
 
-class ApplicationData(val icon: Drawable, val name: String, val packageName: String, isSelected: Boolean) : BaseObservable(), Keyed<String> {
+class ApplicationData(val icon: Drawable, val name: String, val packageName: String, isSelected: Boolean, val isSystem: Boolean = false) : BaseObservable(), Keyed<String> {
     override val key = name
 
     @get:Bindable

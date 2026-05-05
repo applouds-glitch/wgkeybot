@@ -36,6 +36,7 @@
                 android:textSize="20sp"
                 android:textStyle="bold"
                 android:gravity="center"
+                android:minLines="2"
                 android:lineSpacingMultiplier="1.4"
                 android:textColor="?attr/colorOnSurface" />
 
