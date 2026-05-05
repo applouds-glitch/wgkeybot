@@ -42,6 +42,8 @@ class TunnelListFragment : BaseFragment() {
             if (result.resultCode == android.app.Activity.RESULT_OK) {
                 lifecycleScope.launch {
                     try {
+                        binding?.vpnToggleButton?.isEnabled = true
+                        startPulseAnimation()
                         tunnel.setStateAsync(Tunnel.State.UP)
                         updateButtonState()
                     } catch (e: Exception) {
@@ -57,9 +59,12 @@ class TunnelListFragment : BaseFragment() {
         }
 
     private var statsJob: kotlinx.coroutines.Job? = null
+    private var connectingMsgIdx = 0
 
     private fun startStatsPolling(tunnel: ObservableTunnel) {
         statsJob?.cancel()
+        connectingMsgIdx = 0
+        var waitingForHandshake = true
         statsJob = lifecycleScope.launch {
             while (true) {
                 try {
@@ -79,9 +84,11 @@ class TunnelListFragment : BaseFragment() {
                     val statusText: String
                     val statusColor: Int
 
+                    waitingForHandshake = lastHandshakeMs == 0L
                     when {
                         lastHandshakeMs == 0L -> {
-                            statusText = "⏳ Ожидание ответа\nот сервера…"
+                            statusText = CONNECTING_MESSAGES[connectingMsgIdx % CONNECTING_MESSAGES.size]
+                            connectingMsgIdx++
                             statusColor = android.R.color.darker_gray
                         }
                         secondsAgo > 180 -> {
@@ -102,7 +109,7 @@ class TunnelListFragment : BaseFragment() {
                 } catch (e: Exception) {
                     // ignore
                 }
-                kotlinx.coroutines.delay(2000)
+                kotlinx.coroutines.delay(if (waitingForHandshake) 1200L else 2000L)
             }
         }
     }
@@ -133,8 +140,9 @@ class TunnelListFragment : BaseFragment() {
     private var pulseAnimator: ObjectAnimator? = null
 
     private fun startPulseAnimation() {
+        val button = binding?.vpnToggleButton ?: return
         pulseAnimator?.cancel()
-        pulseAnimator = ObjectAnimator.ofFloat(binding?.vpnToggleButton, "alpha", 1f, 0.4f).apply {
+        pulseAnimator = ObjectAnimator.ofFloat(button, "alpha", 1f, 0.4f).apply {
             duration = 800
             repeatCount = ObjectAnimator.INFINITE
             repeatMode = ObjectAnimator.REVERSE
@@ -158,7 +166,6 @@ class TunnelListFragment : BaseFragment() {
         binding = TunnelListFragmentBinding.inflate(inflater, container, false)
         binding?.apply {
             vpnToggleButton.setOnClickListener {
-                startPulseAnimation()
                 toggleWgKeybot()
             }
             splitTunnelButton.setOnClickListener {
@@ -198,6 +205,8 @@ class TunnelListFragment : BaseFragment() {
                     }
                 }
 
+                binding?.vpnToggleButton?.isEnabled = true
+                startPulseAnimation()
                 tunnel.setStateAsync(newState)
                 updateButtonState()
             } catch (e: Exception) {
@@ -398,5 +407,14 @@ class TunnelListFragment : BaseFragment() {
 
     companion object {
         private const val TAG = "WireGuard/TunnelListFragment"
+
+        private val CONNECTING_MESSAGES = listOf(
+            "Подключение к серверу…",
+            "Установка туннеля…",
+            "Согласование ключей…",
+            "Настройка шифрования…",
+            "Проверка маршрутов…",
+            "Ожидание ответа сервера…"
+        )
     }
 }
