@@ -39,6 +39,8 @@ class AppListDialogFragment : DialogFragment() {
     private var button: Button? = null
     private var tabs: TabLayout? = null
     private val allAppData = mutableListOf<ApplicationData>()
+    private var showSystemApps = false
+    private var lastQuery = ""
 
     private fun loadData() {
         val activity = activity ?: return
@@ -51,17 +53,16 @@ class AppListDialogFragment : DialogFragment() {
                     packageInfos.forEach {
                         val packageName = it.packageName
                         val appInfo = it.applicationInfo ?: return@forEach
-                        // Пропускаем системные приложения
-                        val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-                        val isUpdatedSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
-                        if (isSystem && !isUpdatedSystem) return@forEach
-                        val appData =
-                            ApplicationData(appInfo.loadIcon(pm), appInfo.loadLabel(pm).toString(), packageName, currentlySelectedApps.contains(packageName))
+                        val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0 &&
+                                       (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0
+                        val appData = ApplicationData(
+                            appInfo.loadIcon(pm), appInfo.loadLabel(pm).toString(),
+                            packageName, currentlySelectedApps.contains(packageName), isSystem
+                        )
                         applicationData.add(appData)
                         appData.addOnPropertyChangedCallback(object : Observable.OnPropertyChangedCallback() {
                             override fun onPropertyChanged(sender: Observable?, propertyId: Int) {
-                                if (propertyId == BR.selected)
-                                    setButtonText()
+                                if (propertyId == BR.selected) setButtonText()
                             }
                         })
                     }
@@ -70,8 +71,7 @@ class AppListDialogFragment : DialogFragment() {
                 withContext(Dispatchers.Main.immediate) {
                     allAppData.clear()
                     allAppData.addAll(applicationData)
-                    appData.clear()
-                    appData.addAll(applicationData)
+                    applyFilter()
                     setButtonText()
                 }
             } catch (e: Throwable) {
@@ -100,8 +100,17 @@ class AppListDialogFragment : DialogFragment() {
         }
     }
 
+    private fun applyFilter() {
+        val q = lastQuery.trim().lowercase()
+        appData.clear()
+        appData.addAll(allAppData.filter { app ->
+            (showSystemApps || !app.isSystem) &&
+            (q.isEmpty() || app.name.lowercase().contains(q) || app.packageName.lowercase().contains(q))
+        })
+    }
+
     private fun setButtonText() {
-        val numSelected = appData.count { it.isSelected }
+        val numSelected = allAppData.count { it.isSelected }
         button?.text = if (numSelected == 0)
             getString(R.string.use_all_applications)
         else when (tabs?.selectedTabPosition) {
@@ -136,19 +145,16 @@ class AppListDialogFragment : DialogFragment() {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: android.text.Editable?) {
-                val query = s?.toString()?.trim()?.lowercase() ?: ""
-                appData.clear()
-                if (query.isEmpty()) {
-                    appData.addAll(allAppData)
-                } else {
-                    appData.addAll(allAppData.filter {
-                        it.name.lowercase().contains(query) ||
-                                it.packageName.lowercase().contains(query)
-                    })
-                }
+                lastQuery = s?.toString() ?: ""
+                applyFilter()
                 setButtonText()
             }
         })
+        binding.showSystemAppsCheckbox.setOnCheckedChangeListener { _, isChecked ->
+            showSystemApps = isChecked
+            applyFilter()
+            setButtonText()
+        }
         loadData()
         val dialog = alertDialogBuilder.create()
         dialog.setOnShowListener {
@@ -166,7 +172,7 @@ class AppListDialogFragment : DialogFragment() {
 
     private fun setSelectionAndDismiss() {
         val selectedApps: MutableList<String> = ArrayList()
-        for (data in appData) {
+        for (data in allAppData) {
             if (data.isSelected) {
                 selectedApps.add(data.packageName)
             }
