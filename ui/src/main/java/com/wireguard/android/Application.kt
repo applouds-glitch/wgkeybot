@@ -22,6 +22,7 @@ import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.TurnBackend
 import com.wireguard.android.backend.WgQuickBackend
 import com.wireguard.android.activity.CaptchaActivity
+import com.wireguard.android.captcha.CaptchaWebViewManager
 import com.wireguard.android.configStore.FileConfigStore
 import com.wireguard.android.model.TunnelManager
 import com.wireguard.android.turn.TurnProxyManager
@@ -118,11 +119,21 @@ class Application : android.app.Application() {
         // Load wg-go library BEFORE creating TurnProxyManager to avoid UnsatisfiedLinkError
         com.wireguard.android.util.SharedLibraryLoader.loadSharedLibrary(applicationContext, "wg-go")
         turnProxyManager = TurnProxyManager(applicationContext)
-        
-        // Register captcha handler for TURN proxy (fallback when automatic solving fails)
+        CaptchaWebViewManager.onTunnelStart(applicationContext)
+
+        // Try invisible auto-solve first; fall back to visible CaptchaActivity on slider or timeout
         TurnBackend.setCaptchaHandler { redirectUri ->
-            Log.d(TAG, "Captcha handler invoked, showing CaptchaActivity")
-            CaptchaActivity.solveCaptcha(applicationContext, redirectUri)
+            Log.d(TAG, "Captcha handler invoked, trying auto-solve...")
+            try {
+                kotlinx.coroutines.runBlocking {
+                    CaptchaWebViewManager.solveCaptchaAsync(redirectUri)
+                }
+            } catch (e: Exception) {
+                val reason = if (e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED)
+                    "slider detected" else e.message
+                Log.d(TAG, "Auto captcha failed ($reason), falling back to CaptchaActivity")
+                CaptchaActivity.solveCaptcha(applicationContext, redirectUri)
+            }
         }
         
         tunnelManager.onCreate()
@@ -144,6 +155,7 @@ class Application : android.app.Application() {
     }
 
     override fun onTerminate() {
+        CaptchaWebViewManager.onTunnelStop()
         coroutineScope.cancel()
         super.onTerminate()
     }
