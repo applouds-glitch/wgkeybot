@@ -23,14 +23,20 @@ import com.wireguard.android.viewmodel.ConfigProxy
 import kotlinx.coroutines.launch
 import androidx.activity.result.contract.ActivityResultContracts
 import com.wireguard.android.backend.GoBackend
+import com.wireguard.android.backend.TurnBackend
 
 private const val TUNNEL_NAME = "wgkeybot"
+private const val PREFS_TURN_MODE = "turn_mode"
+private const val KEY_STABILITY_MODE = "stability_mode"
 
 class TunnelListFragment : BaseFragment() {
 
     private var binding: TunnelListFragmentBinding? = null
     private val snackbarUpdateShower = SnackbarUpdateShower(this)
     private var pendingTunnel: ObservableTunnel? = null
+    private var isSyncingToggle = false
+    @Volatile private var isConnecting = false
+    @Volatile private var cancelledByUser = false
 
     private val vpnPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -42,13 +48,14 @@ class TunnelListFragment : BaseFragment() {
             if (result.resultCode == android.app.Activity.RESULT_OK) {
                 lifecycleScope.launch {
                     try {
-                        binding?.vpnToggleButton?.isEnabled = true
-                        startPulseAnimation()
+                        isConnecting = true
+                        showConnectingButton()
                         tunnel.setStateAsync(Tunnel.State.UP)
                         updateButtonState()
                     } catch (e: Exception) {
                         showSnackbar(ErrorMessages[e])
                     } finally {
+                        isConnecting = false
                         binding?.vpnToggleButton?.isEnabled = true
                     }
                 }
@@ -59,12 +66,11 @@ class TunnelListFragment : BaseFragment() {
         }
 
     private var statsJob: kotlinx.coroutines.Job? = null
-    private var connectingMsgIdx = 0
+    private var connectionEstablishedShown = false
 
     private fun startStatsPolling(tunnel: ObservableTunnel) {
+        connectionEstablishedShown = false
         statsJob?.cancel()
-        connectingMsgIdx = 0
-        var waitingForHandshake = true
         statsJob = lifecycleScope.launch {
             while (true) {
                 try {
@@ -81,35 +87,37 @@ class TunnelListFragment : BaseFragment() {
                     val rx = stats.totalRx()
                     val tx = stats.totalTx()
 
-                    val statusText: String
-                    val statusColor: Int
-
-                    waitingForHandshake = lastHandshakeMs == 0L
                     when {
                         lastHandshakeMs == 0L -> {
-                            statusText = CONNECTING_MESSAGES[connectingMsgIdx % CONNECTING_MESSAGES.size]
-                            connectingMsgIdx++
-                            statusColor = android.R.color.darker_gray
+                            binding.vpnConnectingIndicator.visibility = View.VISIBLE
+                            binding.vpnStatusLabel.text = "Подключение…"
+                            binding.vpnStatusLabel.setTextColor(
+                                requireContext().getColor(R.color.md_theme_light_onSurfaceVariant)
+                            )
                         }
                         secondsAgo > 180 -> {
-                            statusText = "⚠️ Соединение потеряно\nПоследний ответ: ${formatAgo(secondsAgo)} назад"
-                            statusColor = R.color.md_theme_light_error
+                            connectionEstablishedShown = false
+                            binding.vpnConnectingIndicator.visibility = View.GONE
+                            binding.vpnStatusLabel.text = "⚠️ Соединение потеряно\nПоследний ответ: ${formatAgo(secondsAgo)} назад"
+                            binding.vpnStatusLabel.setTextColor(
+                                requireContext().getColor(R.color.md_theme_light_error)
+                            )
                             startPulseAnimation()
                         }
                         else -> {
-                            statusText = "✓ Соединение установлено\n↓ ${formatBytes(rx)}  ↑ ${formatBytes(tx)}"
-                            statusColor = R.color.md_theme_light_primary
+                            binding.vpnConnectingIndicator.visibility = View.GONE
                             stopPulseAnimation()
+                            connectionEstablishedShown = true
+                            val primaryColor = requireContext().getColor(R.color.md_theme_light_primary)
+                            binding.vpnStatusLabel.text = "✓ Соединение установлено\n↓ ${formatBytes(rx)}  ↑ ${formatBytes(tx)}"
+                            binding.vpnStatusLabel.setTextColor(primaryColor)
                         }
                     }
-
-                    binding.vpnStatusLabel.text = statusText
-                    binding.vpnStatusLabel.setTextColor(requireContext().getColor(statusColor))
 
                 } catch (e: Exception) {
                     // ignore
                 }
-                kotlinx.coroutines.delay(if (waitingForHandshake) 1200L else 2000L)
+                kotlinx.coroutines.delay(2000L)
             }
         }
     }
@@ -125,7 +133,9 @@ class TunnelListFragment : BaseFragment() {
     private fun stopStatsPolling() {
         statsJob?.cancel()
         statsJob = null
+        connectionEstablishedShown = false
         stopPulseAnimation()
+        binding?.vpnConnectingIndicator?.visibility = View.GONE
     }
 
     private fun formatBytes(bytes: Long): String {
@@ -171,6 +181,18 @@ class TunnelListFragment : BaseFragment() {
             splitTunnelButton.setOnClickListener {
                 openSplitTunnelDialog()
             }
+            turnModeToggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
+                if (!isChecked || isSyncingToggle) return@addOnButtonCheckedListener
+                val isStability = checkedId == R.id.btn_mode_stability
+                saveStabilityMode(isStability)
+                lifecycleScope.launch {
+                    val tunnel = Application.getTunnelManager().getTunnels()
+                        .firstOrNull { it.name == TUNNEL_NAME }
+                    if (tunnel?.state == Tunnel.State.UP) {
+                        showSnackbar("Применится при следующем подключении")
+                    }
+                }
+            }
             snackbarUpdateShower.attach(mainContainer, vpnToggleButton)
         }
         return binding?.root
@@ -179,6 +201,22 @@ class TunnelListFragment : BaseFragment() {
     override fun onResume() {
         super.onResume()
         updateButtonState()
+    }
+
+    private fun showConnectingButton() {
+        binding?.apply {
+            vpnToggleButton.isEnabled = true
+            vpnToggleButton.backgroundTintList =
+                context?.getColorStateList(R.color.md_theme_light_error)
+            vpnToggleButton.setIconResource(R.drawable.ic_vpn_close)
+            vpnHintLabel.text = "Нажмите для отмены"
+            vpnConnectingIndicator.visibility = View.VISIBLE
+            vpnStatusLabel.text = "Подключение…"
+            vpnStatusLabel.setTextColor(
+                requireContext().getColor(R.color.md_theme_light_onSurfaceVariant)
+            )
+        }
+        startPulseAnimation()
     }
 
     private fun toggleWgKeybot() {
@@ -194,7 +232,9 @@ class TunnelListFragment : BaseFragment() {
                     return@launch
                 }
 
-                val newState = if (tunnel.state == Tunnel.State.UP) Tunnel.State.DOWN else Tunnel.State.UP
+                // While connecting, a second tap cancels the attempt
+                val newState = if (tunnel.state == Tunnel.State.UP || isConnecting)
+                    Tunnel.State.DOWN else Tunnel.State.UP
 
                 if (newState == Tunnel.State.UP && Application.getBackend() is GoBackend) {
                     val intent = GoBackend.VpnService.prepare(requireContext())
@@ -205,14 +245,27 @@ class TunnelListFragment : BaseFragment() {
                     }
                 }
 
-                binding?.vpnToggleButton?.isEnabled = true
-                startPulseAnimation()
+                if (newState == Tunnel.State.UP) {
+                    cancelledByUser = false
+                    isConnecting = true
+                    showConnectingButton()
+                } else if (isConnecting) {
+                    // User cancelled mid-connect: stop TURN proxy immediately so
+                    // wgTurnProxyStart returns in <1ms and unblocks setStateAsync(UP)
+                    // in the other coroutine, freeing GoBackend's lock for our DOWN call.
+                    cancelledByUser = true
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        TurnBackend.wgTurnProxyStop()
+                    }
+                }
                 tunnel.setStateAsync(newState)
                 updateButtonState()
             } catch (e: Exception) {
                 stopPulseAnimation()
-                showSnackbar(ErrorMessages[e])
+                if (!cancelledByUser) showSnackbar(ErrorMessages[e])
             } finally {
+                cancelledByUser = false
+                isConnecting = false
                 binding?.vpnToggleButton?.isEnabled = true
             }
         }
@@ -312,8 +365,9 @@ class TunnelListFragment : BaseFragment() {
                 binding.buttonContainer.visibility = View.GONE
                 binding.vpnHintLabel.visibility = View.GONE
                 binding.vpnStatusTitle.visibility = View.GONE
-                binding.vpnStatusLabel.visibility = View.GONE
+                binding.vpnStatusRow.visibility = View.GONE
                 binding.splitTunnelButton.visibility = View.GONE
+                binding.turnModeToggle.visibility = View.GONE
 
                 binding.botLinkLabel.visibility = View.VISIBLE
                 binding.botLinkButton.visibility = View.VISIBLE
@@ -329,11 +383,25 @@ class TunnelListFragment : BaseFragment() {
                 binding.buttonContainer.visibility = View.VISIBLE
                 binding.vpnHintLabel.visibility = View.VISIBLE
                 binding.vpnStatusTitle.visibility = View.VISIBLE
-                binding.vpnStatusLabel.visibility = View.VISIBLE
+                binding.vpnStatusRow.visibility = View.VISIBLE
                 binding.splitTunnelButton.visibility = View.VISIBLE
 
                 binding.botLinkLabel.visibility = View.GONE
                 binding.botLinkButton.visibility = View.GONE
+
+                // Show mode toggle only when TURN is enabled with more than one link
+                val turnSettings = tunnel.turnSettings
+                val linkCount = turnSettings?.vkLink
+                    ?.split(",", "|")?.count { it.isNotBlank() } ?: 0
+                val showModeToggle = turnSettings?.enabled == true && linkCount > 1
+                binding.turnModeToggle.visibility = if (showModeToggle) View.VISIBLE else View.GONE
+                if (showModeToggle) {
+                    isSyncingToggle = true
+                    binding.turnModeToggle.check(
+                        if (loadStabilityMode()) R.id.btn_mode_stability else R.id.btn_mode_speed
+                    )
+                    isSyncingToggle = false
+                }
 
                 // Текст кнопки split tunneling
                 val config = tunnel.getConfigAsync()
@@ -347,12 +415,18 @@ class TunnelListFragment : BaseFragment() {
 
                 val isUp = tunnel.state == Tunnel.State.UP
                 if (isUp) {
+                    // Show initial "connecting" state immediately; stats polling will update it
+                    binding.vpnConnectingIndicator.visibility = View.VISIBLE
+                    binding.vpnStatusLabel.text = "Подключение…"
+                    binding.vpnStatusLabel.setTextColor(
+                        requireContext().getColor(R.color.md_theme_light_onSurfaceVariant)
+                    )
                     startStatsPolling(tunnel)
                 } else {
                     stopStatsPolling()
                     binding.vpnStatusLabel.text = "Отключено"
                     binding.vpnStatusLabel.setTextColor(
-                        requireContext().getColor(android.R.color.white)
+                        requireContext().getColor(R.color.md_theme_light_onSurfaceVariant)
                     )
                 }
 
@@ -364,19 +438,6 @@ class TunnelListFragment : BaseFragment() {
                 binding.vpnToggleButton.setIconResource(
                     if (isUp) R.drawable.ic_vpn_close
                     else R.drawable.ic_vpn_arrow
-                )
-
-                binding.vpnStatusLabel.text = when (tunnel.state) {
-                    Tunnel.State.UP     -> "Подключено"
-                    Tunnel.State.DOWN   -> "Отключено"
-                    Tunnel.State.TOGGLE -> "Ожидание"
-                    else                -> "Неизвестно"
-                }
-                binding.vpnStatusLabel.setTextColor(
-                    requireContext().getColor(
-                        if (isUp) R.color.md_theme_light_primary
-                        else android.R.color.white
-                    )
                 )
 
                 binding.vpnHintLabel.text = if (isUp) "Нажмите для отключения" else "Нажмите для подключения"
@@ -405,16 +466,16 @@ class TunnelListFragment : BaseFragment() {
             Toast.makeText(activity ?: Application.get(), message, Toast.LENGTH_SHORT).show()
     }
 
+    private fun loadStabilityMode(): Boolean =
+        requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
+            .getBoolean(KEY_STABILITY_MODE, false)
+
+    private fun saveStabilityMode(stability: Boolean) {
+        requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_STABILITY_MODE, stability).apply()
+    }
+
     companion object {
         private const val TAG = "WireGuard/TunnelListFragment"
-
-        private val CONNECTING_MESSAGES = listOf(
-            "Подключение к серверу…",
-            "Установка туннеля…",
-            "Согласование ключей…",
-            "Настройка шифрования…",
-            "Проверка маршрутов…",
-            "Ожидание ответа сервера…"
-        )
     }
 }

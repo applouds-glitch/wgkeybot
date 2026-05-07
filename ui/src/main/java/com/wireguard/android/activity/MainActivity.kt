@@ -4,12 +4,18 @@
  */
 package com.wireguard.android.activity
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.addCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.ActionBar
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
@@ -35,6 +41,9 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
     private var actionBar: ActionBar? = null
     private var isTwoPaneLayout = false
     private var backPressedCallback: OnBackPressedCallback? = null
+
+    private val batteryOptLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
 
     private fun handleBackPressed() {
         val backStackEntries = supportFragmentManager.backStackEntryCount
@@ -65,6 +74,20 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         backPressedCallback = onBackPressedDispatcher.addCallback(this) { handleBackPressed() }
         onBackStackChanged()
         handleDeeplinkIntent(intent)
+        checkBatteryOptimization()
+    }
+
+    private fun checkBatteryOptimization() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                batteryOptLauncher.launch(intent)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
