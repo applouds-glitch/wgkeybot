@@ -74,7 +74,7 @@ data class TurnSettings(
                     "ipport"         -> peer             = value
                     "vklink"         -> vkLink           = value
                     "mode"           -> mode             = value
-                    "streamnum"      -> streams          = (value.toIntOrNull() ?: 4).coerceIn(1, 16)
+                    "streamnum"      -> streams          = (value.toIntOrNull() ?: 4).coerceIn(1, 128)
                     "localport"      -> localPort        = (value.toIntOrNull() ?: 9000).coerceIn(1, 65535)
                     "turnip"         -> turnIp           = value
                     "turnport"       -> turnPort         = (value.toIntOrNull() ?: 0).let { if (it == 0) 0 else it.coerceIn(1, 65535) }
@@ -100,7 +100,7 @@ data class TurnSettings(
             if (settings.mode != "wb") {
                 require(settings.vkLink.isNotBlank()) { "VK link is empty" }
             }
-            require(settings.streams in 1..16) { "Streams must be between 1 and 16" }
+            require(settings.streams in 1..128) { "Streams must be between 1 and 128" }
             require(settings.localPort in 1..65535) { "Local port must be between 1 and 65535" }
             require(settings.peerType in listOf("proxy_v2", "proxy_v1", "wireguard")) { "Invalid peer type: ${settings.peerType}" }
             require(settings.streamsPerCred in 1..16) { "Streams per credentials must be between 1 and 16" }

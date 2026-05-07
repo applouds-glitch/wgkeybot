@@ -90,7 +90,7 @@ class TurnProxyManager(private val context: Context) {
         Log.d(TAG, "Notifying Go layer of network change...")
         TurnBackend.wgNotifyNetworkChange()
         
-        delay(500) // Give Go minimal time to react
+        delay(500) // Brief pause for Go goroutines to stop; server evicts old conns via AddConn
 
         val name = activeTunnelName ?: return
         val settings = activeSettings ?: return
@@ -177,7 +177,7 @@ class TurnProxyManager(private val context: Context) {
                 Log.d(TAG, "Stopping any existing TURN proxy...")
                 TurnBackend.wgTurnProxyStop()
                 // Give Go runtime a moment to fully clean up goroutines
-                delay(200)
+                delay(100)
 
                 // Wait for JNI to be registered
                 val jniReady = TurnBackend.waitForVpnServiceRegistered(2000)
@@ -200,8 +200,16 @@ class TurnProxyManager(private val context: Context) {
                 val networkType = getNetworkTypeString(lastKnownNetwork)
                 Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $lastKnownNetwork (type=$networkType, handle=$networkHandle)")
 
+                val effectiveVkLink = if (isStabilityMode()) {
+                    settings.vkLink.split(",", "|").map { it.trim() }
+                        .firstOrNull { it.isNotEmpty() } ?: settings.vkLink
+                } else {
+                    settings.vkLink
+                }
+                Log.d(TAG, "Mode: ${if (isStabilityMode()) "Stability (1 link)" else "Speed (${settings.vkLink.split(",","|").count { it.isNotBlank() }} links)"}")
+
                 val ret = TurnBackend.wgTurnProxyStart(
-                    settings.peer, settings.vkLink, settings.mode, settings.streams,
+                    settings.peer, effectiveVkLink, settings.mode, settings.streams,
                     if (settings.useUdp) 1 else 0,
                     "127.0.0.1:${settings.localPort}",
                     settings.turnIp,
@@ -295,6 +303,10 @@ class TurnProxyManager(private val context: Context) {
             else -> "unknown"
         }
     }
+
+    private fun isStabilityMode(): Boolean =
+        context.getSharedPreferences("turn_mode", Context.MODE_PRIVATE)
+            .getBoolean("stability_mode", false)
 
     companion object {
         private const val TAG = "WireGuard/TurnProxyManager"

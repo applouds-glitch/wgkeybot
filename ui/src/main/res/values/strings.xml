@@ -282,8 +282,8 @@
     <string name="turn_mode_wb">WB</string>
     <string name="turn_peer">Peer</string>
     <string name="turn_peer_hint">IP:Port</string>
-    <string name="turn_vk_link">VK Calls link</string>
-    <string name="turn_vk_link_hint">https://vk.ru/call/join/...</string>
+    <string name="turn_vk_link">VK Calls link(s)</string>
+    <string name="turn_vk_link_hint">https://vk.ru/call/join/… (comma-separated)</string>
     <string name="turn_streams">Streams (-n)</string>
     <string name="turn_streams_hint">1-16 (default 4)</string>
     <string name="turn_local_port">Local port</string>

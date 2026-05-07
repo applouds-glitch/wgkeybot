@@ -15,8 +15,7 @@
             android:orientation="vertical"
             android:padding="32dp">
 
-            <!-- Статус -->
-            <!-- Статус / Статистика — всё в одном блоке вверху -->
+            <!-- Статус / Статистика -->
             <TextView
                 android:id="@+id/vpn_status_title"
                 android:layout_width="wrap_content"
@@ -26,19 +25,38 @@
                 android:letterSpacing="0.05"
                 android:textColor="?attr/colorOnSurfaceVariant" />
 
-            <TextView
-                android:id="@+id/vpn_status_label"
+            <!-- Строка: [индикатор] [текст статуса] -->
+            <LinearLayout
+                android:id="@+id/vpn_status_row"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
                 android:layout_marginBottom="32dp"
-                android:text="Отключено"
-                android:textSize="20sp"
-                android:textStyle="bold"
-                android:gravity="center"
-                android:minLines="2"
-                android:lineSpacingMultiplier="1.4"
-                android:textColor="?attr/colorOnSurface" />
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <com.google.android.material.progressindicator.CircularProgressIndicator
+                    android:id="@+id/vpn_connecting_indicator"
+                    style="@style/Widget.Material3.CircularProgressIndicator.ExtraSmall"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:indeterminate="true"
+                    android:visibility="gone"
+                    app:indicatorColor="?attr/colorOnSurfaceVariant"
+                    app:trackColor="@android:color/transparent" />
+
+                <TextView
+                    android:id="@+id/vpn_status_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Отключено"
+                    android:textSize="20sp"
+                    android:textStyle="bold"
+                    android:gravity="center"
+                    android:textColor="?attr/colorOnSurface" />
+
+            </LinearLayout>
 
             <!-- Кнопка с кольцами -->
             <FrameLayout
@@ -93,6 +111,34 @@
                 android:textSize="15sp"
                 android:textColor="?attr/colorOnSurfaceVariant"
                 android:gravity="center" />
+
+            <!-- Режим: Стабильность / Скорость (только когда TURN с несколькими линками) -->
+            <com.google.android.material.button.MaterialButtonToggleGroup
+                android:id="@+id/turn_mode_toggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:visibility="gone"
+                app:selectionRequired="true"
+                app:singleSelection="true">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_mode_stability"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Стабильность"
+                    android:textSize="13sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_mode_speed"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Скорость"
+                    android:textSize="13sp" />
+
+            </com.google.android.material.button.MaterialButtonToggleGroup>
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/split_tunnel_button"

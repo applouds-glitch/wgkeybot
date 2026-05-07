@@ -18,6 +18,7 @@ import com.wireguard.android.Application.Companion.getTunnelManager
 import com.wireguard.android.Application.Companion.getTurnProxyManager
 import com.wireguard.android.BR
 import com.wireguard.android.R
+import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Statistics
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.configStore.ConfigStore
@@ -288,6 +289,20 @@ class TunnelManager(
             if (turnEnabled) {
                 if (shouldStartTurn) {
                     configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn)
+
+                    // Start VpnService early so TURN sockets can be protected before WireGuard starts
+                    if (getBackend() is GoBackend) {
+                        get().startService(Intent(get(), GoBackend.VpnService::class.java))
+                    }
+
+                    // Start TURN proxy BEFORE WireGuard so the first WG handshake has a working proxy
+                    Log.d(TAG, "Starting TURN proxy before WireGuard...")
+                    val turnStarted = withContext(Dispatchers.IO) {
+                        getTurnProxyManager().onTunnelEstablished(tunnel.name, turn)
+                    }
+                    if (!turnStarted) {
+                        Log.w(TAG, "TURN proxy failed to start, WireGuard will proceed anyway")
+                    }
                 } else if (shouldStopTurn) {
                     withContext(Dispatchers.IO) {
                         getTurnProxyManager().stopForTunnel(tunnel.name)
@@ -295,23 +310,8 @@ class TunnelManager(
                 }
             }
 
+            // WireGuard starts after TURN proxy is already listening
             newState = withContext(Dispatchers.IO) { getBackend().setState(tunnel, state, configToUse) }
-
-            // NEW: Start TURN AFTER tunnel is established
-            // This ensures VpnService.protect() will work for TURN sockets
-            if (shouldStartTurn && newState == Tunnel.State.UP) {
-                if (turnEnabled) {
-                    Log.d(TAG, "Tunnel established, starting TURN proxy...")
-                    val turnStarted = withContext(Dispatchers.IO) {
-                        getTurnProxyManager().onTunnelEstablished(tunnel.name, turn)
-                    }
-                    if (!turnStarted) {
-                        Log.w(TAG, "TURN proxy start returned false, but tunnel is up")
-                    }
-                } else {
-                    Log.w(TAG, "TURN not enabled for tunnel ${tunnel.name}, skipping")
-                }
-            }
 
             if (newState == Tunnel.State.UP) {
                 lastUsedTunnel = tunnel
