@@ -502,6 +502,7 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProx
 	wgTurnProxyStop();
 }
 
+
 // Called from Go to request captcha solving from Android UI.
 // Blocks until the user solves the captcha or timeout.
 // Returns a malloc'd string that the caller (Go) must free.

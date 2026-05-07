@@ -5,10 +5,14 @@
 
 package com.wireguard.android.backend;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.os.PowerManager;
 import android.system.OsConstants;
 import android.util.Log;
 
@@ -386,14 +390,68 @@ public final class GoBackend implements Backend {
      */
     public static class VpnService extends android.net.VpnService {
         @Nullable private GoBackend owner;
+        @Nullable private PowerManager.WakeLock wakeLock;
+        @Nullable private WifiManager.WifiLock wifiLock;
+        @Nullable private BroadcastReceiver dozeModeReceiver;
 
         public Builder getBuilder() {
             return new Builder();
         }
 
+        private void acquireWakeLock() {
+            if (wakeLock != null && wakeLock.isHeld()) return;
+            final PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "wgkeybot:vpn_cpu");
+            wakeLock.setReferenceCounted(false);
+            wakeLock.acquire();
+            Log.d(TAG, "WakeLock acquired");
+        }
+
+        private void releaseWakeLock() {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+                Log.d(TAG, "WakeLock released");
+            }
+            wakeLock = null;
+        }
+
+        private void acquireWifiLock() {
+            if (wifiLock != null && wifiLock.isHeld()) return;
+            final WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+            final int mode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                    ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                    : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+            wifiLock = wm.createWifiLock(mode, "wgkeybot:vpn_wifi");
+            wifiLock.setReferenceCounted(false);
+            wifiLock.acquire();
+            Log.d(TAG, "WifiLock acquired");
+        }
+
+        private void releaseWifiLock() {
+            if (wifiLock != null && wifiLock.isHeld()) {
+                wifiLock.release();
+                Log.d(TAG, "WifiLock released");
+            }
+            wifiLock = null;
+        }
+
         @Override
         public void onCreate() {
             Log.d(TAG, "VpnService.onCreate() called");
+            acquireWakeLock();
+            acquireWifiLock();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                dozeModeReceiver = new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(final Context context, final Intent intent) {
+                        final PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                        final boolean idle = pm != null && pm.isDeviceIdleMode();
+                        Log.d(TAG, "Doze idle=" + idle);
+                        TurnBackend.wgSetPauseFlag(idle ? 1 : 0);
+                    }
+                };
+                registerReceiver(dozeModeReceiver, new IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED));
+            }
             // CORRECT ORDER: First register in TurnBackend (JNI), then complete Future
             // This ensures JNI is ready before TurnProxyManager gets the Future
             Log.d(TAG, "Calling TurnBackend.onVpnServiceCreated()...");
@@ -409,6 +467,12 @@ public final class GoBackend implements Backend {
 
         @Override
         public void onDestroy() {
+            releaseWakeLock();
+            releaseWifiLock();
+            if (dozeModeReceiver != null) {
+                unregisterReceiver(dozeModeReceiver);
+                dozeModeReceiver = null;
+            }
             // Unregister from TurnBackend
             TurnBackend.onVpnServiceCreated(null);
             if (owner != null) {
