@@ -268,9 +268,13 @@ class TunnelListFragment : BaseFragment() {
                 stopPulseAnimation()
                 if (!cancelledByUser) showSnackbar(ErrorMessages[e])
             } finally {
-                cancelledByUser = false
-                isConnecting = false
-                binding?.vpnToggleButton?.isEnabled = true
+                // Skip reset if we launched the VPN permission dialog — the
+                // vpnPermissionLauncher callback owns cleanup from this point.
+                if (pendingTunnel == null) {
+                    cancelledByUser = false
+                    isConnecting = false
+                    binding?.vpnToggleButton?.isEnabled = true
+                }
             }
         }
     }
@@ -417,7 +421,7 @@ class TunnelListFragment : BaseFragment() {
                     else -> "Раздельное туннелирование"
                 }
 
-                val isUp = tunnel.state == Tunnel.State.UP
+                val isUp = tunnel.state == Tunnel.State.UP || isConnecting
                 if (isUp) {
                     // Show initial "connecting" state immediately; stats polling will update it
                     binding.vpnConnectingIndicator.visibility = View.VISIBLE
