@@ -476,7 +476,7 @@ class TunnelListFragment : BaseFragment() {
 
     private fun loadStabilityMode(): Boolean =
         requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
-            .getBoolean(KEY_STABILITY_MODE, false)
+            .getBoolean(KEY_STABILITY_MODE, true)
 
     private fun saveStabilityMode(stability: Boolean) {
         requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
