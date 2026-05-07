@@ -11,6 +11,7 @@ import android.os.StrictMode
 import android.os.StrictMode.ThreadPolicy
 import android.os.StrictMode.VmPolicy
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
@@ -91,6 +92,23 @@ class Application : android.app.Application() {
     override fun onCreate() {
         Log.i(TAG, USER_AGENT)
         super.onCreate()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Создаём канал уведомлений сразу при старте приложения
+            val channel = android.app.NotificationChannel(
+                "vpn_running",
+                "VPN Running",
+                android.app.NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Уведомление о работе туннеля"
+                setShowBadge(false)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+                setSound(null, null)
+                enableVibration(false)
+            }
+            val nm = getSystemService(android.app.NotificationManager::class.java)
+            nm?.createNotificationChannel(channel)
+        }
         DynamicColors.applyToActivitiesIfAvailable(this)
         rootShell = RootShell(applicationContext)
         toolsInstaller = ToolsInstaller(applicationContext, rootShell)
