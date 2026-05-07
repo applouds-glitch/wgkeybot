@@ -60,6 +60,7 @@ class TunnelListFragment : BaseFragment() {
                     }
                 }
             } else {
+                isConnecting = false
                 stopPulseAnimation()
                 binding?.vpnToggleButton?.isEnabled = true
             }
@@ -240,6 +241,9 @@ class TunnelListFragment : BaseFragment() {
                     val intent = GoBackend.VpnService.prepare(requireContext())
                     if (intent != null) {
                         pendingTunnel = tunnel
+                        cancelledByUser = false
+                        isConnecting = true
+                        showConnectingButton()
                         vpnPermissionLauncher.launch(intent)
                         return@launch
                     }
