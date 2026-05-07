@@ -1,6 +1,7 @@
 [versions]
 agp = "8.13.2"
 kotlin = "2.3.0"
+core = "1.18.0"
 
 [libraries]
 androidx-activity-ktx = "androidx.activity:activity-ktx:1.12.2"
@@ -21,6 +22,7 @@ jsr305 = "com.google.code.findbugs:jsr305:3.0.2"
 junit = "junit:junit:4.13.2"
 kotlinx-coroutines-android = "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2"
 zxing-android-embedded = "com.journeyapps:zxing-android-embedded:4.3.0"
+androidx-core = { group = "androidx.core", name = "core", version.ref = "core" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
