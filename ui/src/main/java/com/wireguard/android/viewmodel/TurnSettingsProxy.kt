@@ -166,7 +166,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         val parsedStreamsPerCred = streamsPerCred.toIntOrNull() ?: 4
 
         if (enabled) {
-            if (parsedStreams !in 1..16) {
+            if (parsedStreams !in 1..128) {
                 throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, streams)
             }
 
