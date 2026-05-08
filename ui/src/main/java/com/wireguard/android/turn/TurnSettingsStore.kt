@@ -35,6 +35,7 @@ class TurnSettingsStore(private val context: Context) {
                 val noDtlsLegacy = json.optBoolean("noDtls", false)
                 val peerTypeDefault = if (noDtlsLegacy) "wireguard" else "proxy_v2"
 
+
                 val settings = TurnSettings(
                     enabled = json.optBoolean("enabled", false),
                     peer = json.optString("peer", ""),
@@ -47,6 +48,7 @@ class TurnSettingsStore(private val context: Context) {
                     turnPort = json.optInt("turnPort", 0),
                     peerType = json.optString("peerType", peerTypeDefault),
                     streamsPerCred = json.optInt("streamsPerCred", 4),
+                    wrapKey = json.optString("wrapKey", ""),
                 )
                 settings
             }
@@ -77,6 +79,7 @@ class TurnSettingsStore(private val context: Context) {
             .put("turnPort", settings.turnPort)
             .put("peerType", settings.peerType)
             .put("streamsPerCred", settings.streamsPerCred)
+            .put("wrapKey", settings.wrapKey)
 
         file.parentFile?.mkdirs()
         FileOutputStream(file, false).use { stream ->

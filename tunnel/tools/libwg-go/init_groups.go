@@ -26,6 +26,7 @@ type TunnelGroupsConfig struct {
 	SessionID       []byte
 	PauseFlag       *int32
 	WatchdogTimeout int
+	WrapKey         []byte  // ← добавить: 32 байта = WRAP включён, nil = выключен
 }
 
 // StartTunnelGroups launches N WorkerGroups concurrently.
@@ -69,6 +70,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			cert:            cfg.Cert,
 			watchdogTimeout: wd,
 			okFunc:          okFunc,
+			wrapKey:         cfg.WrapKey,  // ← добавить
 		}
 	}
 

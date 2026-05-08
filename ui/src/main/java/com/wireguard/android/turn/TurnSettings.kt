@@ -22,6 +22,7 @@ data class TurnSettings(
     val peerType: String = "proxy_v2",  // "proxy_v2", "proxy_v1", "wireguard"
     val streamsPerCred: Int = 4,
     val watchdogTimeout: Int = 0,
+    val wrapKey: String = "",          // ← новое: 64-hex ChaCha20 ключ, "" = WRAP выключен
 ) {
     fun toComments(): List<String> {
         val lines = mutableListOf(
@@ -40,6 +41,7 @@ data class TurnSettings(
         if (turnIp.isNotBlank()) lines.add("#@wgt:TurnIP = $turnIp")
         if (turnPort > 0) lines.add("#@wgt:TurnPort = $turnPort")
         if (watchdogTimeout > 0) lines.add("#@wgt:WatchdogTimeout = $watchdogTimeout")
+        if (wrapKey.isNotBlank()) lines.add("#@wgt:WrapKey = $wrapKey")
         return lines
     }
 
@@ -59,6 +61,7 @@ data class TurnSettings(
             var watchdogTimeout = 0
             var noDtlsLegacy = false
             var foundAny = false
+            var wrapKey = ""
 
             for (line in comments) {
                 if (!line.startsWith("#@wgt:")) continue
@@ -82,6 +85,7 @@ data class TurnSettings(
                     "nodtls"         -> noDtlsLegacy     = value.toBoolean()
                     "peertype"       -> peerType         = value
                     "streamspercred" -> streamsPerCred   = (value.toIntOrNull() ?: 4).coerceIn(1, 16)
+                    "wrapkey"        -> wrapKey = value
                 }
             }
 
@@ -90,7 +94,7 @@ data class TurnSettings(
                 peerType = if (noDtlsLegacy) "wireguard" else "proxy_v2"
             }
 
-            return if (foundAny) TurnSettings(enabled, peer, vkLink, mode, streams, useUdp, localPort, turnIp, turnPort, peerType, streamsPerCred, watchdogTimeout) else null
+            return if (foundAny) TurnSettings(enabled, peer, vkLink, mode, streams, useUdp, localPort, turnIp, turnPort, peerType, streamsPerCred, watchdogTimeout, wrapKey = wrapKey) else null
         }
 
         fun validate(settings: TurnSettings): TurnSettings {
