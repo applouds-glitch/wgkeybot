@@ -98,6 +98,12 @@ type stream struct {
 	sessionID       []byte
 	cert            *tls.Certificate
 	watchdogTimeout int
+
+	// wrapKey is an optional 32-byte ChaCha20 key for WRAP obfuscation.
+	// When non-nil, raw UDP packets to/from the TURN relay are encrypted with
+	// wrapPacket / unwrapPacket before any DTLS processing.
+	// nil = WRAP disabled (plain mode).
+	wrapKey []byte
 }
 
 // stunBindingIndication is a minimal STUN Binding Indication (RFC 5389, 20 bytes).
@@ -209,7 +215,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// runDTLS — DTLS-obfuscated relay
+// runDTLS — DTLS-obfuscated relay (optionally with WRAP layer)
 // ─────────────────────────────────────────────────────────────────────────────
 
 func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr, sendHandshake bool) error {
@@ -240,7 +246,9 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		c1.Close()
 	})
 
-	// Pipe → Relay
+	// ── Pipe → Relay (TX) ────────────────────────────────────────────────────
+	// When WRAP is enabled, each outgoing DTLS record is encrypted with
+	// wrapPacket before being sent to the relay over UDP.
 	go func() {
 		defer wg.Done()
 		defer sCancel()
@@ -250,7 +258,20 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			if err != nil {
 				return
 			}
-			if _, err := relayConn.WriteTo(buf[:n], peer); err != nil {
+
+			var payload []byte
+			if s.wrapKey != nil {
+				payload, err = wrapPacket(s.wrapKey, buf[:n])
+				if err != nil {
+					turnLog("[STREAM %d] WRAP TX error: %v", s.id, err)
+					relayTxErrorCount.Add(1)
+					return
+				}
+			} else {
+				payload = buf[:n]
+			}
+
+			if _, err := relayConn.WriteTo(payload, peer); err != nil {
 				relayTxErrorCount.Add(1)
 				turnLog("[STREAM %d] relay TX error: %v", s.id, err)
 				return
@@ -258,20 +279,35 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		}
 	}()
 
-	// Relay → Pipe
+	// ── Relay → Pipe (RX) ────────────────────────────────────────────────────
+	// When WRAP is enabled, incoming UDP datagrams are decrypted with
+	// unwrapPacket before being fed into the DTLS pipe.
 	go func() {
 		defer wg.Done()
 		defer sCancel()
-		buf := make([]byte, iPacketBuffMaxSize)
+		wire := make([]byte, iPacketBuffMaxSize)
+		plain := make([]byte, iPacketBuffMaxSize)
 		for {
-			n, from, err := relayConn.ReadFrom(buf)
+			n, from, err := relayConn.ReadFrom(wire)
 			if err != nil {
 				relayRxErrorCount.Add(1)
 				turnLog("[STREAM %d] relay RX error: %v", s.id, err)
 				return
 			}
 			if from.String() == peer.String() {
-				if _, err := c2.WriteTo(buf[:n], peer); err != nil {
+				var data []byte
+				if s.wrapKey != nil {
+					m, unwrapErr := unwrapPacket(s.wrapKey, wire[:n], plain)
+					if unwrapErr != nil {
+						// Corrupted or unrecognised packet — skip silently.
+						turnLog("[STREAM %d] WRAP RX skip: %v", s.id, unwrapErr)
+						continue
+					}
+					data = plain[:m]
+				} else {
+					data = wire[:n]
+				}
+				if _, err := c2.WriteTo(data, peer); err != nil {
 					relayTxErrorCount.Add(1)
 					return
 				}
@@ -455,7 +491,7 @@ func parseLinks(raw string, maxLinks int) []string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 //export wgTurnProxyStart
-func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, networkHandleC C.longlong) int32 {
+func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char, networkHandleC C.longlong) int32 {
 	clearTransientState() // flush DNS + HTTP without clearing credential caches
 	atomic.StoreInt32(&globalPauseFlag, 0) // reset on each new tunnel start
 
@@ -476,6 +512,18 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	peerType := C.GoString(peerTypeC)
 	streamsPerCred = int(streamsPerCredC)
 	watchdogTimeout := int(watchdogTimeoutC)
+
+	// ── WRAP key parsing ──────────────────────────────────────────────────────
+	var wrapKey []byte
+    if wrapKeyStr := C.GoString(wrapKeyC); wrapKeyStr != "" {
+        decoded, err := decodeWrapKey(true, wrapKeyStr)
+        if err != nil {
+            turnLog("[PROXY] Invalid wrapKey: %v", err)
+            return -1
+        }
+        wrapKey = decoded
+        turnLog("[PROXY] WRAP obfuscation enabled")
+    }
 
 	turnMutex.Lock()
 	if currentTurnCancel != nil {
@@ -514,12 +562,12 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	}
 
 	// ── Local listener ────────────────────────────────────────────────────────
-	lc, err := net.ListenPacket("udp", listenAddr)
-	if err != nil {
-		turnLog("[PROXY] ListenPacket failed: %v", err)
-		return -1
-	}
-	context.AfterFunc(ctx, func() { lc.Close() })
+lc, err := net.ListenPacket("udp", listenAddr)
+if err != nil {
+    turnLog("[PROXY] ListenPacket failed: %v", err)
+    return -1
+}
+context.AfterFunc(ctx, func() { lc.Close() })
 
 	sessionID, _ := uuid.New().MarshalBinary()
 	cert, err := selfsign.GenerateSelfSigned()
@@ -527,6 +575,10 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		turnLog("[PROXY] DTLS cert generation failed: %v", err)
 		return -1
 	}
+
+var packetLc net.PacketConn = lc
+
+
 
 	// ── Pre-fetch credentials for all groups ─────────────────────────────────
 	// Done before VPN tunnel is established so any captcha WebView runs over
@@ -558,7 +610,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	prefetchWg.Wait()
 
 	// ── Launch groups ─────────────────────────────────────────────────────────
-	_, okChan, err := StartTunnelGroups(ctx, lc, TunnelGroupsConfig{
+	_, okChan, err := StartTunnelGroups(ctx, packetLc, TunnelGroupsConfig{
 		Links:           links,
 		PeerAddr:        peer,
 		PeerType:        peerType,
@@ -570,6 +622,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		SessionID:       sessionID,
 		WatchdogTimeout: watchdogTimeout,
 		PauseFlag:       &globalPauseFlag,
+		WrapKey:         wrapKey,
 	})
 	if err != nil {
 		turnLog("[PROXY] StartTunnelGroups failed: %v", err)
