@@ -5,10 +5,9 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <item
-        android:id="@+id/menu_settings"
-        android:alphabeticShortcut="s"
-        android:icon="@drawable/ic_settings"
-        android:orderInCategory="1000"
-        android:title="@string/settings"
+        android:id="@+id/menu_theme_toggle"
+        android:icon="@drawable/ic_theme_dark"
+        android:orderInCategory="100"
+        android:title="@string/wgk_theme_toggle_cd"
         app:showAsAction="always" />
 </menu>

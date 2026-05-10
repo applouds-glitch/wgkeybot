@@ -31,6 +31,7 @@ import com.wireguard.android.turn.TurnSettingsStore
 import com.wireguard.android.updater.Updater
 import com.wireguard.android.util.RootShell
 import com.wireguard.android.util.ToolsInstaller
+import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.UserKnobs
 import com.wireguard.android.util.applicationScope
 import kotlinx.coroutines.CompletableDeferred
@@ -113,23 +114,13 @@ class Application : android.app.Application() {
         rootShell = RootShell(applicationContext)
         toolsInstaller = ToolsInstaller(applicationContext, rootShell)
         preferencesDataStore = PreferenceDataStoreFactory.create { applicationContext.preferencesDataStoreFile("settings") }
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            runBlocking {
-                AppCompatDelegate.setDefaultNightMode(if (UserKnobs.darkTheme.first()) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO)
+        AppCompatDelegate.setDefaultNightMode(
+            when (AuthStore.getInstance(this).getThemeMode()) {
+                "light" -> AppCompatDelegate.MODE_NIGHT_NO
+                "dark"  -> AppCompatDelegate.MODE_NIGHT_YES
+                else    -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
             }
-            UserKnobs.darkTheme.onEach {
-                val newMode = if (it) {
-                    AppCompatDelegate.MODE_NIGHT_YES
-                } else {
-                    AppCompatDelegate.MODE_NIGHT_NO
-                }
-                if (AppCompatDelegate.getDefaultNightMode() != newMode) {
-                    AppCompatDelegate.setDefaultNightMode(newMode)
-                }
-            }.launchIn(coroutineScope)
-        } else {
-            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
-        }
+        )
         tunnelManager = TunnelManager(
             FileConfigStore(applicationContext),
             TurnSettingsStore(applicationContext),

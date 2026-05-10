@@ -44,12 +44,25 @@ class AuthStore private constructor(context: Context) {
         }
     }
 
+    fun isAutoRefreshEnabled(): Boolean = prefs.getBoolean(KEY_AUTO_REFRESH, true)
+    fun setAutoRefreshEnabled(enabled: Boolean) = prefs.edit().putBoolean(KEY_AUTO_REFRESH, enabled).apply()
+
+    fun getLastRefreshTime(): Long = prefs.getLong(KEY_LAST_REFRESH, 0L)
+    fun saveLastRefreshTime() = prefs.edit().putLong(KEY_LAST_REFRESH, System.currentTimeMillis()).apply()
+
+    /** "system" | "light" | "dark" */
+    fun getThemeMode(): String = prefs.getString(KEY_THEME, "system") ?: "system"
+    fun setThemeMode(mode: String) = prefs.edit().putString(KEY_THEME, mode).apply()
+
     fun clear() = prefs.edit().clear().apply()
 
     companion object {
         private const val PREFS_NAME = "auth_store"
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_EXPIRES_AT = "subscription_expires_at"
+        private const val KEY_AUTO_REFRESH = "auto_refresh_enabled"
+        private const val KEY_LAST_REFRESH = "last_refresh_time"
+        private const val KEY_THEME = "theme_mode"
 
         @Volatile private var instance: AuthStore? = null
 
