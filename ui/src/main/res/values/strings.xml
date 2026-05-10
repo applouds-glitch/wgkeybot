@@ -355,6 +355,7 @@
     <string name="wgk_no_key_action">Открыть @wg_key_bot</string>
     <string name="wgk_expired_title">Подписка истекла</string>
     <string name="wgk_expired_subtitle">Обратитесь в бот для продления подписки</string>
+    <string name="wgk_check_subscription_action">Проверить оплату</string>
     <string name="wgk_upgrade_required_title">Версия устарела</string>
     <string name="wgk_upgrade_required_message">Версия приложения устарела и больше не поддерживается. Необходимо обновиться.</string>
     <string name="wgk_upgrade_required_action">Скачать</string>
