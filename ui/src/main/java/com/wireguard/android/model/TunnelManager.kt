@@ -286,32 +286,48 @@ class TunnelManager(
             // Stop TURN when tunnel goes DOWN
             val shouldStopTurn = state == Tunnel.State.DOWN || (state == Tunnel.State.TOGGLE && tunnel.state == Tunnel.State.UP)
 
-            if (turnEnabled) {
-                if (shouldStartTurn) {
-                    configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn)
+            // Pre-emptively persist "tunnel going DOWN" before backend teardown.
+            // getBackend().setState(DOWN) calls stopSelf() asynchronously — if Android
+            // restarts the VPN service (AlwaysOn) before saveState() runs at the end,
+            // restoreState() would read stale runningTunnels and auto-reconnect.
+            // Writing {} here (after DataStore edit() commits) eliminates that race window.
+            if (shouldStopTurn) {
+                UserKnobs.setRunningTunnels(
+                    tunnelMap.filter { it.state == Tunnel.State.UP && it.name != tunnel.name }
+                        .map { it.name }.toSet()
+                )
+            }
 
-                    // Start VpnService early so TURN sockets can be protected before WireGuard starts
-                    if (getBackend() is GoBackend) {
-                        get().startService(Intent(get(), GoBackend.VpnService::class.java))
-                    }
+            if (turnEnabled && shouldStartTurn) {
+                configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn)
 
-                    // Start TURN proxy BEFORE WireGuard so the first WG handshake has a working proxy
-                    Log.d(TAG, "Starting TURN proxy before WireGuard...")
-                    val turnStarted = withContext(Dispatchers.IO) {
-                        getTurnProxyManager().onTunnelEstablished(tunnel.name, turn)
-                    }
-                    if (!turnStarted) {
-                        Log.w(TAG, "TURN proxy failed to start, WireGuard will proceed anyway")
-                    }
-                } else if (shouldStopTurn) {
-                    withContext(Dispatchers.IO) {
-                        getTurnProxyManager().stopForTunnel(tunnel.name)
-                    }
+                // Start VpnService early so TURN sockets can be protected before WireGuard starts
+                if (getBackend() is GoBackend) {
+                    get().startService(Intent(get(), GoBackend.VpnService::class.java))
+                }
+
+                // Start TURN proxy BEFORE WireGuard so the first WG handshake has a working proxy
+                Log.d(TAG, "Starting TURN proxy before WireGuard...")
+                val turnStarted = withContext(Dispatchers.IO) {
+                    getTurnProxyManager().onTunnelEstablished(tunnel.name, turn)
+                }
+                if (!turnStarted) {
+                    // WireGuard endpoint is 127.0.0.1:9000 (the TURN proxy), so there is no
+                    // point starting WireGuard if TURN failed — abort so the caller can handle
+                    // the error (e.g. show an error or silently cancel on user request).
+                    throw Exception(context.getString(R.string.turn_start_failed))
                 }
             }
 
-            // WireGuard starts after TURN proxy is already listening
+            // WireGuard stops first, then TURN — mirror image of connect order
             newState = withContext(Dispatchers.IO) { getBackend().setState(tunnel, state, configToUse) }
+
+            if (turnEnabled && shouldStopTurn) {
+                Log.d(TAG, "Stopping TURN proxy after WireGuard...")
+                withContext(Dispatchers.IO) {
+                    getTurnProxyManager().stopForTunnel(tunnel.name)
+                }
+            }
 
             if (newState == Tunnel.State.UP) {
                 lastUsedTunnel = tunnel
@@ -336,7 +352,8 @@ class TunnelManager(
                     manager.refreshTunnelStates()
                     return@launch
                 }
-                if (!UserKnobs.allowRemoteControlIntents.first())
+                val isInternal = intent.getBooleanExtra("internal", false)
+                if (!isInternal && !UserKnobs.allowRemoteControlIntents.first())
                     return@launch
                 val state = when (action) {
                     "com.wireguard.android.action.SET_TUNNEL_UP" -> Tunnel.State.UP
@@ -350,6 +367,13 @@ class TunnelManager(
                     manager.setTunnelState(tunnel, state)
                 } catch (e: Throwable) {
                     Toast.makeText(context, ErrorMessages[e], Toast.LENGTH_LONG).show()
+                } finally {
+                    // For internal disconnect requests, always persist state — setTunnelState
+                    // may return early (tunnel already DOWN) without calling saveState(), leaving
+                    // runningTunnels DataStore stale and causing auto-reconnect on resume.
+                    if (isInternal && state == Tunnel.State.DOWN) {
+                        manager.saveState()
+                    }
                 }
             }
         }

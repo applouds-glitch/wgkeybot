@@ -36,8 +36,13 @@ import com.wireguard.crypto.Key;
 import com.wireguard.crypto.KeyFormatException;
 import com.wireguard.util.NonNullForAll;
 
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+
 import java.net.InetAddress;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -223,10 +228,24 @@ public final class GoBackend implements Backend {
             final VpnService.Builder builder = service.getBuilder();
             builder.setSession(tunnel.getName());
 
-            for (final String excludedApplication : config.getInterface().getExcludedApplications())
-                builder.addDisallowedApplication(excludedApplication);
-            for (final String includedApplication : config.getInterface().getIncludedApplications())
-                builder.addAllowedApplication(includedApplication);
+            if (!config.getInterface().getIncludedApplications().isEmpty()) {
+                // Convert include-only to exclude-all-others so system processes (incl. netd/DNS)
+                // remain in the VPN, preventing DNS leaks caused by addAllowedApplication.
+                final Set<String> included = new HashSet<>(config.getInterface().getIncludedApplications());
+                final List<ApplicationInfo> allApps = context.getPackageManager().getInstalledApplications(0);
+                for (final ApplicationInfo app : allApps) {
+                    if (!included.contains(app.packageName)) {
+                        try {
+                            builder.addDisallowedApplication(app.packageName);
+                        } catch (final Exception e) {
+                            Log.d(TAG, "Skip addDisallowedApplication for " + app.packageName + ": " + e);
+                        }
+                    }
+                }
+            } else {
+                for (final String excludedApplication : config.getInterface().getExcludedApplications())
+                    builder.addDisallowedApplication(excludedApplication);
+            }
             for (final InetNetwork addr : config.getInterface().getAddresses())
                 builder.addAddress(addr.getAddress(), addr.getMask());
             for (final InetAddress addr : config.getInterface().getDnsServers())
@@ -294,6 +313,8 @@ public final class GoBackend implements Backend {
     }
 
     public static class VpnService extends android.net.VpnService {
+        private static final String ACTION_DISCONNECT = "com.wgkeybot.android.action.DISCONNECT_VPN";
+
         @Nullable private GoBackend owner;
         @Nullable private PowerManager.WakeLock wakeLock;
         @Nullable private WifiManager.WifiLock wifiLock;
@@ -510,6 +531,24 @@ public final class GoBackend implements Backend {
 
         @Override
         public int onStartCommand(@Nullable final Intent intent, final int flags, final int startId) {
+            if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
+                Log.d(TAG, "Disconnect requested from notification");
+                // Cancel TURN proxy immediately — this unblocks any in-progress connection attempt
+                // (mirrors what the in-app cancel button does via TurnBackend.wgTurnProxyStop).
+                TurnBackend.wgTurnProxyStop();
+                final Tunnel tunnel = (owner != null) ? owner.currentTunnel : null;
+                if (tunnel != null) {
+                    // Go through the full TunnelManager flow (stops WireGuard, saves state).
+                    final Intent down = new Intent("com.wireguard.android.action.SET_TUNNEL_DOWN");
+                    down.setPackage(getPackageName());
+                    down.putExtra("tunnel", tunnel.getName());
+                    down.putExtra("internal", true);
+                    sendBroadcast(down);
+                } else {
+                    stopSelf();
+                }
+                return START_NOT_STICKY;
+            }
             final CompletableFuture<VpnService> current = vpnServiceRef.get();
             if (!current.isDone()) {
                 current.complete(this);
