@@ -16,7 +16,6 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
-import androidx.core.os.bundleOf
 import androidx.databinding.Observable
 import androidx.fragment.app.DialogFragment
 import androidx.fragment.app.setFragmentResult
@@ -216,10 +215,11 @@ class AppListDialogFragment : DialogFragment() {
         val b = binding ?: return
         val selectedApps = allAppData.filter { it.isSelected }.map { it.packageName }
         setFragmentResult(
-            REQUEST_SELECTION, bundleOf(
-                KEY_SELECTED_APPS to selectedApps.toTypedArray(),
-                KEY_IS_EXCLUDED to (b.tabs.selectedTabPosition == 0)
-            )
+            REQUEST_SELECTION,
+            Bundle().apply {
+                putStringArray(KEY_SELECTED_APPS, selectedApps.toTypedArray())
+                putBoolean(KEY_IS_EXCLUDED, b.tabs.selectedTabPosition == 0)
+            }
         )
         dismiss()
     }

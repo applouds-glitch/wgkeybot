@@ -32,7 +32,8 @@ import com.wireguard.android.R
 import com.wireguard.android.fragment.TunnelDetailFragment
 import com.wireguard.android.fragment.TunnelListFragment
 import com.wireguard.android.model.ObservableTunnel
-import com.wireguard.android.util.ConfigFetcher
+import com.wireguard.android.util.ApiClient
+import com.wireguard.android.util.AuthStore
 import com.wireguard.config.Config
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -48,14 +49,9 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
 
     private fun handleBackPressed() {
         val backStackEntries = supportFragmentManager.backStackEntryCount
-        if (isTwoPaneLayout && backStackEntries <= 1) {
-            finish()
-            return
-        }
-        if (backStackEntries >= 1)
-            supportFragmentManager.popBackStack()
-        if (backStackEntries == 1)
-            selectedTunnel = null
+        if (isTwoPaneLayout && backStackEntries <= 1) { finish(); return }
+        if (backStackEntries >= 1) supportFragmentManager.popBackStack()
+        if (backStackEntries == 1) selectedTunnel = null
     }
 
     override fun onBackStackChanged() {
@@ -92,12 +88,12 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         if (!pm.isIgnoringBatteryOptimizations(packageName)) {
             try {
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:$packageName")
-                }
-                batteryOptLauncher.launch(intent)
-            } catch (_: Exception) {
-            }
+                batteryOptLauncher.launch(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                )
+            } catch (_: Exception) { }
         }
     }
 
@@ -108,34 +104,35 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
 
     private fun handleDeeplinkIntent(intent: Intent) {
         val uri = intent.data ?: return
-        if (uri.scheme != "wgkeybot" || uri.host != "import") return
+        if (uri.scheme != "wgkeybot" || uri.host != "config") return
 
-        val token = uri.getQueryParameter("token") ?: run {
+        val oneTimeToken = uri.getQueryParameter("token")?.takeIf { it.isNotBlank() } ?: run {
             Toast.makeText(this, "Deeplink: отсутствует параметр token", Toast.LENGTH_SHORT).show()
             return
         }
 
-        if (token.isBlank()) {
-            Toast.makeText(this, "Deeplink: пустой token", Toast.LENGTH_SHORT).show()
-            return
-        }
+        val auth = AuthStore.getInstance(this)
+        if (auth.hasAuth()) return  // already authorised — ignore deeplink
 
         lifecycleScope.launch {
             try {
-                val configText = withContext(Dispatchers.IO) { ConfigFetcher.fetch(token) }
+                val resp = withContext(Dispatchers.IO) { ApiClient.init(oneTimeToken) }
 
-                if (!configText.contains("[Interface]") || !configText.contains("[Peer]")) {
+                auth.saveAccessToken(resp.accessToken)
+                auth.saveSubscriptionExpiresAt(resp.subscriptionExpiresAt)
+
+                if (!resp.config.contains("[Interface]") || !resp.config.contains("[Peer]")) {
                     throw IllegalArgumentException("Сервер вернул некорректный конфиг")
                 }
 
-                val config = Config.parse(configText.byteInputStream())
+                val config = Config.parse(resp.config.byteInputStream())
                 val fragment = supportFragmentManager.findFragmentById(R.id.list_detail_container)
                 if (fragment is TunnelListFragment) {
-                    fragment.applyConfig(token, config)
+                    fragment.applyConfig(config)
                     fragment.refreshState()
                 }
             } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, "Ошибка импорта: ${e.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "Ошибка авторизации: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -163,5 +160,4 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         }
         return true
     }
-
 }
