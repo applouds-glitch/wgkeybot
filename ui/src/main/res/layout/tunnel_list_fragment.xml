@@ -147,6 +147,18 @@
                 app:iconGravity="textStart"
                 app:iconPadding="8dp" />
 
+            <!-- Check subscription button (shown only when expired) -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/wgk_check_subscription_btn"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:visibility="gone"
+                android:text="@string/wgk_check_subscription_action"
+                app:cornerRadius="24dp"
+                app:strokeColor="@color/wgk_outline" />
+
         </LinearLayout>
 
     </androidx.constraintlayout.widget.ConstraintLayout>
