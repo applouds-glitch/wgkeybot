@@ -104,7 +104,7 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
 
     private fun handleDeeplinkIntent(intent: Intent) {
         val uri = intent.data ?: return
-        if (uri.scheme != "wgkeybot" || uri.host != "import") return
+        if (uri.scheme != "wgkeybot" || uri.host != "config") return
 
         val oneTimeToken = uri.getQueryParameter("token")?.takeIf { it.isNotBlank() } ?: run {
             Toast.makeText(this, "Deeplink: отсутствует параметр token", Toast.LENGTH_SHORT).show()
