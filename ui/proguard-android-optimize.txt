@@ -34,6 +34,10 @@
     @androidx.annotation.Keep <init>(...);
 }
 
+# Suppress R8 warnings for missing javax.annotation classes (from tink/guava transitive deps)
+-dontwarn javax.annotation.**
+-dontwarn javax.annotation.concurrent.**
+
 # Keep TurnBackend methods called from JNI via reflection
 -keep class com.wireguard.android.backend.TurnBackend {
     public static void setCaptchaHandler(java.util.function.Function);
