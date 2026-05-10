@@ -130,6 +130,46 @@
                 android:textAppearance="?attr/textAppearanceBodyMedium"
                 android:textColor="@color/wgk_on_surface_variant" />
 
+            <!-- Token input -->
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/wgk_token_input_layout"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:hint="@string/wgk_token_hint">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/wgk_token_input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:inputType="textNoSuggestions"
+                    android:maxLines="1" />
+
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <!-- Connect with token button -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/wgk_connect_with_token_btn"
+                style="@style/Widget.Material3.Button"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/wgk_connect_action"
+                app:backgroundTint="@color/wgk_primary"
+                android:textColor="@color/wgk_on_primary"
+                app:cornerRadius="24dp" />
+
+            <!-- Divider -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:text="@string/wgk_or_divider"
+                android:textAppearance="?attr/textAppearanceLabelMedium"
+                android:textColor="@color/wgk_on_surface_variant" />
+
             <!-- Bot button -->
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/wgk_bot_link_btn"
