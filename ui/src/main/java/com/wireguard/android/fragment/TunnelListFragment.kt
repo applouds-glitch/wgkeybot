@@ -280,10 +280,9 @@ class TunnelListFragment : BaseFragment() {
         b.wgkConnectWithTokenBtn.setOnClickListener {
             val token = b.wgkTokenInput.text?.toString()?.trim() ?: ""
             if (token.isBlank()) {
-                b.wgkTokenInputLayout.error = getString(R.string.wgk_token_error_empty)
+                showSnackbar(getString(R.string.wgk_token_error_empty))
                 return@setOnClickListener
             }
-            b.wgkTokenInputLayout.error = null
             initWithToken(token)
         }
         if (expired) {
