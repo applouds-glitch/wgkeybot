@@ -63,6 +63,24 @@
             </LinearLayout>
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/wgk_auto_refresh_btn"
+                style="?attr/materialIconButtonOutlinedStyle"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:layout_marginEnd="6dp"
+                android:contentDescription="@string/wgk_auto_refresh_cd"
+                app:icon="@drawable/ic_auto_renew"
+                app:iconGravity="textTop"
+                app:iconPadding="0dp"
+                app:iconSize="18dp"
+                app:iconTint="@color/wgk_primary"
+                app:strokeColor="@color/wgk_outline" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/wgk_refresh_btn"
                 style="?attr/materialIconButtonOutlinedStyle"
                 android:layout_width="40dp"
@@ -76,7 +94,7 @@
                 app:iconGravity="textTop"
                 app:iconPadding="0dp"
                 app:iconSize="18dp"
-                app:iconTint="@color/wgk_on_surface"
+                app:iconTint="@color/wgk_primary"
                 app:strokeColor="@color/wgk_outline" />
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>

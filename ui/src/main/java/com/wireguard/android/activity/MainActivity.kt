@@ -6,6 +6,7 @@ package com.wireguard.android.activity
 
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
@@ -17,12 +18,16 @@ import android.text.Spanned
 import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.TypefaceSpan
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.ActionBar
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.graphics.drawable.DrawableCompat
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
 import androidx.fragment.app.commit
@@ -82,6 +87,46 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         onBackStackChanged()
         handleDeeplinkIntent(intent)
         checkBatteryOptimization()
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.main_activity, menu)
+        val item = menu.findItem(R.id.menu_theme_toggle) ?: return true
+        val iconRes = if (isEffectivelyDark()) R.drawable.ic_theme_dark else R.drawable.ic_theme_light
+        val drawable = androidx.core.content.ContextCompat.getDrawable(this, iconRes)?.mutate() ?: return true
+        val tintColor = if (isEffectivelyDark()) android.graphics.Color.WHITE else android.graphics.Color.BLACK
+        DrawableCompat.setTint(DrawableCompat.wrap(drawable), tintColor)
+        item.icon = drawable
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        return when (item.itemId) {
+            android.R.id.home -> {
+                supportFragmentManager.popBackStack()
+                true
+            }
+            R.id.menu_theme_toggle -> {
+                val auth = AuthStore.getInstance(this)
+                val next = if (isEffectivelyDark()) "light" else "dark"
+                auth.setThemeMode(next)
+                AppCompatDelegate.setDefaultNightMode(
+                    if (next == "dark") AppCompatDelegate.MODE_NIGHT_YES
+                    else AppCompatDelegate.MODE_NIGHT_NO
+                )
+                true
+            }
+            else -> super.onOptionsItemSelected(item)
+        }
+    }
+
+    private fun isEffectivelyDark(): Boolean {
+        return when (AuthStore.getInstance(this).getThemeMode()) {
+            "dark"  -> true
+            "light" -> false
+            else    -> (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                    Configuration.UI_MODE_NIGHT_YES
+        }
     }
 
     private fun checkBatteryOptimization() {
