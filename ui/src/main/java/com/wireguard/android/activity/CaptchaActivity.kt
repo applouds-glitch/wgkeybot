@@ -103,6 +103,7 @@ class CaptchaActivity : AppCompatActivity() {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             previousNetwork = cm.boundNetworkForProcess
 
+            @Suppress("DEPRECATION")
             val networks = cm.allNetworks
             for (network in networks) {
                 val caps = cm.getNetworkCapabilities(network) ?: continue

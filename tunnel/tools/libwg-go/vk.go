@@ -109,19 +109,17 @@ const (
 )
 
 func captchaSolveModeForAttempt(attempt int, manualCaptcha bool, enableSliderPOC bool) (captchaSolveMode, bool) {
-	switch attempt {
-	case 0:
-		return captchaSolveModeAuto, true
-	case 1:
-		if enableSliderPOC {
-			return captchaSolveModeSliderPOC, true
-		}
-	case 2:
-		if manualCaptcha {
-			return captchaSolveModeManual, true
-		}
+	var modes []captchaSolveMode
+	if manualCaptcha {
+		modes = append(modes, captchaSolveModeManual)
 	}
-
+	modes = append(modes, captchaSolveModeAuto)
+	if enableSliderPOC {
+		modes = append(modes, captchaSolveModeSliderPOC)
+	}
+	if attempt < len(modes) {
+		return modes[attempt], true
+	}
 	return 0, false
 }
 
@@ -287,17 +285,6 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	}
 	turnLog("[VK Auth] Token 1 (anonym_token) received")
 
-	vkDelayRandom(100, 200)
-
-	// Token 1 -> getCallPreview
-	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&fields=photo_200&access_token=%s", neturl.QueryEscape(link), token1)
-	resp, err = doRequest(data, "https://api.vk.ru/method/calls.getCallPreview?v=5.275&client_id="+creds.ClientID)
-	if err != nil {
-		turnLog("[VK Auth] getCallPreview request failed: %v", err)
-	} else {
-		turnLog("[VK Auth] getCallPreview completed (optional)")
-	}
-
 	vkDelayRandom(500, 1000)
 
 	// Token 2
@@ -345,7 +332,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 
 				switch solveMode {
 				case captchaSolveModeAuto:
-					turnLog("[Captcha] Attempt 1. Try auto solving...")
+					turnLog("[Captcha] Attempt %d. Try auto solving...", attempt+1)
 					if captchaErr.SessionToken != "" && captchaErr.RedirectURI != "" {
 						successToken, solveErr = solveVkCaptcha(ctx, captchaErr, streamID, client, profile, false)
 						if solveErr != nil {
@@ -355,7 +342,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 						solveErr = fmt.Errorf("missing fields for auto solve")
 					}
 				case captchaSolveModeSliderPOC:
-					turnLog("[Captcha] Attempt 2. Try slider solving...")
+					turnLog("[Captcha] Attempt %d. Try slider solving...", attempt+1)
 					if captchaErr.SessionToken != "" && captchaErr.RedirectURI != "" {
 						successToken, solveErr = solveVkCaptcha(ctx, captchaErr, streamID, client, profile, true)
 						if solveErr != nil {
@@ -365,8 +352,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 						solveErr = fmt.Errorf("missing fields for slider POC auto solve")
 					}
 				case captchaSolveModeManual:
-					turnLog("[STREAM %d] [Captcha] Triggering manual captcha fallback...", streamID)
-					turnLog("[Captcha] Attempt 3. Web view solving...")
+					turnLog("[STREAM %d] [Captcha] Triggering WebView captcha...", streamID)
+					turnLog("[Captcha] Attempt %d. Web view solving...", attempt+1)
 					turnLog("[Captcha] Opening WebView for manual solving...")
 					redirectURICStr := C.CString(captchaErr.RedirectURI)
 					defer C.free(unsafe.Pointer(redirectURICStr))
