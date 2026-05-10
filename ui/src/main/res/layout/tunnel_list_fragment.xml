@@ -6,185 +6,148 @@
         android:id="@+id/main_container"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="?attr/colorSurface">
+        android:background="@color/wgk_background">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <!-- Profile card -->
+        <include
+            android:id="@+id/wgk_profile_card"
+            layout="@layout/view_wgk_profile_card"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="16dp"
+            android:layout_marginTop="16dp"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- Connect button (260dp circle with 3 rings) — centred vertically in remaining space -->
+        <include
+            android:id="@+id/wgk_connect_button_view"
+            layout="@layout/view_wgk_connect_button"
+            android:layout_width="260dp"
+            android:layout_height="260dp"
+            app:layout_constraintTop_toBottomOf="@id/wgk_profile_card"
+            app:layout_constraintBottom_toTopOf="@id/wgk_headline"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintVertical_chainStyle="packed"
+            app:layout_constraintVertical_bias="0.5" />
+
+        <!-- Headline text below button -->
+        <TextView
+            android:id="@+id/wgk_headline"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="16dp"
+            android:layout_marginTop="20dp"
             android:gravity="center"
+            android:text="@string/wgk_headline_disconnected"
+            android:textAppearance="?attr/textAppearanceTitleMedium"
+            android:textColor="@color/wgk_on_surface_variant"
+            app:layout_constraintTop_toBottomOf="@id/wgk_connect_button_view"
+            app:layout_constraintBottom_toTopOf="@id/wgk_status_zone"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- Status zone card -->
+        <include
+            android:id="@+id/wgk_status_zone"
+            layout="@layout/view_wgk_status_zone"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="16dp"
+            android:layout_marginTop="16dp"
+            app:layout_constraintTop_toBottomOf="@id/wgk_headline"
+            app:layout_constraintBottom_toTopOf="@id/wgk_footer_row"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- Footer: split tunneling button + version label -->
+        <include
+            android:id="@+id/wgk_footer_row"
+            layout="@layout/view_wgk_footer_row"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="16dp"
+            android:layout_marginBottom="24dp"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- "No config" state: shown when tunnel not found -->
+        <LinearLayout
+            android:id="@+id/wgk_no_config_container"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="32dp">
+            android:gravity="center"
+            android:visibility="gone"
+            android:paddingHorizontal="32dp"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent">
 
-            <!-- Статус / Статистика -->
-            <TextView
-                android:id="@+id/vpn_status_title"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Статус"
-                android:textSize="14sp"
-                android:letterSpacing="0.05"
-                android:textColor="?attr/colorOnSurfaceVariant" />
-
-            <!-- Строка: [индикатор] [текст статуса] -->
-            <LinearLayout
-                android:id="@+id/vpn_status_row"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:layout_marginBottom="32dp"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <com.google.android.material.progressindicator.CircularProgressIndicator
-                    android:id="@+id/vpn_connecting_indicator"
-                    style="@style/Widget.Material3.CircularProgressIndicator.ExtraSmall"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginEnd="8dp"
-                    android:indeterminate="true"
-                    android:visibility="gone"
-                    app:indicatorColor="?attr/colorOnSurfaceVariant"
-                    app:trackColor="@android:color/transparent" />
-
-                <TextView
-                    android:id="@+id/vpn_status_label"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Отключено"
-                    android:textSize="20sp"
-                    android:textStyle="bold"
-                    android:gravity="center"
-                    android:textColor="?attr/colorOnSurface" />
-
-            </LinearLayout>
-
-            <!-- Кнопка с кольцами -->
+            <!-- Icon circle -->
             <FrameLayout
-                android:layout_width="240dp"
-                android:layout_height="240dp"
-                android:layout_gravity="center"
-                android:id="@+id/button_container">
+                android:layout_width="80dp"
+                android:layout_height="80dp"
+                android:background="@drawable/wgk_no_key_icon_bg">
 
-                <!-- Внешнее кольцо -->
-                <View
-                    android:layout_width="240dp"
-                    android:layout_height="240dp"
+                <ImageView
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
                     android:layout_gravity="center"
-                    android:background="@drawable/ring_outer" />
-
-                <!-- Среднее кольцо -->
-                <View
-                    android:layout_width="200dp"
-                    android:layout_height="200dp"
-                    android:layout_gravity="center"
-                    android:background="@drawable/ring_middle" />
-
-                <!-- Сама кнопка -->
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/vpn_toggle_button"
-                    style="@style/Widget.Material3.Button.ElevatedButton"
-                    android:layout_width="160dp"
-                    android:layout_height="160dp"
-                    android:layout_gravity="center"
-                    android:text=""
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    app:icon="@drawable/ic_vpn_arrow"
-                    app:iconGravity="textStart"
-                    app:iconPadding="0dp"
-                    app:iconSize="48dp"
-                    app:iconTint="@android:color/white"
-                    app:backgroundTint="?attr/colorPrimary"
-                    app:cornerRadius="80dp"
-                    app:elevation="8dp"
-                    app:pressedTranslationZ="0dp" />
-
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_key"
+                    app:tint="@color/wgk_primary" />
             </FrameLayout>
 
-            <!-- Подсказка под кнопкой -->
+            <!-- Title -->
             <TextView
-                android:id="@+id/vpn_hint_label"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="32dp"
-                android:text="Нажмите для подключения"
-                android:textSize="15sp"
-                android:textColor="?attr/colorOnSurfaceVariant"
-                android:gravity="center" />
-
-            <!-- Режим: Стабильность / Скорость (только когда TURN с несколькими линками) -->
-            <com.google.android.material.button.MaterialButtonToggleGroup
-                android:id="@+id/turn_mode_toggle"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="20dp"
-                android:visibility="gone"
-                app:selectionRequired="true"
-                app:singleSelection="true">
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btn_mode_stability"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Стабильность"
-                    android:textSize="13sp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btn_mode_speed"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Скорость"
-                    android:textSize="13sp" />
-
-            </com.google.android.material.button.MaterialButtonToggleGroup>
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/split_tunnel_button"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="48dp"
-                android:text="Раздельное туннелирование"
-                android:textColor="?attr/colorOnSurfaceVariant"
-                android:alpha="0.9"
-                android:visibility="gone"
-                app:strokeColor="?attr/colorOnSurfaceVariant"
-                app:strokeWidth="1dp" />
-
-
-            <!-- Нет ключа -->
-            <TextView
-                android:id="@+id/bot_link_label"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
                 android:gravity="center"
-                android:visibility="gone"
-                android:text="Ключ не найден.\nПолучите его в боте:"
-                android:textSize="15sp"
-                android:lineSpacingMultiplier="1.4"
-                android:textColor="?attr/colorOnSurfaceVariant" />
+                android:text="@string/wgk_no_key_title"
+                android:textAppearance="?attr/textAppearanceHeadlineSmall"
+                android:textColor="@color/wgk_on_surface" />
 
+            <!-- Subtitle -->
             <TextView
-                android:id="@+id/bot_link_button"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
+                android:layout_marginTop="10dp"
                 android:gravity="center"
-                android:visibility="gone"
-                android:text="@wg_key_bot"
-                android:textSize="18sp"
-                android:textStyle="bold"
-                android:textColor="?attr/colorPrimary"
-                android:background="?attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true"
-                android:paddingHorizontal="16dp"
-                android:paddingVertical="10dp" />
+                android:lineSpacingMultiplier="1.4"
+                android:text="@string/wgk_no_key_subtitle"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:textColor="@color/wgk_on_surface_variant" />
+
+            <!-- Bot button -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/wgk_bot_link_btn"
+                style="@style/Widget.Material3.Button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="28dp"
+                android:text="@string/wgk_no_key_action"
+                app:backgroundTint="@color/wgk_primary"
+                android:textColor="@color/wgk_on_primary"
+                app:cornerRadius="24dp"
+                app:icon="@drawable/ic_send"
+                app:iconSize="18dp"
+                app:iconTint="@color/wgk_on_primary"
+                app:iconGravity="textStart"
+                app:iconPadding="8dp" />
 
         </LinearLayout>
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
 
     </androidx.coordinatorlayout.widget.CoordinatorLayout>
 </layout>

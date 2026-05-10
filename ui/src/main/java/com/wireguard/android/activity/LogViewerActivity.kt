@@ -5,10 +5,12 @@
 
 package com.wireguard.android.activity
 
+import android.content.ClipData
 import android.content.ClipDescription.compareMimeTypes
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.graphics.Typeface.BOLD
@@ -25,10 +27,8 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.collection.CircularArray
-import androidx.core.app.ShareCompat
 import androidx.core.content.res.ResourcesCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.DividerItemDecoration
@@ -107,27 +107,37 @@ class LogViewerActivity : AppCompatActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) { streamingLog() }
 
-        val revokeLastActivityResultLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            revokeLastUri()
-        }
-
         binding.shareFab.setOnClickListener {
             lifecycleScope.launch {
                 revokeLastUri()
                 val key = KeyPair().privateKey.toHex()
                 LOGS[key] = rawLogBytes()
-                lastUri = Uri.parse("content://${BuildConfig.APPLICATION_ID}.exported-log/$key")
-                val shareIntent = ShareCompat.IntentBuilder(this@LogViewerActivity)
-                    .setType("text/plain")
-                    .setSubject(getString(R.string.log_export_subject))
-                    .setStream(lastUri)
-                    .setChooserTitle(R.string.log_export_title)
-                    .createChooserIntent()
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                grantUriPermission("android", lastUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                revokeLastActivityResultLauncher.launch(shareIntent)
+                val uri = Uri.parse("content://${BuildConfig.APPLICATION_ID}.exported-log/$key")
+                lastUri = uri
+
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, getString(R.string.log_export_subject))
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    // ClipData is required on API 30+ for FLAG_GRANT_READ_URI_PERMISSION to propagate
+                    clipData = ClipData.newRawUri("", uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+
+                // Grant read permission to every app that can handle ACTION_SEND text/plain
+                @Suppress("DEPRECATION")
+                packageManager.queryIntentActivities(sendIntent, PackageManager.MATCH_DEFAULT_ONLY)
+                    .forEach { grantUriPermission(it.activityInfo.packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+
+                startActivity(Intent.createChooser(sendIntent, getString(R.string.log_export_title)))
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Revoke URI access when user returns from the sharing app
+        revokeLastUri()
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {

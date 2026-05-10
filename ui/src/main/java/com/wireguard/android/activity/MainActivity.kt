@@ -6,11 +6,17 @@ package com.wireguard.android.activity
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
+import android.text.style.TypefaceSpan
 import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -21,21 +27,16 @@ import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
 import androidx.fragment.app.commit
 import androidx.lifecycle.lifecycleScope
-import com.wireguard.android.Application
+import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
-import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.fragment.TunnelDetailFragment
 import com.wireguard.android.fragment.TunnelListFragment
 import com.wireguard.android.model.ObservableTunnel
+import com.wireguard.android.util.ConfigFetcher
 import com.wireguard.config.Config
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
-import org.json.JSONObject
 
 class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener {
     private var actionBar: ActionBar? = null
@@ -69,6 +70,16 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         super.onCreate(savedInstanceState)
         setContentView(R.layout.main_activity)
         actionBar = supportActionBar
+        supportActionBar?.apply {
+            title = SpannableString("WGKEYBOT").also {
+                it.setSpan(TypefaceSpan("sans-serif-condensed"), 0, it.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+            }
+            subtitle = SpannableString("v${BuildConfig.VERSION_NAME}").also {
+                it.setSpan(TypefaceSpan("monospace"), 0, it.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+                it.setSpan(RelativeSizeSpan(0.8f), 0, it.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+                it.setSpan(ForegroundColorSpan(Color.parseColor("#80909090")), 0, it.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+            }
+        }
         isTwoPaneLayout = findViewById<View?>(R.id.master_detail_wrapper) != null
         supportFragmentManager.addOnBackStackChangedListener(this)
         backPressedCallback = onBackPressedDispatcher.addCallback(this) { handleBackPressed() }
@@ -111,70 +122,21 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
 
         lifecycleScope.launch {
             try {
-                val configText = withContext(Dispatchers.IO) {
-                    fetchConfigByToken(token)
-                }
+                val configText = withContext(Dispatchers.IO) { ConfigFetcher.fetch(token) }
 
                 if (!configText.contains("[Interface]") || !configText.contains("[Peer]")) {
                     throw IllegalArgumentException("Сервер вернул некорректный конфиг")
                 }
 
                 val config = Config.parse(configText.byteInputStream())
-                val tunnelManager = Application.getTunnelManager()
-                val existing = tunnelManager.getTunnels().firstOrNull { it.name == TUNNEL_NAME }
-                val isUpdate = existing != null
-
-                if (existing?.state == Tunnel.State.UP) {
-                    existing.setStateAsync(Tunnel.State.DOWN)
-                }
-                existing?.deleteAsync()
-                tunnelManager.create(TUNNEL_NAME, config)
-
-                val message = if (isUpdate) "Конфиг wgkeybot обновлён" else "Конфиг wgkeybot сохранён"
-                Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
-
                 val fragment = supportFragmentManager.findFragmentById(R.id.list_detail_container)
                 if (fragment is TunnelListFragment) {
+                    fragment.applyConfig(token, config)
                     fragment.refreshState()
                 }
             } catch (e: Exception) {
-                Toast.makeText(
-                    this@MainActivity,
-                    "Ошибка импорта: ${e.message}",
-                    Toast.LENGTH_LONG
-                ).show()
+                Toast.makeText(this@MainActivity, "Ошибка импорта: ${e.message}", Toast.LENGTH_LONG).show()
             }
-        }
-    }
-
-    @Throws(Exception::class)
-    private fun fetchConfigByToken(token: String): String {
-        val url = URL("https://key.shadowgate.online/api/config/$token")
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 15_000
-            readTimeout = 15_000
-            setRequestProperty("Accept", "application/json")
-        }
-        return try {
-            val code = connection.responseCode
-            val stream = if (code in 200..299) {
-                connection.inputStream
-            } else {
-                connection.errorStream ?: throw IllegalStateException("HTTP $code")
-            }
-            val body = BufferedReader(InputStreamReader(stream)).use { it.readText() }
-            if (code !in 200..299) throw IllegalStateException("HTTP $code: $body")
-
-            // Парсим JSON и достаём поле config
-            val json = JSONObject(body)
-            if (!json.getBoolean("ok")) {
-                throw IllegalStateException("Server error: ${json.optString("error")}")
-            }
-            json.getString("config").trim()
-
-        } finally {
-            connection.disconnect()
         }
     }
 
@@ -202,7 +164,4 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         return true
     }
 
-    companion object {
-        private const val TUNNEL_NAME = "wgkeybot"
-    }
 }

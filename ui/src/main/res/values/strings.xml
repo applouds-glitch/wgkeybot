@@ -303,4 +303,63 @@
     <string name="captcha_error">Failed to solve captcha. Please try again.</string>
     <string name="captcha_instructions">Please complete the verification to continue</string>
     <string name="excluded_applications">Раздельное туннелирование</string>
+
+    <!-- WGKeyBot Connect screen -->
+    <string name="wgk_state_idle">IDLE</string>
+    <string name="wgk_state_connecting">CONNECTING</string>
+    <string name="wgk_state_handshake">HANDSHAKE</string>
+    <string name="wgk_state_tunnel_up">TUNNEL UP · %1$s</string>
+
+    <string name="wgk_headline_disconnected">Нажмите для подключения</string>
+    <string name="wgk_headline_connecting">Поднимаем туннель</string>
+    <string name="wgk_headline_handshake">Идёт handshake</string>
+    <string name="wgk_headline_connected">Туннель активен</string>
+
+    <string name="wgk_profile_name">Config</string>
+    <string name="wgk_profile_loaded_at">Загружено в %1$s</string>
+    <string name="wgk_profile_loaded_on">Загружено %1$s</string>
+    <string name="wgk_profile_never_loaded">—</string>
+    <string name="wgk_profile_refresh_cd">Обновить конфиг</string>
+    <string name="wgk_menu_cd">Меню</string>
+
+    <string name="wgk_status_label">СТАТУС</string>
+    <string name="wgk_status_disconnected">Отключено</string>
+    <string name="wgk_status_connecting">Подключение…</string>
+    <string name="wgk_status_handshake">Handshake…</string>
+    <string name="wgk_status_connected">Подключено</string>
+
+    <string name="wgk_status_sub_disconnected">Готов к подключению</string>
+    <string name="wgk_status_sub_connecting">Поднимаем wg-интерфейс</string>
+    <string name="wgk_status_sub_handshake">Обмен ключами</string>
+    <string name="wgk_status_sub_connected">Соединение установлено</string>
+
+    <string name="wgk_rxtx_label">RX / TX</string>
+    <string name="wgk_wireguard_label">WIREGUARD</string>
+    <string name="wgk_rxtx_value">%.1f↓ / %.1f↑ MB</string>
+
+    <string name="wgk_stage_tunnel">Tunnel up</string>
+    <string name="wgk_stage_handshake">Handshake</string>
+    <string name="wgk_stage_routing">Routing</string>
+
+    <string name="wgk_action_split_tunneling">Раздельное туннелирование</string>
+    <string name="wgk_split_search_hint">Поиск приложений</string>
+    <string name="wgk_split_show_system">Системные приложения</string>
+    <string name="wgk_split_exclude_hint">Выбранные приложения пойдут в обход VPN. Остальные — через туннель.</string>
+    <string name="wgk_split_include_hint">Только выбранные приложения пойдут через VPN. Остальные — напрямую.</string>
+    <string name="wgk_split_apply">Применить</string>
+    <string name="wgk_split_apply_n">Применить · %d</string>
+    <string name="wgk_split_selected_of">%1$d из %2$d выбрано</string>
+    <string name="wgk_split_toggle_all">Переключить все</string>
+    <string name="wgk_no_key_title">Ключ не найден</string>
+    <string name="wgk_no_key_subtitle">Получите конфиг в Telegram-боте и откройте его по ссылке для быстрого подключения</string>
+    <string name="wgk_no_key_action">Открыть @wg_key_bot</string>
+    <string name="wgk_split_cancel">Отмена</string>
+
+    <plurals name="wgk_log_taps_remaining">
+        <item quantity="one">Ещё %d тап до логов</item>
+        <item quantity="few">Ещё %d тапа до логов</item>
+        <item quantity="many">Ещё %d тапов до логов</item>
+        <item quantity="other">Ещё %d тапа до логов</item>
+    </plurals>
+    <string name="turn_start_failed">Не удалось установить соединение через TURN</string>
 </resources>

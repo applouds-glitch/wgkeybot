@@ -86,6 +86,7 @@ dependencies {
     implementation(libs.androidx.preference.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.security.crypto)
     implementation(libs.google.material)
     implementation(libs.zxing.android.embedded)
     implementation(libs.kotlinx.coroutines.android)
