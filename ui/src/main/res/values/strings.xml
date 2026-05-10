@@ -353,6 +353,11 @@
     <string name="wgk_no_key_title">Ключ не найден</string>
     <string name="wgk_no_key_subtitle">Получите конфиг в Telegram-боте и откройте его по ссылке для быстрого подключения</string>
     <string name="wgk_no_key_action">Открыть @wg_key_bot</string>
+    <string name="wgk_expired_title">Подписка истекла</string>
+    <string name="wgk_expired_subtitle">Обратитесь в бот для продления подписки</string>
+    <string name="wgk_upgrade_required_title">Версия устарела</string>
+    <string name="wgk_upgrade_required_message">Версия приложения устарела и больше не поддерживается. Необходимо обновиться.</string>
+    <string name="wgk_upgrade_required_action">Скачать</string>
     <string name="wgk_split_cancel">Отмена</string>
 
     <plurals name="wgk_log_taps_remaining">

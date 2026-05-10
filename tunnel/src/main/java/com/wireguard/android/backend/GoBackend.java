@@ -229,8 +229,7 @@ public final class GoBackend implements Backend {
             builder.setSession(tunnel.getName());
 
             if (!config.getInterface().getIncludedApplications().isEmpty()) {
-                // Convert include-only to exclude-all-others so system processes (incl. netd/DNS)
-                // remain in the VPN, preventing DNS leaks caused by addAllowedApplication.
+                // Inverted exclude: keep netd/system in VPN to prevent DNS leaks.
                 final Set<String> included = new HashSet<>(config.getInterface().getIncludedApplications());
                 final List<ApplicationInfo> allApps = context.getPackageManager().getInstalledApplications(0);
                 for (final ApplicationInfo app : allApps) {

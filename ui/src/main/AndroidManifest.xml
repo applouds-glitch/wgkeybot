@@ -79,7 +79,7 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
                     android:scheme="wgkeybot"
-                    android:host="import" />
+                    android:host="config" />
             </intent-filter>
         </activity>
 
