@@ -131,23 +131,19 @@
                 android:textColor="@color/wgk_on_surface_variant" />
 
             <!-- Token input -->
-            <com.google.android.material.textfield.TextInputLayout
-                android:id="@+id/wgk_token_input_layout"
-                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+            <EditText
+                android:id="@+id/wgk_token_input"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
-                android:hint="@string/wgk_token_hint">
-
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/wgk_token_input"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:fontFamily="monospace"
-                    android:inputType="textNoSuggestions"
-                    android:maxLines="1" />
-
-            </com.google.android.material.textfield.TextInputLayout>
+                android:hint="@string/wgk_token_hint"
+                android:fontFamily="monospace"
+                android:inputType="textNoSuggestions"
+                android:maxLines="1"
+                android:padding="14dp"
+                android:background="@drawable/wgk_token_field_bg"
+                android:textColor="@color/wgk_on_surface"
+                android:textColorHint="@color/wgk_on_surface_variant" />
 
             <!-- Connect with token button -->
             <com.google.android.material.button.MaterialButton
