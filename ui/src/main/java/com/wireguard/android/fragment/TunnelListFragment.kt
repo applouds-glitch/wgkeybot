@@ -5,8 +5,10 @@
 package com.wireguard.android.fragment
 
 import android.animation.ObjectAnimator
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Bundle
 import android.view.ContextThemeWrapper
 import android.view.LayoutInflater
@@ -21,6 +23,7 @@ import androidx.fragment.app.viewModels
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.wireguard.android.Application
 import com.wireguard.android.BuildConfig
@@ -29,7 +32,8 @@ import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.databinding.TunnelListFragmentBinding
 import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.updater.SnackbarUpdateShower
-import com.wireguard.android.util.ConfigFetcher
+import com.wireguard.android.util.ApiClient
+import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.ErrorMessages
 import com.wireguard.android.viewmodel.ConfigProxy
 import kotlinx.coroutines.Dispatchers
@@ -51,7 +55,6 @@ private const val KEY_STABILITY_MODE = "stability_mode"
 private const val PREFS_CONFIG_LOAD = "config_load_prefs"          // legacy (migration only)
 private const val PREFS_CONFIG_LOAD_SECURE = "config_load_secure"  // encrypted
 private const val KEY_CONFIG_LOADED_AT = "config_loaded_at"
-private const val KEY_CONFIG_TOKEN = "config_token"
 
 class TunnelListFragment : BaseFragment() {
 
@@ -63,6 +66,7 @@ class TunnelListFragment : BaseFragment() {
     private var _prefs: SharedPreferences? = null
 
     private var currentSplitProxy: ConfigProxy? = null
+    private var updateShownThisSession = false
 
     private var logTapCount = 0
     private var logTapLastMs = 0L
@@ -99,9 +103,6 @@ class TunnelListFragment : BaseFragment() {
     ): View? {
         super.onCreateView(inflater, container, savedInstanceState)
 
-        // Force dark theme context so MDC inherited styles (ripples, overlays) are dark.
-        // Must use ContextThemeWrapper + applyOverrideConfiguration, not createConfigurationContext,
-        // because createConfigurationContext drops the theme and MDC ThemeEnforcement crashes.
         val darkConfig = Configuration(resources.configuration).apply {
             uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
                     Configuration.UI_MODE_NIGHT_YES
@@ -121,7 +122,6 @@ class TunnelListFragment : BaseFragment() {
         }
 
         // Register once so stale pending results from previous dialogs don't re-fire.
-        // currentSplitProxy is null until the dialog is actually open, so any stale result is ignored.
         childFragmentManager.setFragmentResultListener(
             AppListDialogFragment.REQUEST_SELECTION, viewLifecycleOwner
         ) { _, bundle ->
@@ -212,50 +212,70 @@ class TunnelListFragment : BaseFragment() {
 
     private fun refreshButtonState() {
         lifecycleScope.launch {
-            val binding = binding ?: return@launch
+            val b = binding ?: return@launch
+            val auth = AuthStore.getInstance(requireContext())
+
+            // Auth gate — must check before tunnel lookup
+            when {
+                !auth.hasAuth() -> {
+                    showNoAuthContainer(b, expired = false)
+                    return@launch
+                }
+                auth.isSubscriptionExpired() -> {
+                    showNoAuthContainer(b, expired = true)
+                    return@launch
+                }
+            }
+
             val tunnel = Application.getTunnelManager().getTunnels()
                 .firstOrNull { it.name == TUNNEL_NAME }
 
             if (tunnel == null) {
-                vm.notifyTunnelDown()
-                binding.wgkNoConfigContainer.isVisible = true
-                binding.wgkProfileCard.root.isVisible = false
-                binding.wgkConnectButtonView.root.isVisible = false
-                binding.wgkHeadline.isVisible = false
-                binding.wgkStatusZone.root.isVisible = false
-                binding.wgkFooterRow.root.isVisible = false
-                binding.wgkBotLinkBtn.setOnClickListener {
-                    startActivity(
-                        android.content.Intent(
-                            android.content.Intent.ACTION_VIEW,
-                            android.net.Uri.parse("https://t.me/wg_key_bot")
-                        )
-                    )
-                }
+                // Has valid auth but config missing locally — auto-fetch
+                refreshConfig()
                 return@launch
             }
 
-            binding.wgkNoConfigContainer.isVisible = false
-            binding.wgkProfileCard.root.isVisible = true
-            binding.wgkConnectButtonView.root.isVisible = true
-            binding.wgkHeadline.isVisible = true
-            binding.wgkStatusZone.root.isVisible = true
-            binding.wgkFooterRow.root.isVisible = true
+            b.wgkNoConfigContainer.isVisible = false
+            b.wgkProfileCard.root.isVisible = true
+            b.wgkConnectButtonView.root.isVisible = true
+            b.wgkHeadline.isVisible = true
+            b.wgkStatusZone.root.isVisible = true
+            b.wgkFooterRow.root.isVisible = true
 
-            // Resume polling without resetting uptime if already running (e.g. after rotation)
             if (tunnel.state == Tunnel.State.UP && !vm.isConnecting) {
                 vm.ensurePollingActive()
             }
 
             // Split tunneling button label
             val config = tunnel.getConfigAsync()
-            binding.wgkFooterRow.wgkSplitBtn.text = when {
+            b.wgkFooterRow.wgkSplitBtn.text = when {
                 config.`interface`.includedApplications.isNotEmpty() ->
                     "Только: ${config.`interface`.includedApplications.size} прил."
                 config.`interface`.excludedApplications.isNotEmpty() ->
                     "Исключено: ${config.`interface`.excludedApplications.size} прил."
                 else -> getString(R.string.wgk_action_split_tunneling)
             }
+        }
+    }
+
+    private fun showNoAuthContainer(b: TunnelListFragmentBinding, expired: Boolean) {
+        vm.notifyTunnelDown()
+        b.wgkNoConfigContainer.isVisible = true
+        b.wgkProfileCard.root.isVisible = false
+        b.wgkConnectButtonView.root.isVisible = false
+        b.wgkHeadline.isVisible = false
+        b.wgkStatusZone.root.isVisible = false
+        b.wgkFooterRow.root.isVisible = false
+
+        b.wgkNoKeyTitle.text = getString(
+            if (expired) R.string.wgk_expired_title else R.string.wgk_no_key_title
+        )
+        b.wgkNoKeySubtitle.text = getString(
+            if (expired) R.string.wgk_expired_subtitle else R.string.wgk_no_key_subtitle
+        )
+        b.wgkBotLinkBtn.setOnClickListener {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/wg_key_bot")))
         }
     }
 
@@ -277,16 +297,10 @@ class TunnelListFragment : BaseFragment() {
         val btn = b.wgkConnectButtonView.wgkConnectBtn
         val arc = b.wgkConnectButtonView.wgkBusyArc
         when (ui.state) {
-            TunnelState.Disconnected -> {
-                btn.isActivated = false; btn.isSelected = false; arc.isVisible = false
-            }
+            TunnelState.Disconnected -> { btn.isActivated = false; btn.isSelected = false; arc.hide() }
             TunnelState.Connecting,
-            TunnelState.Handshake -> {
-                btn.isActivated = true;  btn.isSelected = false; arc.isVisible = true
-            }
-            TunnelState.Connected -> {
-                btn.isActivated = false; btn.isSelected = true;  arc.isVisible = false
-            }
+            TunnelState.Handshake    -> { btn.isActivated = true;  btn.isSelected = false; arc.show() }
+            TunnelState.Connected    -> { btn.isActivated = false; btn.isSelected = true;  arc.hide() }
         }
     }
 
@@ -307,7 +321,6 @@ class TunnelListFragment : BaseFragment() {
         val sz = b.wgkStatusZone
         val isConnected = ui.state == TunnelState.Connected
 
-        // Headline + sub
         sz.wgkStatusHeadline.setText(when (ui.state) {
             TunnelState.Disconnected -> R.string.wgk_status_disconnected
             TunnelState.Connecting   -> R.string.wgk_status_connecting
@@ -323,7 +336,6 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Connected    -> R.string.wgk_status_sub_connected
         })
 
-        // RX/TX
         sz.wgkRxtxLabel.setText(if (isConnected) R.string.wgk_rxtx_label else R.string.wgk_wireguard_label)
         sz.wgkRxtxValue.isVisible = isConnected
         if (isConnected) {
@@ -331,7 +343,6 @@ class TunnelListFragment : BaseFragment() {
                 ui.rxBytes / 1_048_576.0, ui.txBytes / 1_048_576.0)
         }
 
-        // Colors
         val colorOutline = ContextCompat.getColor(requireContext(), R.color.wgk_outline)
         val colorPrimary = ContextCompat.getColor(requireContext(), R.color.wgk_primary)
         val colorSuccess = ContextCompat.getColor(requireContext(), R.color.wgk_success)
@@ -352,7 +363,6 @@ class TunnelListFragment : BaseFragment() {
         val segs = listOf(sz.wgkSegTunnel, sz.wgkSegHandshake, sz.wgkSegRouting)
         val dots = listOf(sz.wgkDotTunnel, sz.wgkDotHandshake, sz.wgkDotRouting)
         val lbls = listOf<TextView>(sz.wgkLblTunnel, sz.wgkLblHandshake, sz.wgkLblRouting)
-
         for (i in 0..2) {
             segs[i].setIndicatorColor(colorFor(i))
             segs[i].setProgressCompat(progressFor(i), true)
@@ -364,16 +374,28 @@ class TunnelListFragment : BaseFragment() {
     // ── Refresh config ─────────────────────────────────────────────────────────
 
     private fun refreshConfig() {
-        val token = loadToken() ?: run {
-            showSnackbar("Токен не найден. Переоткройте ссылку из бота.")
+        val auth = AuthStore.getInstance(requireContext())
+        val accessToken = auth.getAccessToken() ?: run {
+            showSnackbar("Нет токена доступа. Переоткройте ссылку из бота.")
             return
         }
         startRefreshAnim()
         lifecycleScope.launch {
             try {
-                val configText = withContext(Dispatchers.IO) { ConfigFetcher.fetch(token) }
-                val config = com.wireguard.config.Config.parse(configText.byteInputStream())
-                applyConfig(token, config)
+                val resp = withContext(Dispatchers.IO) { ApiClient.getConfig(accessToken) }
+                auth.saveSubscriptionExpiresAt(resp.subscriptionExpiresAt)
+
+                val config = com.wireguard.config.Config.parse(resp.config.byteInputStream())
+                applyConfig(config)
+
+                checkForUpdate(resp.latestVersion, resp.downloadUrl)
+            } catch (e: ApiClient.UnauthorizedException) {
+                AuthStore.getInstance(requireContext()).saveSubscriptionExpiresAt(
+                    "1970-01-01T00:00:00Z"  // force expired
+                )
+                refreshButtonState()
+            } catch (e: ApiClient.UpgradeRequiredException) {
+                showUpgradeRequired(e.downloadUrl)
             } catch (e: Exception) {
                 showSnackbar("Ошибка обновления: ${e.message}")
             } finally {
@@ -383,20 +405,17 @@ class TunnelListFragment : BaseFragment() {
     }
 
     // Shared entry point used by both the refresh button and deeplink import.
-    suspend fun applyConfig(token: String, config: com.wireguard.config.Config) {
+    suspend fun applyConfig(config: com.wireguard.config.Config) {
         val tunnelManager = Application.getTunnelManager()
         val existing = tunnelManager.getTunnels().firstOrNull { it.name == TUNNEL_NAME }
         if (existing != null) {
             val turnSettings = TurnConfigProcessor.extractTurnSettings(config)
                 ?: existing.turnSettings
-            // Preserve split tunnel app selections — they are a client-side setting
-            // not present in the server config, so we carry them over from the current config.
             val configWithApps = withSplitTunnelApps(config, existing.getConfigAsync())
             tunnelManager.setTunnelConfig(existing, configWithApps, turnSettings)
         } else {
             tunnelManager.create(TUNNEL_NAME, config)
         }
-        saveToken(token)
         recordConfigLoaded()
         refreshButtonState()
         showConfigUpdatedSnackbar()
@@ -444,6 +463,43 @@ class TunnelListFragment : BaseFragment() {
         binding?.wgkProfileCard?.wgkRefreshBtn?.rotation = 0f
     }
 
+    // ── Version check ──────────────────────────────────────────────────────────
+
+    private fun checkForUpdate(latestVersion: String?, downloadUrl: String?) {
+        if (updateShownThisSession || latestVersion == null) return
+        if (compareVersions(latestVersion, BuildConfig.VERSION_NAME) <= 0) return
+        updateShownThisSession = true
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("Доступно обновление v$latestVersion")
+            .setMessage("Хотите скачать новую версию?")
+            .setPositiveButton("Обновить") { _, _ ->
+                downloadUrl?.let { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) }
+            }
+            .setNegativeButton("Позже", null)
+            .show()
+    }
+
+    private fun showUpgradeRequired(downloadUrl: String?) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.wgk_upgrade_required_title))
+            .setMessage(getString(R.string.wgk_upgrade_required_message))
+            .setPositiveButton(getString(R.string.wgk_upgrade_required_action)) { _, _ ->
+                downloadUrl?.let { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) }
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun compareVersions(a: String, b: String): Int {
+        val ap = a.split(".").map { it.toIntOrNull() ?: 0 }
+        val bp = b.split(".").map { it.toIntOrNull() ?: 0 }
+        for (i in 0..2) {
+            val diff = (ap.getOrElse(i) { 0 }) - (bp.getOrElse(i) { 0 })
+            if (diff != 0) return diff
+        }
+        return 0
+    }
+
     // ── Config timestamp ───────────────────────────────────────────────────────
 
     fun recordConfigLoaded() {
@@ -452,21 +508,6 @@ class TunnelListFragment : BaseFragment() {
         val legacy = requireContext().getSharedPreferences(PREFS_CONFIG_LOAD, android.content.Context.MODE_PRIVATE)
         if (legacy !== prefs()) legacy.edit().putLong(KEY_CONFIG_LOADED_AT, ts).apply()
         vm.setConfigLoadedAt(ts)
-    }
-
-    fun saveToken(token: String) {
-        prefs().edit().putString(KEY_CONFIG_TOKEN, token).apply()
-        // Dual-write to legacy so it survives an ESP keystore failure on next launch.
-        val legacy = requireContext().getSharedPreferences(PREFS_CONFIG_LOAD, android.content.Context.MODE_PRIVATE)
-        if (legacy !== prefs()) legacy.edit().putString(KEY_CONFIG_TOKEN, token).apply()
-    }
-
-    private fun loadToken(): String? {
-        val token = prefs().getString(KEY_CONFIG_TOKEN, null)
-        if (token != null) return token
-        // ESP may have failed; fall back to legacy plaintext backup.
-        val legacy = requireContext().getSharedPreferences(PREFS_CONFIG_LOAD, android.content.Context.MODE_PRIVATE)
-        return legacy.getString(KEY_CONFIG_TOKEN, null)
     }
 
     private fun syncConfigLoadedAt() {
@@ -488,7 +529,6 @@ class TunnelListFragment : BaseFragment() {
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
             )
         } catch (_: Exception) {
-            // Keystore unavailable — fall back to plain prefs (e.g. emulators without HSM)
             requireContext().getSharedPreferences(PREFS_CONFIG_LOAD, android.content.Context.MODE_PRIVATE)
         }
         migratePrefsIfNeeded(secure)
@@ -496,17 +536,13 @@ class TunnelListFragment : BaseFragment() {
         return secure
     }
 
-    // One-time migration: move token + timestamp from legacy plaintext prefs to encrypted prefs.
+    // One-time migration: move timestamp from legacy plaintext prefs to encrypted prefs.
     private fun migratePrefsIfNeeded(secure: SharedPreferences) {
         val legacy = requireContext().getSharedPreferences(PREFS_CONFIG_LOAD, android.content.Context.MODE_PRIVATE)
-        // If ESP failed to init, secure IS legacy — skip migration to avoid self-clearing.
         if (legacy === secure) return
-        if (!legacy.contains(KEY_CONFIG_TOKEN) && !legacy.contains(KEY_CONFIG_LOADED_AT)) return
-        val editor = secure.edit()
-        legacy.getString(KEY_CONFIG_TOKEN, null)?.let { editor.putString(KEY_CONFIG_TOKEN, it) }
+        if (!legacy.contains(KEY_CONFIG_LOADED_AT)) return
         val ts = legacy.getLong(KEY_CONFIG_LOADED_AT, 0L)
-        if (ts != 0L) editor.putLong(KEY_CONFIG_LOADED_AT, ts)
-        editor.apply()
+        if (ts != 0L) secure.edit().putLong(KEY_CONFIG_LOADED_AT, ts).apply()
         legacy.edit().clear().apply()
     }
 
@@ -564,8 +600,6 @@ class TunnelListFragment : BaseFragment() {
                     proxy.`interface`.includedApplications.apply { clear(); addAll(newSelections) }
                 }
 
-                // Use tunnel.turnSettings directly to avoid TurnSettingsProxy validation
-                // throwing BadConfigException and silently dropping the split-tunnel save.
                 Application.getTunnelManager().setTunnelConfig(
                     tunnel, proxy.resolve(), tunnel.turnSettings
                 )

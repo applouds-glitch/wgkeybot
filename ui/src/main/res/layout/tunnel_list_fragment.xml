@@ -109,6 +109,7 @@
 
             <!-- Title -->
             <TextView
+                android:id="@+id/wgk_no_key_title"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
@@ -119,6 +120,7 @@
 
             <!-- Subtitle -->
             <TextView
+                android:id="@+id/wgk_no_key_subtitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"

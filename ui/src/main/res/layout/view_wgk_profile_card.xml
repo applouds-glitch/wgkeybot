@@ -49,8 +49,7 @@
                     android:ellipsize="end"
                     android:maxLines="1"
                     android:text="@string/wgk_profile_name"
-                    android:textAppearance="?attr/textAppearanceTitleMedium"
-                    android:textColor="@color/wgk_on_surface" />
+                    android:textAppearance="@style/TextAppearance.WGKeyBot.LabelMono" />
 
                 <TextView
                     android:id="@+id/wgk_profile_loaded"

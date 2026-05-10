@@ -29,6 +29,7 @@ class PhysicalNetworkMonitor(context: Context) {
      * Flow of the best available physical network.
      * Includes a 1500ms debounce to filter out rapid transitions and flickering.
      */
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
     val bestNetwork = _bestNetwork.asStateFlow()
         .debounce(1500)
         .distinctUntilChanged()
@@ -74,6 +75,7 @@ class PhysicalNetworkMonitor(context: Context) {
     fun start() {
         // Initial state: identify current best physical network before registering callback
         // We look through all networks because activeNetwork might be the VPN itself
+        @Suppress("DEPRECATION")
         cm.allNetworks.forEach { network ->
             val caps = cm.getNetworkCapabilities(network)
             if (caps != null && 
