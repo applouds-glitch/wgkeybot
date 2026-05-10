@@ -112,7 +112,6 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         }
 
         val auth = AuthStore.getInstance(this)
-        if (auth.hasAuth() && !auth.isSubscriptionExpired()) return
 
         lifecycleScope.launch {
             try {
