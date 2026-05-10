@@ -112,7 +112,7 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         }
 
         val auth = AuthStore.getInstance(this)
-        if (auth.hasAuth()) return  // already authorised — ignore deeplink
+        if (auth.hasAuth() && !auth.isSubscriptionExpired()) return
 
         lifecycleScope.launch {
             try {
