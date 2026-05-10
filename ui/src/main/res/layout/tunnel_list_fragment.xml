@@ -130,20 +130,39 @@
                 android:textAppearance="?attr/textAppearanceBodyMedium"
                 android:textColor="@color/wgk_on_surface_variant" />
 
-            <!-- Token input -->
-            <EditText
-                android:id="@+id/wgk_token_input"
+            <!-- Token input with clipboard paste button -->
+            <FrameLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:hint="@string/wgk_token_hint"
-                android:fontFamily="monospace"
-                android:inputType="textNoSuggestions"
-                android:maxLines="1"
-                android:padding="14dp"
-                android:background="@drawable/wgk_token_field_bg"
-                android:textColor="@color/wgk_on_surface"
-                android:textColorHint="@color/wgk_on_surface_variant" />
+                android:layout_marginTop="24dp">
+
+                <EditText
+                    android:id="@+id/wgk_token_input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="@string/wgk_token_hint"
+                    android:fontFamily="monospace"
+                    android:inputType="textNoSuggestions"
+                    android:maxLines="1"
+                    android:paddingStart="14dp"
+                    android:paddingTop="14dp"
+                    android:paddingEnd="52dp"
+                    android:paddingBottom="14dp"
+                    android:background="@drawable/wgk_token_field_bg"
+                    android:textColor="@color/wgk_on_surface"
+                    android:textColorHint="@color/wgk_on_surface_variant" />
+
+                <ImageButton
+                    android:id="@+id/wgk_paste_btn"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:layout_gravity="end|center_vertical"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_content_paste"
+                    android:contentDescription="@string/wgk_paste_cd"
+                    app:tint="@color/wgk_on_surface_variant" />
+
+            </FrameLayout>
 
             <!-- Connect with token button -->
             <com.google.android.material.button.MaterialButton

@@ -24,6 +24,7 @@ class TunnelListViewModel : ViewModel() {
 
     @Volatile var isConnecting = false
     @Volatile var cancelledByUser = false
+    var autoRefreshCheckedThisSession = false
 
     private var statsJob: Job? = null
     private var uptimeJob: Job? = null

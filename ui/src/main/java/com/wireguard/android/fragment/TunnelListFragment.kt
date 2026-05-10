@@ -7,10 +7,8 @@ package com.wireguard.android.fragment
 import android.animation.ObjectAnimator
 import android.content.Intent
 import android.content.SharedPreferences
-import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
-import android.view.ContextThemeWrapper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -103,20 +101,12 @@ class TunnelListFragment : BaseFragment() {
     ): View? {
         super.onCreateView(inflater, container, savedInstanceState)
 
-        val darkConfig = Configuration(resources.configuration).apply {
-            uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
-                    Configuration.UI_MODE_NIGHT_YES
-        }
-        val darkContext = ContextThemeWrapper(requireContext(), requireContext().theme).also {
-            it.applyOverrideConfiguration(darkConfig)
-        }
-        val darkInflater = inflater.cloneInContext(darkContext)
-
-        binding = TunnelListFragmentBinding.inflate(darkInflater, container, false)
+        binding = TunnelListFragmentBinding.inflate(inflater, container, false)
         binding?.apply {
             wgkConnectButtonView.wgkConnectBtn.setOnClickListener { toggleWgKeybot() }
             wgkFooterRow.wgkSplitBtn.setOnClickListener { openSplitTunnelDialog() }
             wgkProfileCard.wgkRefreshBtn.setOnClickListener { refreshConfig() }
+            wgkProfileCard.wgkAutoRefreshBtn.setOnClickListener { toggleAutoRefresh() }
             wgkProfileCard.wgkProfileIcon.setOnClickListener { onLogIconTap() }
             snackbarUpdateShower.attach(mainContainer, wgkConnectButtonView.wgkConnectBtn)
         }
@@ -243,12 +233,17 @@ class TunnelListFragment : BaseFragment() {
             b.wgkStatusZone.root.isVisible = true
             b.wgkFooterRow.root.isVisible = true
 
+            renderAutoRefreshIcon(b)
+            checkAutoRefresh(auth)
+
             if (tunnel.state == Tunnel.State.UP && !vm.isConnecting) {
                 vm.ensurePollingActive()
             }
 
             // Split tunneling button label
             val config = tunnel.getConfigAsync()
+            val appsActive = config.`interface`.includedApplications.isNotEmpty() ||
+                    config.`interface`.excludedApplications.isNotEmpty()
             b.wgkFooterRow.wgkSplitBtn.text = when {
                 config.`interface`.includedApplications.isNotEmpty() ->
                     "Только: ${config.`interface`.includedApplications.size} прил."
@@ -256,6 +251,13 @@ class TunnelListFragment : BaseFragment() {
                     "Исключено: ${config.`interface`.excludedApplications.size} прил."
                 else -> getString(R.string.wgk_action_split_tunneling)
             }
+            val splitColor = ContextCompat.getColor(
+                requireContext(),
+                if (appsActive) R.color.wgk_on_surface else R.color.wgk_on_surface_variant
+            )
+            b.wgkFooterRow.wgkSplitBtn.setTextColor(splitColor)
+            b.wgkFooterRow.wgkSplitBtn.iconTint =
+                android.content.res.ColorStateList.valueOf(splitColor)
         }
     }
 
@@ -276,6 +278,14 @@ class TunnelListFragment : BaseFragment() {
         )
         b.wgkBotLinkBtn.setOnClickListener {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/wg_key_bot")))
+        }
+        b.wgkTokenInput.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus && b.wgkTokenInput.text.isNullOrEmpty()) {
+                pasteTokenFromClipboard(b)
+            }
+        }
+        b.wgkPasteBtn.setOnClickListener {
+            pasteTokenFromClipboard(b)
         }
         b.wgkConnectWithTokenBtn.setOnClickListener {
             val token = b.wgkTokenInput.text?.toString()?.trim() ?: ""
@@ -418,6 +428,7 @@ class TunnelListFragment : BaseFragment() {
                 val resp = withContext(Dispatchers.IO) { ApiClient.getConfig(accessToken) }
                 auth.saveSubscriptionExpiresAt(resp.subscriptionExpiresAt)
 
+                auth.saveLastRefreshTime()
                 val config = com.wireguard.config.Config.parse(resp.config.byteInputStream())
                 applyConfig(config)
 
@@ -435,6 +446,34 @@ class TunnelListFragment : BaseFragment() {
                 stopRefreshAnim()
             }
         }
+    }
+
+    private fun checkAutoRefresh(auth: AuthStore) {
+        if (vm.autoRefreshCheckedThisSession) return
+        vm.autoRefreshCheckedThisSession = true
+        if (!auth.isAutoRefreshEnabled()) return
+        val elapsed = System.currentTimeMillis() - auth.getLastRefreshTime()
+        if (elapsed >= 12 * 60 * 60 * 1000L) refreshConfig()
+    }
+
+    private fun toggleAutoRefresh() {
+        val auth = AuthStore.getInstance(requireContext())
+        val enabled = !auth.isAutoRefreshEnabled()
+        auth.setAutoRefreshEnabled(enabled)
+        val b = binding ?: return
+        renderAutoRefreshIcon(b)
+        showSnackbar(getString(
+            if (enabled) R.string.wgk_auto_refresh_enabled else R.string.wgk_auto_refresh_disabled
+        ))
+    }
+
+    private fun renderAutoRefreshIcon(b: TunnelListFragmentBinding) {
+        val enabled = AuthStore.getInstance(requireContext()).isAutoRefreshEnabled()
+        val colorRes = if (enabled) R.color.wgk_primary else R.color.wgk_on_surface_variant
+        b.wgkProfileCard.wgkAutoRefreshBtn.iconTint =
+            android.content.res.ColorStateList.valueOf(
+                androidx.core.content.ContextCompat.getColor(requireContext(), colorRes)
+            )
     }
 
     // Shared entry point used by both the refresh button and deeplink import.
@@ -666,10 +705,35 @@ class TunnelListFragment : BaseFragment() {
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
+    private fun clipboardToken(): String? {
+        val cm = requireContext().getSystemService(android.content.ClipboardManager::class.java)
+            ?: return null
+        val text = cm.primaryClip?.getItemAt(0)?.coerceToText(requireContext())
+            ?.toString()?.trim() ?: return null
+        return if (TOKEN_REGEX.matches(text)) text else null
+    }
+
+    private fun pasteTokenFromClipboard(b: TunnelListFragmentBinding) {
+        val token = clipboardToken()
+        if (token != null) {
+            b.wgkTokenInput.setText(token)
+            b.wgkTokenInput.setSelection(token.length)
+            showSnackbar(getString(R.string.wgk_pasted_from_clipboard))
+        } else {
+            showSnackbar(getString(R.string.wgk_clipboard_no_token))
+        }
+    }
+
     private fun showSnackbar(message: CharSequence) {
         val b = binding
-        if (b != null) Snackbar.make(b.mainContainer, message, Snackbar.LENGTH_LONG).show()
-        else Toast.makeText(activity ?: Application.get(), message, Toast.LENGTH_SHORT).show()
+        if (b != null) {
+            val snackbar = Snackbar.make(b.mainContainer, message, Snackbar.LENGTH_LONG)
+            snackbar.setBackgroundTint(ContextCompat.getColor(requireContext(), R.color.wgk_surface_container_high))
+            snackbar.setTextColor(ContextCompat.getColor(requireContext(), R.color.wgk_on_surface))
+            snackbar.show()
+        } else {
+            Toast.makeText(activity ?: Application.get(), message, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun showConfigUpdatedSnackbar() {
@@ -684,13 +748,11 @@ class TunnelListFragment : BaseFragment() {
         icon?.setTint(ContextCompat.getColor(requireContext(), R.color.wgk_success))
         tv?.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, null, null, null)
         tv?.compoundDrawablePadding = resources.getDimensionPixelSize(R.dimen.wgk_snackbar_icon_padding)
-        val params = snackbar.view.layoutParams as androidx.coordinatorlayout.widget.CoordinatorLayout.LayoutParams
-        params.gravity = android.view.Gravity.TOP
-        snackbar.view.layoutParams = params
         snackbar.show()
     }
 
     companion object {
         private const val TAG = "WireGuard/TunnelListFragment"
+        private val TOKEN_REGEX = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
     }
 }
