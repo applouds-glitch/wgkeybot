@@ -104,6 +104,8 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             notifyPropertyChanged(BR.advancedExpanded)
         }
 
+    var wrapKey: String = ""
+
     private constructor(parcel: Parcel) {
         enabled = parcel.readInt() != 0
         peer = parcel.readString() ?: ""
@@ -118,6 +120,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         peerType = parcel.readString() ?: "proxy_v2"
         streamsPerCred = parcel.readString() ?: ""
         advancedExpanded = parcel.readInt() != 0
+        wrapKey = parcel.readString() ?: ""
     }
 
     constructor()
@@ -136,6 +139,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             watchdogTimeout = if (other.watchdogTimeout > 0) other.watchdogTimeout.toString() else ""
             peerType = other.peerType
             streamsPerCred = other.streamsPerCred.toString()
+            wrapKey = other.wrapKey
         }
     }
 
@@ -155,6 +159,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         dest.writeString(peerType)
         dest.writeString(streamsPerCred)
         dest.writeInt(if (advancedExpanded) 1 else 0)
+        dest.writeString(wrapKey)
     }
 
     @Throws(BadConfigException::class)
@@ -210,6 +215,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             peerType = peerType,
             streamsPerCred = parsedStreamsPerCred,
             watchdogTimeout = parsedWatchdogTimeout,
+            wrapKey = wrapKey,
         )
         if (enabled) {
             TurnSettings.validate(settings)
