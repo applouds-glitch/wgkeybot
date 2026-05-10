@@ -277,11 +277,39 @@ class TunnelListFragment : BaseFragment() {
         b.wgkBotLinkBtn.setOnClickListener {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/wg_key_bot")))
         }
+        b.wgkConnectWithTokenBtn.setOnClickListener {
+            val token = b.wgkTokenInput.text?.toString()?.trim() ?: ""
+            if (token.isBlank()) {
+                b.wgkTokenInputLayout.error = getString(R.string.wgk_token_error_empty)
+                return@setOnClickListener
+            }
+            b.wgkTokenInputLayout.error = null
+            initWithToken(token)
+        }
         if (expired) {
             b.wgkCheckSubscriptionBtn.isVisible = true
             b.wgkCheckSubscriptionBtn.setOnClickListener { refreshConfig() }
         } else {
             b.wgkCheckSubscriptionBtn.isVisible = false
+        }
+    }
+
+    private fun initWithToken(token: String) {
+        val b = binding ?: return
+        val auth = AuthStore.getInstance(requireContext())
+        b.wgkConnectWithTokenBtn.isEnabled = false
+        lifecycleScope.launch {
+            try {
+                val resp = withContext(Dispatchers.IO) { ApiClient.init(token) }
+                auth.saveAccessToken(resp.accessToken)
+                auth.saveSubscriptionExpiresAt(resp.subscriptionExpiresAt)
+                val config = com.wireguard.config.Config.parse(resp.config.byteInputStream())
+                applyConfig(config)
+            } catch (e: Exception) {
+                showSnackbar("Ошибка: ${e.message}")
+            } finally {
+                b.wgkConnectWithTokenBtn.isEnabled = true
+            }
         }
     }
 
