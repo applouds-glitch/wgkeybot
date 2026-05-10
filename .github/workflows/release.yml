@@ -76,9 +76,7 @@ jobs:
 
           echo "release_notes_file=RELEASE_NOTES.md" >> $GITHUB_OUTPUT
       - name: Rename APK
-        run: mv ui/build/outputs/apk/release/ui-release.apk
-          ui/build/outputs/apk/release/wgkeybot-v${{
-          steps.version.outputs.version }}.apk
+        run: mv ui/build/outputs/apk/release/ui-release.apk ui/build/outputs/apk/release/wgkeybot.apk
 
       - name: Sign APK
         uses: r0adkll/sign-android-release@v1
