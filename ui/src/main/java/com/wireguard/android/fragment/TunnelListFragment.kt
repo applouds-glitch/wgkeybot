@@ -277,6 +277,12 @@ class TunnelListFragment : BaseFragment() {
         b.wgkBotLinkBtn.setOnClickListener {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/wg_key_bot")))
         }
+        if (expired) {
+            b.wgkCheckSubscriptionBtn.isVisible = true
+            b.wgkCheckSubscriptionBtn.setOnClickListener { refreshConfig() }
+        } else {
+            b.wgkCheckSubscriptionBtn.isVisible = false
+        }
     }
 
     // ── Render ─────────────────────────────────────────────────────────────────
