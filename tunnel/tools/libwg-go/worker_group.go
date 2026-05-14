@@ -45,7 +45,7 @@ type WorkerGroupConfig struct {
 // Lifecycle per cycle:
 //  1. Fetch fresh credentials (serialised via groupFetchMu).
 //  2. Kill old batch (credentials ready — minimal gap).
-//  3. Start new batch with 500ms per-stream stagger.
+//  3. Start new batch with jittered per-stream stagger (500ms base + 0-200ms jitter).
 //  4. Wait for TTL expiry or early-rotation trigger, then repeat.
 func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) {
 
@@ -168,7 +168,7 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 		// ── Step 2: Kill old batch ─────────────────────────────────────────────
 		killBatch()
 
-		// ── Step 3: Start new batch with 500ms per-stream stagger ────────────
+		// ── Step 3: Start new batch with jittered per-stream stagger ─────────
 		batchCtx, batchCancel := context.WithCancel(ctx)
 		refreshCh := make(chan struct{}, 1)
 		doneChs := make([]chan struct{}, len(streams))
@@ -179,7 +179,7 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 		for i, s := range streams {
 			doneCh := make(chan struct{})
 			doneChs[i] = doneCh
-			stagger := time.Duration(i) * workerStagger
+			stagger := time.Duration(i)*workerStagger + time.Duration(rand.Intn(200))*time.Millisecond
 
 			go func(s *stream, stagger time.Duration, doneCh chan struct{}) {
 				defer close(doneCh)

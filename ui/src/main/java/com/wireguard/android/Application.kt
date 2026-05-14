@@ -130,17 +130,30 @@ class Application : android.app.Application() {
         turnProxyManager = TurnProxyManager(applicationContext)
         CaptchaWebViewManager.onTunnelStart(applicationContext)
 
-        // Try invisible auto-solve first; fall back to visible CaptchaActivity on slider or timeout
+        // Captcha strategy (matches Go mode order in vk.go):
+        // 1st call (manual)       → invisible WebView auto-click (CaptchaWebViewManager)
+        //                            on failure → Go tries slider POC
+        // 2nd call (manualVisible) → visible CaptchaActivity dialog
+        var autoSolveAttempted = false
         TurnBackend.setCaptchaHandler { redirectUri ->
-            Log.d(TAG, "Captcha handler invoked, trying auto-solve...")
-            try {
-                kotlinx.coroutines.runBlocking {
-                    CaptchaWebViewManager.solveCaptchaAsync(redirectUri)
+            Log.d(TAG, "Captcha handler invoked, autoSolveAttempted=$autoSolveAttempted")
+            if (!autoSolveAttempted) {
+                autoSolveAttempted = true
+                try {
+                    val token = kotlinx.coroutines.runBlocking {
+                        CaptchaWebViewManager.solveCaptchaAsync(redirectUri)
+                    }
+                    Log.d(TAG, "Auto captcha solved, got token")
+                    autoSolveAttempted = false
+                    token
+                } catch (e: Exception) {
+                    val reason = if (e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED)
+                        "slider detected" else e.message
+                    Log.d(TAG, "Captcha failed ($reason), returning empty to trigger next Go mode")
+                    "" // keep autoSolveAttempted=true so next call goes to dialog
                 }
-            } catch (e: Exception) {
-                val reason = if (e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED)
-                    "slider detected" else e.message
-                Log.d(TAG, "Auto captcha failed ($reason), falling back to CaptchaActivity")
+            } else {
+                autoSolveAttempted = false
                 CaptchaActivity.solveCaptcha(applicationContext, redirectUri)
             }
         }
