@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	neturl "net/url"
 	"strconv"
@@ -274,24 +275,103 @@ func applyBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
 	req.Header.Set("DNT", "1")
 }
 
-func generateBrowserFp(profile Profile) string {
-	data := profile.UserAgent + profile.SecChUa + "1920x1080x24" + strconv.FormatInt(time.Now().UnixNano(), 10)
+type captchaViewport struct {
+	Width  int
+	Height int
+}
+
+// randomViewport returns a randomized viewport matching real desktop Chrome variability.
+func randomViewport() captchaViewport {
+	widths := []int{1920, 1920, 1920, 1366, 1440, 1536, 1680, 2560} // 1920 weighted 3×
+	heights := []int{1080, 1080, 1080, 768, 900, 864, 1050, 1440}
+	idx := rand.Intn(len(widths))
+	return captchaViewport{Width: widths[idx], Height: heights[idx]}
+}
+
+func generateBrowserFp(profile Profile, vp captchaViewport) string {
+	data := fmt.Sprintf("%s%s%dx%dx24%d", profile.UserAgent, profile.SecChUa, vp.Width, vp.Height, time.Now().UnixNano())
 	h := md5.Sum([]byte(data))
 	return fmt.Sprintf("%x", h)
 }
 
-func generateFakeCursor() string {
-	startX := 600 + rand.Intn(400)
-	startY := 300 + rand.Intn(200)
-	startTime := time.Now().UnixMilli() - int64(rand.Intn(2000)+1000)
-	var points []string
-	for i := 0; i < 15+rand.Intn(10); i++ {
-		startX += rand.Intn(15) - 5
-		startY += rand.Intn(15) + 2
-		startTime += int64(rand.Intn(40) + 10)
+// generateHumanCursor produces a realistic mouse trajectory with returns, pauses, and micro-jitter.
+func generateHumanCursor() string {
+	startX := 400 + rand.Intn(800) // wider range: 400-1200
+	startY := 200 + rand.Intn(500) // 200-700
+	startTime := time.Now().UnixMilli() - int64(rand.Intn(3000)+1500)
+	numPoints := 20 + rand.Intn(15)
+	points := make([]string, 0, numPoints)
+
+	for i := 0; i < numPoints; i++ {
+		// Micro-pause: sometimes repeat the same position for 2-3 frames
+		if i > 2 && rand.Intn(8) == 0 {
+			for repeat := 0; repeat < 1+rand.Intn(2); repeat++ {
+				startTime += int64(rand.Intn(60) + 40)
+				if len(points) < numPoints {
+					points = append(points, fmt.Sprintf(`{"x":%d,"y":%d,"t":%d}`, startX, startY, startTime))
+				}
+			}
+			continue
+		}
+		// Return movement: go backwards 2-8px every ~6 steps
+		if i > 3 && rand.Intn(6) == 0 {
+			startX -= rand.Intn(8) + 2
+			startY -= rand.Intn(5) + 1
+		} else {
+			startX += rand.Intn(20) - 5  // -5..+14
+			startY += rand.Intn(18) - 3  // -3..+14 — not always downward
+		}
+		startTime += int64(rand.Intn(50) + 15) // 15-65ms between points
 		points = append(points, fmt.Sprintf(`{"x":%d,"y":%d,"t":%d}`, startX, startY, startTime))
 	}
 	return "[" + strings.Join(points, ",") + "]"
+}
+
+// generateSensorNoise produces realistic accelerometer/gyroscope noise.
+func generateSensorNoise() string {
+	// Accelerometer: tiny random values around zero (gravity compensated)
+	accelPoints := make([]string, 8+rand.Intn(6))
+	for i := range accelPoints {
+		accelPoints[i] = fmt.Sprintf(`{"x":%.4f,"y":%.4f,"z":%.4f}`,
+			(rand.Float64()-0.5)*0.04,   // ±0.02g
+			(rand.Float64()-0.5)*0.04,
+			1.0+(rand.Float64()-0.5)*0.03) // ~1g gravity ± noise
+	}
+	return "[" + strings.Join(accelPoints, ",") + "]"
+}
+
+func generateGyroNoise() string {
+	// Gyroscope: tiny rotation rates
+	points := make([]string, 8+rand.Intn(6))
+	for i := range points {
+		points[i] = fmt.Sprintf(`{"x":%.4f,"y":%.4f,"z":%.4f}`,
+			(rand.Float64()-0.5)*0.02,
+			(rand.Float64()-0.5)*0.02,
+			(rand.Float64()-0.5)*0.02)
+	}
+	return "[" + strings.Join(points, ",") + "]"
+}
+
+// generateConnectionMetrics produces realistic network metrics with natural variance.
+func generateConnectionMetrics() (rtt string, downlink string) {
+	rttValues := make([]string, 10)
+	for i := range rttValues {
+		// 45-85ms with occasional spike
+		base := 45 + rand.Intn(40)
+		if rand.Intn(10) == 0 {
+			base += rand.Intn(40) // spike up to 125ms
+		}
+		rttValues[i] = strconv.Itoa(base)
+	}
+	rtt = "[" + strings.Join(rttValues, ",") + "]"
+
+	dlValues := make([]string, 16)
+	for i := range dlValues {
+		base := 7.5 + rand.Float64()*7.0 // 7.5-14.5 Mbps
+		dlValues[i] = fmt.Sprintf("%.1f", math.Round(base*10)/10)
+	}
+	downlink = "[" + strings.Join(dlValues, ",") + "]"
+	return
 }
 
 func fetchCaptchaBootstrap(ctx context.Context, redirectURI string, client tlsclient.HttpClient, profile Profile) (*captchaBootstrap, error) {
@@ -326,6 +406,24 @@ func fetchCaptchaBootstrap(ctx context.Context, redirectURI string, client tlscl
 		return nil, err
 	}
 	return parseCaptchaBootstrapHTML(string(body))
+}
+
+func buildCaptchaDeviceJSON(profile Profile, vp captchaViewport) string {
+	availHeight := vp.Height - 40 - rand.Intn(21) // taskbar: 40-60px
+	innerHeight := vp.Height - 111 - rand.Intn(31) // browser chrome: 111-141px
+	devicePixelRatio := 1
+	if vp.Width >= 2560 {
+		devicePixelRatio = 2
+	}
+
+	return fmt.Sprintf(
+		`{"screenWidth":%d,"screenHeight":%d,"screenAvailWidth":%d,"screenAvailHeight":%d,"innerWidth":%d,"innerHeight":%d,"devicePixelRatio":%d,"language":"en-US","languages":["en-US"],"webdriver":false,"hardwareConcurrency":%d,"deviceMemory":%d,"connectionEffectiveType":"4g","notificationsPermission":"default","userAgent":"%s","platform":"Win32"}`,
+		vp.Width, vp.Height, vp.Width, availHeight, vp.Width, innerHeight,
+		devicePixelRatio,
+		8+rand.Intn(9),  // 8-16 cores
+		8+rand.Intn(25),  // 8-32 GB
+		profile.UserAgent,
+	)
 }
 
 func solvePoW(powInput string, difficulty int) string {
@@ -386,6 +484,7 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 		return resp, nil
 	}
 
+	vp := randomViewport()
 	baseParams := fmt.Sprintf("session_token=%s&domain=vk.com&adFp=&access_token=", neturl.QueryEscape(sessionToken))
 
 	turnLog("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
@@ -393,35 +492,35 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 		return "", fmt.Errorf("settings failed: %w", err)
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(time.Duration(180+rand.Intn(80)) * time.Millisecond)
 
-	turnLog("[STREAM %d] [Captcha] Step 2/4: componentDone", streamID)
-	browserFp := generateBrowserFp(profile)
-	deviceJSON := buildCaptchaDeviceJSON(profile)
+	turnLog("[STREAM %d] [Captcha] Step 2/4: componentDone (viewport=%dx%d)", streamID, vp.Width, vp.Height)
+	browserFp := generateBrowserFp(profile, vp)
+	deviceJSON := buildCaptchaDeviceJSON(profile, vp)
 	componentDoneData := baseParams + fmt.Sprintf("&browser_fp=%s&device=%s", browserFp, neturl.QueryEscape(deviceJSON))
 
 	if _, err := vkReq("captchaNotRobot.componentDone", componentDoneData); err != nil {
 		return "", fmt.Errorf("componentDone failed: %w", err)
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(time.Duration(180+rand.Intn(80)) * time.Millisecond)
 
 	turnLog("[STREAM %d] [Captcha] Step 3/4: check", streamID)
-	cursorJSON := generateFakeCursor()
+	cursorJSON := generateHumanCursor()
 	answer := base64.StdEncoding.EncodeToString([]byte("{}"))
 
-	// Dynamically generate debug_info to avoid static fingerprint bans
 	debugInfoBytes := md5.Sum([]byte(profile.UserAgent + strconv.FormatInt(time.Now().UnixNano(), 10)))
 	debugInfo := hex.EncodeToString(debugInfoBytes[:])
 
-	connectionRtt := "[50,50,50,50,50,50,50,50,50,50]"
-	connectionDownlink := "[9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5]"
+	accelJSON := generateSensorNoise()
+	gyroJSON := generateGyroNoise()
+	connRtt, connDownlink := generateConnectionMetrics()
 
 	checkData := baseParams + fmt.Sprintf(
 		"&accelerometer=%s&gyroscope=%s&motion=%s&cursor=%s&taps=%s&connectionRtt=%s&connectionDownlink=%s&browser_fp=%s&hash=%s&answer=%s&debug_info=%s",
-		neturl.QueryEscape("[]"), neturl.QueryEscape("[]"), neturl.QueryEscape("[]"),
-		neturl.QueryEscape(cursorJSON), neturl.QueryEscape("[]"), neturl.QueryEscape(connectionRtt),
-		neturl.QueryEscape(connectionDownlink),
+		neturl.QueryEscape(accelJSON), neturl.QueryEscape(gyroJSON), neturl.QueryEscape("[]"),
+		neturl.QueryEscape(cursorJSON), neturl.QueryEscape("[]"), neturl.QueryEscape(connRtt),
+		neturl.QueryEscape(connDownlink),
 		browserFp, hash, answer, debugInfo,
 	)
 
@@ -443,7 +542,7 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 		return "", fmt.Errorf("success_token not found")
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(time.Duration(180+rand.Intn(80)) * time.Millisecond)
 
 	turnLog("[STREAM %d] [Captcha] Step 4/4: endSession", streamID)
 	_, err = vkReq("captchaNotRobot.endSession", baseParams)

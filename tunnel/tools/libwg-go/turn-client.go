@@ -227,11 +227,17 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	defer c2.Close()
 
 	dtlsConn, err := dtls.Client(c1, peer, &dtls.Config{
-		Certificates:          []tls.Certificate{*s.cert},
-		InsecureSkipVerify:    true,
-		ExtendedMasterSecret:  dtls.RequireExtendedMasterSecret,
-		CipherSuites:          []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
-		ConnectionIDGenerator: dtls.OnlySendCIDGenerator(),
+		Certificates:         []tls.Certificate{*s.cert},
+		InsecureSkipVerify:   true,
+		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
+		CipherSuites: []dtls.CipherSuiteID{
+			dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			dtls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+			dtls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			dtls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			dtls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			dtls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("DTLS client creation failed: %w", err)

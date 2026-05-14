@@ -83,7 +83,7 @@ func newCaptchaNotRobotSession(
 		streamID:     streamID,
 		client:       client,
 		profile:      profile,
-		browserFp:    generateBrowserFp(profile),
+		browserFp:    generateBrowserFp(profile, randomViewport()),
 	}
 }
 
@@ -135,7 +135,7 @@ func (s *captchaNotRobotSession) requestSettings() (*captchaSettingsResponse, er
 func (s *captchaNotRobotSession) requestComponentDone() error {
 	values := s.baseValues()
 	values.Set("browser_fp", s.browserFp)
-	values.Set("device", buildCaptchaDeviceJSON(s.profile))
+	values.Set("device", buildCaptchaDeviceJSON(s.profile, randomViewport()))
 
 	resp, err := s.request("captchaNotRobot.componentDone", values)
 	if err != nil {
@@ -314,13 +314,6 @@ func callCaptchaNotRobotWithSliderPOC(
 
 	session.requestEndSession()
 	return successToken, nil
-}
-
-func buildCaptchaDeviceJSON(profile Profile) string {
-	return fmt.Sprintf(
-		`{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1040,"innerWidth":1920,"innerHeight":969,"devicePixelRatio":1,"language":"en-US","languages":["en-US"],"webdriver":false,"hardwareConcurrency":8,"deviceMemory":8,"connectionEffectiveType":"4g","notificationsPermission":"default","userAgent":"%s","platform":"Win32"}`,
-		profile.UserAgent,
-	)
 }
 
 func parseCaptchaSettingsResponse(resp map[string]interface{}) (*captchaSettingsResponse, error) {
