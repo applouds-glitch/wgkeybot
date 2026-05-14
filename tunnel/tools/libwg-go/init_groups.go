@@ -9,8 +9,10 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math/rand"
 	"net"
 	"sync"
+	"time"
 )
 
 // TunnelGroupsConfig — configuration for launching multiple WorkerGroups.
@@ -80,6 +82,14 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	}
 
 	for gi, link := range cfg.Links {
+		if gi > 0 {
+			// Jittered gap between group launches so multi-stream setups from
+			// a single IP don't hit the TURN server at exactly the same time.
+			baseDelay := 150 * time.Millisecond
+			jitter := time.Duration(rand.Intn(100)) * time.Millisecond
+			time.Sleep(baseDelay + jitter)
+		}
+
 		groupStreams := allStreams[gi*n : gi*n+n]
 
 		groupCfg := WorkerGroupConfig{
