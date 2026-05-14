@@ -106,16 +106,20 @@ const (
 	captchaSolveModeAuto captchaSolveMode = iota
 	captchaSolveModeSliderPOC
 	captchaSolveModeManual
+	captchaSolveModeManualVisible
 )
 
 func captchaSolveModeForAttempt(attempt int, manualCaptcha bool, enableSliderPOC bool) (captchaSolveMode, bool) {
 	var modes []captchaSolveMode
+	modes = append(modes, captchaSolveModeAuto)
 	if manualCaptcha {
 		modes = append(modes, captchaSolveModeManual)
 	}
-	modes = append(modes, captchaSolveModeAuto)
 	if enableSliderPOC {
 		modes = append(modes, captchaSolveModeSliderPOC)
+	}
+	if manualCaptcha {
+		modes = append(modes, captchaSolveModeManualVisible)
 	}
 	if attempt < len(modes) {
 		return modes[attempt], true
@@ -131,6 +135,8 @@ func captchaSolveModeLabel(mode captchaSolveMode) string {
 		return "auto captcha slider POC"
 	case captchaSolveModeManual:
 		return "manual captcha"
+	case captchaSolveModeManualVisible:
+		return "manual captcha (visible dialog)"
 	default:
 		return "captcha"
 	}
@@ -174,6 +180,7 @@ func fetchVkCreds(ctx context.Context, link string) (string, string, string, int
 		tlsclient.NewNoopLogger(),
 		tlsclient.WithTimeoutSeconds(20),
 		tlsclient.WithClientProfile(profiles.Chrome_146),
+		tlsclient.WithCookieJar(tlsclient.NewCookieJar()),
 		tlsclient.WithDialer(getCustomNetDialer()),
 		tlsclient.WithDialContext(getCustomDialContext),
 	)
@@ -370,6 +377,26 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 					} else {
 						solveErr = nil
 						turnLog("[Captcha] WebView solution SUCCESS! Got success_token")
+						pushCaptchaToken(link, successToken, 4)
+					}
+				case captchaSolveModeManualVisible:
+					turnLog("[STREAM %d] [Captcha] Triggering visible captcha dialog...", streamID)
+					turnLog("[Captcha] Attempt %d. Visible dialog solving...", attempt+1)
+					redirectURICStr := C.CString(captchaErr.RedirectURI)
+					defer C.free(unsafe.Pointer(redirectURICStr))
+
+					cToken := C.requestCaptcha(redirectURICStr)
+					if cToken == nil {
+						solveErr = fmt.Errorf("Visible captcha solving failed: returned nil token")
+					}
+					defer C.free(unsafe.Pointer(cToken))
+
+					successToken = C.GoString(cToken)
+					if successToken == "" {
+						solveErr = fmt.Errorf("Visible captcha solving failed: returned empty token")
+					} else {
+						solveErr = nil
+						turnLog("[Captcha] Visible dialog solution SUCCESS! Got success_token")
 						pushCaptchaToken(link, successToken, 4)
 					}
 				}
