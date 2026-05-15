@@ -157,11 +157,15 @@ class TunnelListFragment : BaseFragment() {
                 val tunnel = Application.getTunnelManager().getTunnels()
                     .firstOrNull { it.name == TUNNEL_NAME }
                 if (tunnel == null) {
-                    showSnackbar("Конфиг wgkeybot не найден.")
+                    showSnackbar(getString(R.string.wgk_config_not_found))
                     return@launch
                 }
 
-                val newState = if (tunnel.state == Tunnel.State.UP || vm.isConnecting)
+                // A single tap should reliably disconnect when the UI shows any non-idle
+                // state — Connecting/Handshake/Reconnecting/Failed all mean "user wants
+                // to stop", even if isConnecting was already cleared by notifyTunnelUp.
+                val uiBusy = vm.uiState.value.state != TunnelState.Disconnected
+                val newState = if (tunnel.state == Tunnel.State.UP || vm.isConnecting || uiBusy)
                     Tunnel.State.DOWN else Tunnel.State.UP
 
                 if (newState == Tunnel.State.UP && Application.getBackend() is GoBackend) {
@@ -178,8 +182,11 @@ class TunnelListFragment : BaseFragment() {
                 if (newState == Tunnel.State.UP) {
                     vm.cancelledByUser = false
                     vm.notifyConnecting()
-                } else if (vm.isConnecting) {
+                } else {
+                    // Reset UI to Disconnected before the (possibly slow) backend teardown
+                    // so the user sees the tap landed immediately and doesn't tap again.
                     vm.cancelledByUser = true
+                    vm.notifyTunnelDown()
                     withContext(Dispatchers.IO) { TurnBackend.wgTurnProxyStop() }
                 }
 
@@ -246,9 +253,9 @@ class TunnelListFragment : BaseFragment() {
                     config.`interface`.excludedApplications.isNotEmpty()
             b.wgkFooterRow.wgkSplitBtn.text = when {
                 config.`interface`.includedApplications.isNotEmpty() ->
-                    "Только: ${config.`interface`.includedApplications.size} прил."
+                    getString(R.string.wgk_split_only_count, config.`interface`.includedApplications.size)
                 config.`interface`.excludedApplications.isNotEmpty() ->
-                    "Исключено: ${config.`interface`.excludedApplications.size} прил."
+                    getString(R.string.wgk_split_excluded_count, config.`interface`.excludedApplications.size)
                 else -> getString(R.string.wgk_action_split_tunneling)
             }
             val splitColor = ContextCompat.getColor(
@@ -315,7 +322,7 @@ class TunnelListFragment : BaseFragment() {
                 val config = com.wireguard.config.Config.parse(resp.config.byteInputStream())
                 applyConfig(config)
             } catch (e: Exception) {
-                showSnackbar("Ошибка: ${e.message}")
+                showSnackbar(getString(R.string.wgk_error_format, e.message ?: ""))
             } finally {
                 b.wgkConnectWithTokenBtn.isEnabled = true
             }
@@ -340,9 +347,11 @@ class TunnelListFragment : BaseFragment() {
         val btn = b.wgkConnectButtonView.wgkConnectBtn
         val arc = b.wgkConnectButtonView.wgkBusyArc
         when (ui.state) {
-            TunnelState.Disconnected -> { btn.isActivated = false; btn.isSelected = false; arc.hide() }
+            TunnelState.Disconnected,
+            TunnelState.Failed       -> { btn.isActivated = false; btn.isSelected = false; arc.hide() }
             TunnelState.Connecting,
-            TunnelState.Handshake    -> { btn.isActivated = true;  btn.isSelected = false; arc.show() }
+            TunnelState.Handshake,
+            TunnelState.Reconnecting -> { btn.isActivated = true;  btn.isSelected = false; arc.show() }
             TunnelState.Connected    -> { btn.isActivated = false; btn.isSelected = true;  arc.hide() }
         }
     }
@@ -353,11 +362,15 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Connecting   -> R.string.wgk_headline_connecting
             TunnelState.Handshake    -> R.string.wgk_headline_handshake
             TunnelState.Connected    -> R.string.wgk_headline_connected
+            TunnelState.Reconnecting -> R.string.wgk_headline_reconnecting
+            TunnelState.Failed       -> R.string.wgk_headline_failed
         })
-        b.wgkHeadline.setTextColor(ContextCompat.getColor(requireContext(),
-            if (ui.state == TunnelState.Connected) R.color.wgk_success
-            else R.color.wgk_on_surface_variant
-        ))
+        b.wgkHeadline.setTextColor(ContextCompat.getColor(requireContext(), when (ui.state) {
+            TunnelState.Connected    -> R.color.wgk_success
+            TunnelState.Reconnecting -> R.color.wgk_warning
+            TunnelState.Failed       -> R.color.wgk_error
+            else                     -> R.color.wgk_on_surface_variant
+        }))
     }
 
     private fun renderStatusZone(b: TunnelListFragmentBinding, ui: TunnelUiState) {
@@ -369,14 +382,22 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Connecting   -> R.string.wgk_status_connecting
             TunnelState.Handshake    -> R.string.wgk_status_handshake
             TunnelState.Connected    -> R.string.wgk_status_connected
+            TunnelState.Reconnecting -> R.string.wgk_status_reconnecting
+            TunnelState.Failed       -> R.string.wgk_status_failed
         })
-        sz.wgkStatusHeadline.setTextColor(ContextCompat.getColor(requireContext(),
-            if (isConnected) R.color.wgk_success else R.color.wgk_on_surface))
+        sz.wgkStatusHeadline.setTextColor(ContextCompat.getColor(requireContext(), when (ui.state) {
+            TunnelState.Connected    -> R.color.wgk_success
+            TunnelState.Reconnecting -> R.color.wgk_warning
+            TunnelState.Failed       -> R.color.wgk_error
+            else                     -> R.color.wgk_on_surface
+        }))
         sz.wgkStatusSub.setText(when (ui.state) {
             TunnelState.Disconnected -> R.string.wgk_status_sub_disconnected
             TunnelState.Connecting   -> R.string.wgk_status_sub_connecting
             TunnelState.Handshake    -> R.string.wgk_status_sub_handshake
             TunnelState.Connected    -> R.string.wgk_status_sub_connected
+            TunnelState.Reconnecting -> R.string.wgk_status_sub_reconnecting
+            TunnelState.Failed       -> R.string.wgk_status_sub_failed
         })
 
         sz.wgkRxtxLabel.setText(if (isConnected) R.string.wgk_rxtx_label else R.string.wgk_wireguard_label)
@@ -389,18 +410,25 @@ class TunnelListFragment : BaseFragment() {
         val colorOutline = ContextCompat.getColor(requireContext(), R.color.wgk_outline)
         val colorPrimary = ContextCompat.getColor(requireContext(), R.color.wgk_primary)
         val colorSuccess = ContextCompat.getColor(requireContext(), R.color.wgk_success)
+        val colorWarning = ContextCompat.getColor(requireContext(), R.color.wgk_warning)
+        val colorError = ContextCompat.getColor(requireContext(), R.color.wgk_error)
 
         fun progressFor(stage: Int) = when (ui.state) {
-            TunnelState.Disconnected -> 0
+            TunnelState.Disconnected,
+            TunnelState.Failed       -> 0
             TunnelState.Connecting   -> if (stage == 0) 60 else 0
             TunnelState.Handshake    -> when (stage) { 0 -> 100; 1 -> 60; else -> 0 }
             TunnelState.Connected    -> 100
+            // Tunnel + handshake stages were achieved earlier, only routing is broken now.
+            TunnelState.Reconnecting -> if (stage < 2) 100 else 60
         }
         fun colorFor(stage: Int) = when (ui.state) {
             TunnelState.Disconnected -> colorOutline
+            TunnelState.Failed       -> if (stage == 0) colorError else colorOutline
             TunnelState.Connecting   -> if (stage == 0) colorPrimary else colorOutline
             TunnelState.Handshake    -> when (stage) { 0 -> colorSuccess; 1 -> colorPrimary; else -> colorOutline }
             TunnelState.Connected    -> colorSuccess
+            TunnelState.Reconnecting -> if (stage < 2) colorSuccess else colorWarning
         }
 
         val segs = listOf(sz.wgkSegTunnel, sz.wgkSegHandshake, sz.wgkSegRouting)
@@ -419,7 +447,7 @@ class TunnelListFragment : BaseFragment() {
     private fun refreshConfig() {
         val auth = AuthStore.getInstance(requireContext())
         val accessToken = auth.getAccessToken() ?: run {
-            showSnackbar("Нет токена доступа. Переоткройте ссылку из бота.")
+            showSnackbar(getString(R.string.wgk_no_access_token))
             return
         }
         startRefreshAnim()
@@ -441,7 +469,7 @@ class TunnelListFragment : BaseFragment() {
             } catch (e: ApiClient.UpgradeRequiredException) {
                 showUpgradeRequired(e.downloadUrl)
             } catch (e: Exception) {
-                showSnackbar("Ошибка обновления: ${e.message}")
+                showSnackbar(getString(R.string.wgk_refresh_error_format, e.message ?: ""))
             } finally {
                 stopRefreshAnim()
             }
@@ -484,7 +512,12 @@ class TunnelListFragment : BaseFragment() {
             val turnSettings = TurnConfigProcessor.extractTurnSettings(config)
                 ?: existing.turnSettings
             val configWithApps = withSplitTunnelApps(config, existing.getConfigAsync())
+            // setTunnelConfig does DOWN→save→UP when the tunnel was UP. Bridge the
+            // gap in the UI so polling doesn't flip to Failed during the reconnect.
+            val wasUp = existing.state == Tunnel.State.UP
+            if (wasUp) vm.notifyConnecting()
             tunnelManager.setTunnelConfig(existing, configWithApps, turnSettings)
+            if (wasUp) vm.notifyTunnelUp()
         } else {
             tunnelManager.create(TUNNEL_NAME, config)
         }
@@ -542,12 +575,12 @@ class TunnelListFragment : BaseFragment() {
         if (compareVersions(latestVersion, BuildConfig.VERSION_NAME) <= 0) return
         updateShownThisSession = true
         MaterialAlertDialogBuilder(requireContext())
-            .setTitle("Доступно обновление v$latestVersion")
-            .setMessage("Хотите скачать новую версию?")
-            .setPositiveButton("Обновить") { _, _ ->
+            .setTitle(getString(R.string.wgk_update_available_title, latestVersion))
+            .setMessage(getString(R.string.wgk_update_available_message))
+            .setPositiveButton(getString(R.string.wgk_update_now)) { _, _ ->
                 downloadUrl?.let { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) }
             }
-            .setNegativeButton("Позже", null)
+            .setNegativeButton(getString(R.string.wgk_update_later), null)
             .show()
     }
 
@@ -639,7 +672,7 @@ class TunnelListFragment : BaseFragment() {
             try {
                 val tunnel = Application.getTunnelManager().getTunnels()
                     .firstOrNull { it.name == TUNNEL_NAME }
-                if (tunnel == null) { showSnackbar("Конфиг wgkeybot не найден."); return@launch }
+                if (tunnel == null) { showSnackbar(getString(R.string.wgk_config_not_found)); return@launch }
                 val config = tunnel.getConfigAsync()
                 val proxy = ConfigProxy(config, tunnel.turnSettings)
 
@@ -662,7 +695,7 @@ class TunnelListFragment : BaseFragment() {
             try {
                 val tunnel = Application.getTunnelManager().getTunnels()
                     .firstOrNull { it.name == TUNNEL_NAME }
-                if (tunnel == null) { showSnackbar("Конфиг wgkeybot не найден."); return@launch }
+                if (tunnel == null) { showSnackbar(getString(R.string.wgk_config_not_found)); return@launch }
 
                 if (excluded) {
                     proxy.`interface`.includedApplications.clear()
@@ -672,11 +705,22 @@ class TunnelListFragment : BaseFragment() {
                     proxy.`interface`.includedApplications.apply { clear(); addAll(newSelections) }
                 }
 
+                // setTunnelConfig will bring the tunnel down and back up if it was UP.
+                // Reflect that in the UI so the polling job doesn't briefly flip to
+                // Failed (stale pollingStartedMs + handshake=0 right after reconnect).
+                val wasUp = tunnel.state == Tunnel.State.UP
+                if (wasUp) vm.notifyConnecting()
+
                 Application.getTunnelManager().setTunnelConfig(
                     tunnel, proxy.resolve(), tunnel.turnSettings
                 )
+
+                if (wasUp) vm.notifyTunnelUp()
                 refreshButtonState()
-            } catch (e: Exception) { showSnackbar(ErrorMessages[e]) }
+            } catch (e: Exception) {
+                vm.notifyTunnelDown()
+                showSnackbar(ErrorMessages[e])
+            }
         }
     }
 
@@ -738,7 +782,7 @@ class TunnelListFragment : BaseFragment() {
 
     private fun showConfigUpdatedSnackbar() {
         val b = binding ?: return
-        val snackbar = Snackbar.make(b.mainContainer, "Конфиг обновлён", Snackbar.LENGTH_SHORT)
+        val snackbar = Snackbar.make(b.mainContainer, getString(R.string.wgk_config_updated), Snackbar.LENGTH_SHORT)
         snackbar.setBackgroundTint(ContextCompat.getColor(requireContext(), R.color.wgk_surface_container_high))
         snackbar.setTextColor(ContextCompat.getColor(requireContext(), R.color.wgk_on_surface))
         val tv = snackbar.view.findViewById<android.widget.TextView>(

@@ -302,7 +302,7 @@
     <string name="captcha_loading">Loading captcha…</string>
     <string name="captcha_error">Failed to solve captcha. Please try again.</string>
     <string name="captcha_instructions">Please complete the verification to continue</string>
-    <string name="excluded_applications">Раздельное туннелирование</string>
+    <string name="excluded_applications">Split tunneling</string>
 
     <!-- WGKeyBot Connect screen -->
     <string name="wgk_state_idle">IDLE</string>
@@ -314,6 +314,8 @@
     <string name="wgk_headline_connecting">Поднимаем туннель</string>
     <string name="wgk_headline_handshake">Идёт handshake</string>
     <string name="wgk_headline_connected">Туннель активен</string>
+    <string name="wgk_headline_reconnecting">Соединение потеряно</string>
+    <string name="wgk_headline_failed">Не удалось подключиться</string>
 
     <string name="wgk_profile_name">Config</string>
     <string name="wgk_profile_loaded_at">Загружено в %1$s</string>
@@ -327,11 +329,15 @@
     <string name="wgk_status_connecting">Подключение…</string>
     <string name="wgk_status_handshake">Handshake…</string>
     <string name="wgk_status_connected">Подключено</string>
+    <string name="wgk_status_reconnecting">Переподключение…</string>
+    <string name="wgk_status_failed">Ошибка</string>
 
     <string name="wgk_status_sub_disconnected">Готов к подключению</string>
     <string name="wgk_status_sub_connecting">Поднимаем wg-интерфейс</string>
     <string name="wgk_status_sub_handshake">Обмен ключами</string>
     <string name="wgk_status_sub_connected">Соединение установлено</string>
+    <string name="wgk_status_sub_reconnecting">Сервер не отвечает — повторная попытка</string>
+    <string name="wgk_status_sub_failed">Сервер недоступен. Проверьте сеть и попробуйте снова</string>
 
     <string name="wgk_rxtx_label">RX / TX</string>
     <string name="wgk_wireguard_label">WIREGUARD</string>
@@ -371,6 +377,20 @@
     <string name="wgk_upgrade_required_message">Версия приложения устарела и больше не поддерживается. Необходимо обновиться.</string>
     <string name="wgk_upgrade_required_action">Скачать</string>
     <string name="wgk_split_cancel">Отмена</string>
+    <string name="wgk_config_not_found">Конфиг wgkeybot не найден.</string>
+    <string name="wgk_split_only_count">Только: %d прил.</string>
+    <string name="wgk_split_excluded_count">Исключено: %d прил.</string>
+    <string name="wgk_error_format">Ошибка: %s</string>
+    <string name="wgk_no_access_token">Нет токена доступа. Переоткройте ссылку из бота.</string>
+    <string name="wgk_refresh_error_format">Ошибка обновления: %s</string>
+    <string name="wgk_update_available_title">Доступно обновление v%s</string>
+    <string name="wgk_update_available_message">Хотите скачать новую версию?</string>
+    <string name="wgk_update_now">Обновить</string>
+    <string name="wgk_update_later">Позже</string>
+    <string name="wgk_config_updated">Конфиг обновлён</string>
+    <string name="wgk_deeplink_missing_token">Deeplink: отсутствует параметр token</string>
+    <string name="wgk_server_bad_config">Сервер вернул некорректный конфиг</string>
+    <string name="wgk_auth_error_format">Ошибка авторизации: %s</string>
 
     <plurals name="wgk_log_taps_remaining">
         <item quantity="one">Ещё %d тап до логов</item>
@@ -378,5 +398,5 @@
         <item quantity="many">Ещё %d тапов до логов</item>
         <item quantity="other">Ещё %d тапа до логов</item>
     </plurals>
-    <string name="turn_start_failed">Не удалось установить соединение через TURN</string>
+    <string name="turn_start_failed">Failed to establish TURN connection</string>
 </resources>

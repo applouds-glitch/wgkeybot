@@ -636,12 +636,22 @@ var packetLc net.PacketConn = lc
 		return -1
 	}
 
+	// Startup timeout: if no stream completes its DTLS handshake within this
+	// window, the server is unreachable or DTLS is being blocked. Bail out so
+	// the UI can surface a "failed to connect" state instead of spinning forever.
+	// 30s matches the inner DTLS handshake deadline — one attempt is enough to
+	// tell whether the path works; further worker retries are wasted at startup.
+	const startupTimeout = 30 * time.Second
 	select {
 	case <-okChan:
 		turnLog("[PROXY] First stream ready — tunnel is up")
 		return 0
 	case <-ctx.Done():
 		turnLog("[PROXY] Startup cancelled")
+		return -1
+	case <-time.After(startupTimeout):
+		turnLog("[PROXY] Startup timeout — no DTLS handshake within %v", startupTimeout)
+		cancel()
 		return -1
 	}
 }
