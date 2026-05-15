@@ -16,4 +16,6 @@
     <color name="wgk_outline_variant">#FF2A2D31</color>
     <color name="wgk_primary_12">#1FA4C9FE</color>
     <color name="wgk_primary_30">#4DA4C9FE</color>
+    <color name="wgk_warning">#FFFFB870</color>
+    <color name="wgk_error">#FFFFB4AB</color>
 </resources>

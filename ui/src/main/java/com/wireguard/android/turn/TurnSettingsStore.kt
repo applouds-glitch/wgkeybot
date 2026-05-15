@@ -6,10 +6,9 @@ package com.wireguard.android.turn
 
 import android.content.Context
 import android.util.Log
+import com.wireguard.android.util.SecureFileStorage
 import org.json.JSONObject
 import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 
 /**
@@ -27,31 +26,28 @@ class TurnSettingsStore(private val context: Context) {
         val file = fileFor(name)
         if (!file.isFile) return null
         return try {
-            FileInputStream(file).use { stream ->
-                val bytes = stream.readBytes()
-                val json = JSONObject(String(bytes, StandardCharsets.UTF_8))
+            val bytes = SecureFileStorage.read(context, file)
+            val json = JSONObject(String(bytes, StandardCharsets.UTF_8))
 
                 // Backward compatibility: derive peerType from legacy noDtls
                 val noDtlsLegacy = json.optBoolean("noDtls", false)
                 val peerTypeDefault = if (noDtlsLegacy) "wireguard" else "proxy_v2"
 
 
-                val settings = TurnSettings(
-                    enabled = json.optBoolean("enabled", false),
-                    peer = json.optString("peer", ""),
-                    vkLink = json.optString("vkLink", ""),
-                    mode = json.optString("mode", "vk_link"),
-                    streams = json.optInt("streams", 4),
-                    useUdp = json.optBoolean("useUdp", false),
-                    localPort = json.optInt("localPort", 9000),
-                    turnIp = json.optString("turnIp", ""),
-                    turnPort = json.optInt("turnPort", 0),
-                    peerType = json.optString("peerType", peerTypeDefault),
-                    streamsPerCred = json.optInt("streamsPerCred", 4),
-                    wrapKey = json.optString("wrapKey", ""),
-                )
-                settings
-            }
+            TurnSettings(
+                enabled = json.optBoolean("enabled", false),
+                peer = json.optString("peer", ""),
+                vkLink = json.optString("vkLink", ""),
+                mode = json.optString("mode", "vk_link"),
+                streams = json.optInt("streams", 4),
+                useUdp = json.optBoolean("useUdp", false),
+                localPort = json.optInt("localPort", 9000),
+                turnIp = json.optString("turnIp", ""),
+                turnPort = json.optInt("turnPort", 0),
+                peerType = json.optString("peerType", peerTypeDefault),
+                streamsPerCred = json.optInt("streamsPerCred", 4),
+                wrapKey = json.optString("wrapKey", ""),
+            )
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to load TURN settings for tunnel $name", t)
             null
@@ -81,10 +77,7 @@ class TurnSettingsStore(private val context: Context) {
             .put("streamsPerCred", settings.streamsPerCred)
             .put("wrapKey", settings.wrapKey)
 
-        file.parentFile?.mkdirs()
-        FileOutputStream(file, false).use { stream ->
-            stream.write(json.toString().toByteArray(StandardCharsets.UTF_8))
-        }
+        SecureFileStorage.write(context, file, json.toString().toByteArray(StandardCharsets.UTF_8))
     }
 
     fun delete(name: String) {
@@ -98,11 +91,16 @@ class TurnSettingsStore(private val context: Context) {
         val file = fileFor(name)
         if (!file.isFile) return
         val replacementFile = fileFor(replacement)
-        if (replacementFile.isFile && !replacementFile.delete()) {
-            Log.w(TAG, "Failed to delete existing TURN settings for $replacement")
-        }
-        if (!file.renameTo(replacementFile)) {
-            Log.w(TAG, "Failed to rename TURN settings from $name to $replacement")
+        // EncryptedFile's keyset is bound to the file path, so a plain renameTo
+        // would break decryption. Round-trip through SecureFileStorage instead.
+        try {
+            val bytes = SecureFileStorage.read(context, file)
+            SecureFileStorage.write(context, replacementFile, bytes)
+            if (!file.delete()) {
+                Log.w(TAG, "Failed to delete old TURN settings for $name after rename")
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to rename TURN settings from $name to $replacement", t)
         }
     }
 

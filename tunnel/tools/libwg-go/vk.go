@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -109,14 +110,15 @@ const (
 	captchaSolveModeManualVisible
 )
 
+// captchaSolveModeForAttempt returns the next captcha solve mode for a given attempt.
+// Order: HTTP auto → invisible WebView → visible WebView dialog.
+// captchaSolveModeSliderPOC is intentionally NOT in this list — it is invoked
+// dynamically only when the HTTP solver returns errSliderDetected.
 func captchaSolveModeForAttempt(attempt int, manualCaptcha bool, enableSliderPOC bool) (captchaSolveMode, bool) {
 	var modes []captchaSolveMode
 	modes = append(modes, captchaSolveModeAuto)
 	if manualCaptcha {
 		modes = append(modes, captchaSolveModeManual)
-	}
-	if enableSliderPOC {
-		modes = append(modes, captchaSolveModeSliderPOC)
 	}
 	if manualCaptcha {
 		modes = append(modes, captchaSolveModeManualVisible)
@@ -301,10 +303,17 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	manualCaptcha := true
 	autoCaptchaSliderPOC := true
 	streamID := 0
+	// Set to true when slider POC fails on a slider-confirmed captcha. In that
+	// case the invisible WebView (captchaSolveModeManual) can't help either,
+	// so we skip it and jump straight to the visible dialog.
+	sliderEscalationFailed := false
 
 	// Pre-send a cached success_token if one exists. VK may honour it and skip
 	// the captcha challenge entirely. If VK still returns error 14, we invalidate
-	// the cache and fall through to the normal auto→slider→WebView flow.
+	// the cache and fall through to the normal flow:
+	//   HTTP auto → (slider POC if slider advertised) → invisible WebView → visible dialog
+	// If the slider POC fails on a slider-confirmed captcha, the invisible WebView
+	// is skipped and we jump straight to the visible dialog.
 	baseData := data
 	cachedSuccessToken := popCaptchaToken(link)
 	if cachedSuccessToken != "" {
@@ -328,6 +337,14 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 					data = baseData
 				}
 				solveMode, hasSolveMode := captchaSolveModeForAttempt(attempt, manualCaptcha, autoCaptchaSliderPOC)
+				// If slider POC already failed on a slider-confirmed captcha, the
+				// invisible WebView can't solve it either — skip straight to the
+				// visible dialog.
+				if sliderEscalationFailed && solveMode == captchaSolveModeManual {
+					turnLog("[STREAM %d] [Captcha] Skipping invisible WebView (slider unsolved) — jumping to visible dialog", streamID)
+					attempt++
+					solveMode, hasSolveMode = captchaSolveModeForAttempt(attempt, manualCaptcha, autoCaptchaSliderPOC)
+				}
 				if !hasSolveMode {
 					turnLog("[STREAM %d] [Captcha] No more solve modes available (attempt %d)", streamID, attempt+1)
 					return "", "", "", 0, fmt.Errorf("CAPTCHA_WAIT_REQUIRED")
@@ -344,6 +361,16 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 						successToken, solveErr = solveVkCaptcha(ctx, captchaErr, streamID, client, profile, false)
 						if solveErr != nil {
 							turnLog("[STREAM %d] [Captcha] Auto captcha failed: %v", streamID, solveErr)
+						}
+						// Slider advertised in settings → escalate to slider POC right
+						// now (don't waste a WebView round on a slider it can't solve).
+						if errors.Is(solveErr, errSliderDetected) && autoCaptchaSliderPOC {
+							turnLog("[STREAM %d] [Captcha] Slider detected — escalating to slider POC", streamID)
+							successToken, solveErr = solveVkCaptcha(ctx, captchaErr, streamID, client, profile, true)
+							if solveErr != nil {
+								turnLog("[STREAM %d] [Captcha] Slider POC failed: %v", streamID, solveErr)
+								sliderEscalationFailed = true
+							}
 						}
 					} else {
 						solveErr = fmt.Errorf("missing fields for auto solve")

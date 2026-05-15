@@ -30,6 +30,9 @@ import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
+import android.content.res.Configuration
+import android.os.LocaleList
+import java.util.Locale
 
 /**
  * Невидимый WebView для автоматического прохождения VK Smart Captcha.
@@ -263,12 +266,37 @@ object CaptchaWebViewManager {
 
         val createAction = Runnable {
             try {
-                // createDisplayContext attaches a real Display to the ApplicationContext,
-                // satisfying ViewConfiguration requirements on Android 12+ (API 31+).
+                // Android 12+ (API 31+) StrictMode rejects WebView construction from a
+                // non-UI Context. Chain createDisplayContext (gives a real Display) +
+                // createConfigurationContext (gives Configuration that ViewConfiguration
+                // needs); together they satisfy the IncorrectContextUseViolation check.
                 val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
                 val display = displayManager.getDisplay(Display.DEFAULT_DISPLAY)
-                val wvContext = if (display != null) context.createDisplayContext(display) else context
+                val wvContext = if (display != null) {
+                    context.createDisplayContext(display)
+                        .createConfigurationContext(context.resources.configuration)
+                } else context
+
+                // WebView init has a long-standing Android bug: it touches
+                // ApplicationContext.Resources and silently resets the JVM default Locale
+                // (and applicationContext Configuration locales) to the system default —
+                // so after the user's tunnel connects, an Activity recreate (e.g. theme
+                // toggle) picks up the wrong language. Snapshot the locales now and
+                // restore them right after the WebView constructor returns.
+                val savedJvmLocale = Locale.getDefault()
+                val savedAppLocales = context.resources.configuration.locales
+
                 val wv = WebView(wvContext)
+
+                if (Locale.getDefault() != savedJvmLocale) {
+                    Locale.setDefault(savedJvmLocale)
+                }
+                val appConfig = context.resources.configuration
+                if (appConfig.locales != savedAppLocales) {
+                    val restored = Configuration(appConfig).apply { setLocales(savedAppLocales) }
+                    @Suppress("DEPRECATION")
+                    context.resources.updateConfiguration(restored, context.resources.displayMetrics)
+                }
                 wv.apply {
                     settings.apply {
                         javaScriptEnabled = true
