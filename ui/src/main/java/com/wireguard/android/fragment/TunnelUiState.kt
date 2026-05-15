@@ -5,6 +5,10 @@ enum class TunnelState {
     Connecting,
     Handshake,
     Connected,
+    // Tunnel is up but no fresh handshake (peer unreachable >180s).
+    Reconnecting,
+    // Initial connection didn't produce a handshake within the grace period.
+    Failed,
 }
 
 data class TunnelUiState(

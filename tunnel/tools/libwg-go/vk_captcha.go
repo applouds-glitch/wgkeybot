@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -31,6 +32,11 @@ import (
 	fhttp "github.com/bogdanfinn/fhttp"
 	tlsclient "github.com/kiper292/tls-client"
 )
+
+// errSliderDetected signals that the settings response advertised a slider
+// captcha, so the HTTP/checkbox path cannot solve it and a slider-aware
+// solver (slider POC or WebView) must run instead.
+var errSliderDetected = errors.New("slider_detected")
 
 type VkCaptchaError struct {
 	ErrorCode               int
@@ -488,8 +494,15 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 	baseParams := fmt.Sprintf("session_token=%s&domain=vk.com&adFp=&access_token=", neturl.QueryEscape(sessionToken))
 
 	turnLog("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
-	if _, err := vkReq("captchaNotRobot.settings", baseParams); err != nil {
+	settingsResp, err := vkReq("captchaNotRobot.settings", baseParams)
+	if err != nil {
 		return "", fmt.Errorf("settings failed: %w", err)
+	}
+	if parsedSettings, perr := parseCaptchaSettingsResponse(settingsResp); perr == nil && parsedSettings != nil {
+		if _, hasSlider := parsedSettings.SettingsByType[sliderCaptchaType]; hasSlider {
+			turnLog("[STREAM %d] [Captcha] Slider detected in settings — aborting HTTP solve", streamID)
+			return "", errSliderDetected
+		}
 	}
 
 	time.Sleep(time.Duration(180+rand.Intn(80)) * time.Millisecond)

@@ -152,9 +152,12 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         if (uri.scheme != "wgkeybot" || uri.host != "config") return
 
         val oneTimeToken = uri.getQueryParameter("token")?.takeIf { it.isNotBlank() } ?: run {
-            Toast.makeText(this, "Deeplink: отсутствует параметр token", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.wgk_deeplink_missing_token), Toast.LENGTH_SHORT).show()
             return
         }
+        // Consume the intent so a configuration change (rotation) doesn't replay
+        // the same one-time token, which would fail server-side.
+        intent.data = null
 
         val auth = AuthStore.getInstance(this)
 
@@ -166,17 +169,27 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
                 auth.saveSubscriptionExpiresAt(resp.subscriptionExpiresAt)
 
                 if (!resp.config.contains("[Interface]") || !resp.config.contains("[Peer]")) {
-                    throw IllegalArgumentException("Сервер вернул некорректный конфиг")
+                    throw IllegalArgumentException(getString(R.string.wgk_server_bad_config))
                 }
 
                 val config = Config.parse(resp.config.byteInputStream())
-                val fragment = supportFragmentManager.findFragmentById(R.id.list_detail_container)
-                if (fragment is TunnelListFragment) {
-                    fragment.applyConfig(config)
-                    fragment.refreshState()
+
+                // Pop detail/dialog screens so the list fragment is on top —
+                // otherwise findFragmentById would return the detail fragment and
+                // we'd drop the new config silently.
+                if (supportFragmentManager.backStackEntryCount > 0) {
+                    supportFragmentManager.popBackStackImmediate(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
+                    selectedTunnel = null
+                }
+                val listFragment = supportFragmentManager.fragments
+                    .filterIsInstance<TunnelListFragment>()
+                    .firstOrNull()
+                if (listFragment != null) {
+                    listFragment.applyConfig(config)
+                    listFragment.refreshState()
                 }
             } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, "Ошибка авторизации: ${e.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, getString(R.string.wgk_auth_error_format, e.message ?: ""), Toast.LENGTH_LONG).show()
             }
         }
     }

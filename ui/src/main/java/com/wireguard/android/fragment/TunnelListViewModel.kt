@@ -16,6 +16,12 @@ import kotlinx.coroutines.launch
 
 private const val TUNNEL_NAME = "wgkeybot"
 private const val HANDSHAKE_DISPLAY_SECONDS = 5L
+// WireGuard REJECT_AFTER_TIME — a peer that hasn't completed a handshake in this
+// window is considered unreachable.
+private const val HANDSHAKE_STALE_SECONDS = 180L
+// Grace period for the initial connection. If no handshake arrives within this
+// window from when polling started, surface a Failed state to the user.
+private const val INITIAL_HANDSHAKE_TIMEOUT_MS = 30_000L
 
 class TunnelListViewModel : ViewModel() {
 
@@ -30,6 +36,7 @@ class TunnelListViewModel : ViewModel() {
     private var uptimeJob: Job? = null
     private var connectedSinceMs = 0L
     private var firstHandshakeMs = 0L
+    private var pollingStartedMs = 0L
 
     // ── External notifications from Fragment ──────────────────────────────────
 
@@ -42,6 +49,7 @@ class TunnelListViewModel : ViewModel() {
         isConnecting = false
         connectedSinceMs = System.currentTimeMillis()
         firstHandshakeMs = 0L
+        pollingStartedMs = System.currentTimeMillis()
         startStatsPolling()
         startUptimeTicker()
     }
@@ -85,10 +93,17 @@ class TunnelListViewModel : ViewModel() {
                     val rx = stats.totalRx()
                     val tx = stats.totalTx()
 
+                    val now = System.currentTimeMillis()
                     val newState = when {
-                        lastHandshakeMs == 0L -> TunnelState.Connecting
-                        firstHandshakeMs == 0L || (System.currentTimeMillis() - firstHandshakeMs) / 1000 < HANDSHAKE_DISPLAY_SECONDS -> {
-                            if (firstHandshakeMs == 0L) firstHandshakeMs = System.currentTimeMillis()
+                        lastHandshakeMs == 0L -> {
+                            // No handshake yet — show Connecting during the grace period,
+                            // then Failed if it never arrives.
+                            if (now - pollingStartedMs > INITIAL_HANDSHAKE_TIMEOUT_MS) TunnelState.Failed
+                            else TunnelState.Connecting
+                        }
+                        (now - lastHandshakeMs) / 1000 > HANDSHAKE_STALE_SECONDS -> TunnelState.Reconnecting
+                        firstHandshakeMs == 0L || (now - firstHandshakeMs) / 1000 < HANDSHAKE_DISPLAY_SECONDS -> {
+                            if (firstHandshakeMs == 0L) firstHandshakeMs = now
                             TunnelState.Handshake
                         }
                         else -> TunnelState.Connected
@@ -117,6 +132,7 @@ class TunnelListViewModel : ViewModel() {
         uptimeJob?.cancel(); uptimeJob = null
         connectedSinceMs = 0L
         firstHandshakeMs = 0L
+        pollingStartedMs = 0L
     }
 
     override fun onCleared() {
