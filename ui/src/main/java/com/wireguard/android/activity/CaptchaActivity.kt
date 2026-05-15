@@ -18,6 +18,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
+import android.content.res.Configuration
+import java.util.Locale
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
@@ -49,6 +51,13 @@ class CaptchaActivity : AppCompatActivity() {
 
         Log.d(TAG, "Loading captcha page...")
 
+        // WebView init has a long-standing Android bug: it resets the JVM default
+        // Locale (and applicationContext Configuration locales) to the system
+        // default. Without this the app's language reverts to default after the
+        // user manually solves the captcha. Snapshot + restore around construction.
+        val savedJvmLocale = Locale.getDefault()
+        val savedAppLocales = applicationContext.resources.configuration.locales
+
         val webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -73,6 +82,19 @@ class CaptchaActivity : AppCompatActivity() {
                     return false
                 }
             }
+        }
+
+        // Restore locales clobbered by the WebView constructor above.
+        if (Locale.getDefault() != savedJvmLocale) {
+            Locale.setDefault(savedJvmLocale)
+        }
+        val appConfig = applicationContext.resources.configuration
+        if (appConfig.locales != savedAppLocales) {
+            val restored = Configuration(appConfig).apply { setLocales(savedAppLocales) }
+            @Suppress("DEPRECATION")
+            applicationContext.resources.updateConfiguration(
+                restored, applicationContext.resources.displayMetrics
+            )
         }
 
         setContentView(webView)
