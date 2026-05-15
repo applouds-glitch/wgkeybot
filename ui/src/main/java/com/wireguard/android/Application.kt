@@ -131,9 +131,12 @@ class Application : android.app.Application() {
         CaptchaWebViewManager.onTunnelStart(applicationContext)
 
         // Captcha strategy (matches Go mode order in vk.go):
-        // 1st call (manual)       → invisible WebView auto-click (CaptchaWebViewManager)
-        //                            on failure → Go tries slider POC
-        // 2nd call (manualVisible) → visible CaptchaActivity dialog
+        // 1. Go HTTP auto-solve (captchaSolveModeAuto)
+        //    └─ if slider advertised in settings → Go slider POC (dynamic, not in queue)
+        //         └─ if slider POC fails → skip invisible WebView, jump to visible dialog
+        // 2. Invisible WebView auto-click (captchaSolveModeManual)  ← Kotlin call #1
+        //    (skipped when slider POC failed — invisible WebView can't solve sliders)
+        // 3. Visible CaptchaActivity dialog (captchaSolveModeManualVisible) ← Kotlin call #2
         var autoSolveAttempted = false
         TurnBackend.setCaptchaHandler { redirectUri ->
             Log.d(TAG, "Captcha handler invoked, autoSolveAttempted=$autoSolveAttempted")
