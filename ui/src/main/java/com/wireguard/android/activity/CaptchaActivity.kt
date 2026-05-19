@@ -18,8 +18,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
-import android.content.res.Configuration
-import java.util.Locale
+import com.wireguard.android.util.LocaleGuard
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
@@ -51,13 +50,6 @@ class CaptchaActivity : AppCompatActivity() {
 
         Log.d(TAG, "Loading captcha page...")
 
-        // WebView init has a long-standing Android bug: it resets the JVM default
-        // Locale (and applicationContext Configuration locales) to the system
-        // default. Without this the app's language reverts to default after the
-        // user manually solves the captcha. Snapshot + restore around construction.
-        val savedJvmLocale = Locale.getDefault()
-        val savedAppLocales = applicationContext.resources.configuration.locales
-
         val webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -84,18 +76,10 @@ class CaptchaActivity : AppCompatActivity() {
             }
         }
 
-        // Restore locales clobbered by the WebView constructor above.
-        if (Locale.getDefault() != savedJvmLocale) {
-            Locale.setDefault(savedJvmLocale)
-        }
-        val appConfig = applicationContext.resources.configuration
-        if (appConfig.locales != savedAppLocales) {
-            val restored = Configuration(appConfig).apply { setLocales(savedAppLocales) }
-            @Suppress("DEPRECATION")
-            applicationContext.resources.updateConfiguration(
-                restored, applicationContext.resources.displayMetrics
-            )
-        }
+        // WebView construction clobbers the process locale (see LocaleGuard).
+        // Repair now; onDestroy() repairs again since the clobber can also
+        // happen later during page load / render.
+        LocaleGuard.restore(this)
 
         setContentView(webView)
         webView.loadUrl(redirectUri)
@@ -164,6 +148,9 @@ class CaptchaActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         restoreNetworkBinding()
+        // WebView may have clobbered the locale during its lifetime (page load /
+        // render), not just at construction — repair after it's torn down.
+        LocaleGuard.restore(this)
         super.onDestroy()
         // If activity destroyed without result (back button etc.), deliver empty
         deliverResult("")

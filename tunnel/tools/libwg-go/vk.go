@@ -110,6 +110,12 @@ const (
 	captchaSolveModeManualVisible
 )
 
+// captchaSliderSentinel is returned by the Kotlin captcha handler (see
+// CAPTCHA_SLIDER_SENTINEL in Application.kt) when the invisible WebView
+// positively identified a slider captcha. It signals "not a token — run the
+// slider POC". Must stay byte-for-byte in sync with the Kotlin constant.
+const captchaSliderSentinel = "__WGK_SLIDER_DETECTED__"
+
 // captchaSolveModeForAttempt returns the next captcha solve mode for a given attempt.
 // Order: HTTP auto → invisible WebView → visible WebView dialog.
 // captchaSolveModeSliderPOC is intentionally NOT in this list — it is invoked
@@ -399,7 +405,24 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 					defer C.free(unsafe.Pointer(cToken))
 
 					successToken = C.GoString(cToken)
-					if successToken == "" {
+					if successToken == captchaSliderSentinel {
+						// Invisible WebView positively identified a slider. Run the
+						// slider POC now — it's the only automated solver for sliders,
+						// and the visible dialog (next mode) would just annoy the user.
+						successToken = ""
+						turnLog("[STREAM %d] [Captcha] WebView reported slider — escalating to slider POC", streamID)
+						if captchaErr.SessionToken != "" && captchaErr.RedirectURI != "" {
+							successToken, solveErr = solveVkCaptcha(ctx, captchaErr, streamID, client, profile, true)
+							if solveErr != nil {
+								turnLog("[STREAM %d] [Captcha] Slider POC failed: %v", streamID, solveErr)
+							} else {
+								turnLog("[Captcha] Slider POC solution SUCCESS! Got success_token")
+								pushCaptchaToken(link, successToken, 4)
+							}
+						} else {
+							solveErr = fmt.Errorf("missing fields for slider POC after WebView slider")
+						}
+					} else if successToken == "" {
 						solveErr = fmt.Errorf("WebView captcha solving failed: returned empty token")
 					} else {
 						solveErr = nil

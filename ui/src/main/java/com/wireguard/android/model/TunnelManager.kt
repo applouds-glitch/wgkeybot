@@ -312,9 +312,6 @@ class TunnelManager(
                     getTurnProxyManager().onTunnelEstablished(tunnel.name, turn)
                 }
                 if (!turnStarted) {
-                    // WireGuard endpoint is 127.0.0.1:9000 (the TURN proxy), so there is no
-                    // point starting WireGuard if TURN failed — abort so the caller can handle
-                    // the error (e.g. show an error or silently cancel on user request).
                     throw Exception(context.getString(R.string.turn_start_failed))
                 }
             }
