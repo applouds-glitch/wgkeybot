@@ -22,7 +22,14 @@ export CGO_ENABLED := 1
 
 default: $(DESTDIR)/libwg-go.so
 
-$(DESTDIR)/libwg-go.so: go.mod
+# Rebuild whenever any Go source (this module's *.go plus go.mod/go.sum)
+# changes. Previously the target depended on go.mod alone, so edits to
+# vk.go / turn-client.go / etc. did NOT trigger a rebuild on incremental
+# Gradle builds — the stale .so was silently reused. Go's own build cache
+# keeps this cheap (it only recompiles changed packages).
+GO_SOURCES := $(wildcard *.go) go.mod $(wildcard go.sum)
+
+$(DESTDIR)/libwg-go.so: $(GO_SOURCES)
 	go build -tags linux -ldflags="-checklinkname=0 -X golang.zx2c4.com/wireguard/ipc.socketDirectory=/data/data/$(ANDROID_PACKAGE_NAME)/cache/wireguard -buildid=" -v -trimpath -buildvcs=false -o "$@" -buildmode c-shared
 
 .DELETE_ON_ERROR:

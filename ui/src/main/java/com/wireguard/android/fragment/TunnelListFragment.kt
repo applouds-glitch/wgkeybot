@@ -8,7 +8,11 @@ import android.animation.ObjectAnimator
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -65,6 +69,7 @@ class TunnelListFragment : BaseFragment() {
 
     private var currentSplitProxy: ConfigProxy? = null
     private var updateShownThisSession = false
+    private var lastRenderedState: TunnelState = TunnelState.Disconnected
 
     private var logTapCount = 0
     private var logTapLastMs = 0L
@@ -333,10 +338,30 @@ class TunnelListFragment : BaseFragment() {
 
     private fun render(ui: TunnelUiState) {
         val b = binding ?: return
+        if (ui.state == TunnelState.Connected && lastRenderedState != TunnelState.Connected) {
+            vibrateConnected()
+        }
+        lastRenderedState = ui.state
         renderProfile(b, ui)
         renderConnectButton(b, ui)
         renderHeadline(b, ui)
         renderStatusZone(b, ui)
+    }
+
+    private fun vibrateConnected() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vm = requireContext().getSystemService(VibratorManager::class.java)
+            vm?.defaultVibrator?.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            @Suppress("DEPRECATION")
+            val vibrator = requireContext().getSystemService(Vibrator::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator?.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(80)
+            }
+        }
     }
 
     private fun renderProfile(b: TunnelListFragmentBinding, ui: TunnelUiState) {

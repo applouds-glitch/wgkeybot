@@ -144,7 +144,29 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	sCtx, sCancel := context.WithCancel(ctx)
 	defer sCancel()
 
-	turnLog("[STREAM %d] NoDTLS mode — %s", s.id, peer)
+	hasWrap := s.wrapKey != nil
+	turnLog("[STREAM %d] NoDTLS mode (wrap=%v) — %s", s.id, hasWrap, peer)
+
+	// Session handshake: 17-byte header (sessionID + streamID).
+	if s.sessionID != nil {
+		hs := make([]byte, 17)
+		copy(hs[:16], s.sessionID)
+		hs[16] = byte(s.id)
+		var payload []byte
+		if hasWrap {
+			var hErr error
+			payload, hErr = wrapPacket(s.wrapKey, hs)
+			if hErr != nil {
+				return fmt.Errorf("session handshake wrap: %w", hErr)
+			}
+		} else {
+			payload = hs
+		}
+		if _, hErr := relayConn.WriteTo(payload, peer); hErr != nil {
+			return fmt.Errorf("session handshake send: %w", hErr)
+		}
+		turnLog("[STREAM %d] Session handshake sent", s.id)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -158,7 +180,20 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			case <-sCtx.Done():
 				return
 			case b := <-s.in:
-				_, err := relayConn.WriteTo(b, peer)
+				var payload []byte
+				if hasWrap {
+					var err error
+					payload, err = wrapPacket(s.wrapKey, b)
+					if err != nil {
+						packetPool.Put(b[:cap(b)])
+						noDtlsTxDropCount.Add(1)
+						turnLog("[STREAM %d] WRAP TX error: %v", s.id, err)
+						return
+					}
+				} else {
+					payload = b
+				}
+				_, err := relayConn.WriteTo(payload, peer)
 				packetPool.Put(b[:cap(b)])
 				if err != nil {
 					noDtlsTxDropCount.Add(1)
@@ -173,37 +208,70 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	go func() {
 		defer wg.Done()
 		defer sCancel()
-		buf := make([]byte, iPacketBuffMaxSize)
+		wire := make([]byte, iPacketBuffMaxSize)
+		plain := make([]byte, iPacketBuffMaxSize)
 		for {
-			n, from, err := relayConn.ReadFrom(buf)
+			n, from, err := relayConn.ReadFrom(wire)
 			if err != nil {
 				noDtlsRxErrorCount.Add(1)
 				return
 			}
-			if from.String() == peer.String() {
-				if a := s.peer.Load(); a != nil {
-					if _, err := s.out.WriteTo(buf[:n], *a); err != nil {
-						noDtlsRxErrorCount.Add(1)
-						return
-					}
+			if from.String() != peer.String() {
+				continue
+			}
+			a := s.peer.Load()
+			if a == nil {
+				continue
+			}
+			if hasWrap {
+				m, unwrapErr := unwrapPacket(s.wrapKey, wire[:n], plain)
+				if unwrapErr != nil {
+					turnLog("[STREAM %d] WRAP RX skip: %v", s.id, unwrapErr)
+					continue
+				}
+				if m == 0 {
+					continue
+				}
+				if _, err := s.out.WriteTo(plain[:m], *a); err != nil {
+					noDtlsRxErrorCount.Add(1)
+					return
+				}
+			} else {
+				if _, err := s.out.WriteTo(wire[:n], *a); err != nil {
+					noDtlsRxErrorCount.Add(1)
+					return
 				}
 			}
 		}
 	}()
 
-	// Keepalive: send STUN Binding Indication every 25s to keep relay and NAT alive.
+	// Keepalive + cover traffic
 	go func() {
 		defer wg.Done()
 		ticker := time.NewTicker(25 * time.Second)
 		defer ticker.Stop()
-		relayConn.SetDeadline(time.Now().Add(60 * time.Second))
+		var tickCount int
 		for {
 			select {
 			case <-sCtx.Done():
 				return
 			case <-ticker.C:
-				relayConn.WriteTo(stunBindingIndication, peer)
 				relayConn.SetDeadline(time.Now().Add(60 * time.Second))
+				if hasWrap {
+					enc, err := wrapPacket(s.wrapKey, stunBindingIndication)
+					if err == nil {
+						relayConn.WriteTo(enc, peer)
+					}
+					if tickCount%3 == 0 {
+						cover, err := wrapCoverPacket(s.wrapKey)
+						if err == nil {
+							relayConn.WriteTo(cover, peer)
+						}
+					}
+				} else {
+					relayConn.WriteTo(stunBindingIndication, peer)
+				}
+				tickCount++
 			}
 		}
 	}()
@@ -213,11 +281,6 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	wg.Wait()
 	return nil
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// runDTLS — DTLS-obfuscated relay (optionally with WRAP layer)
-// ─────────────────────────────────────────────────────────────────────────────
-
 func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr, sendHandshake bool) error {
 	sCtx, sCancel := context.WithCancel(ctx)
 	defer sCancel()
