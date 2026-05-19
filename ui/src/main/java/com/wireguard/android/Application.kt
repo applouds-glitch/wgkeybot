@@ -150,10 +150,13 @@ class Application : android.app.Application() {
                     autoSolveAttempted = false
                     token
                 } catch (e: Exception) {
-                    val reason = if (e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED)
-                        "slider detected" else e.message
-                    Log.d(TAG, "Captcha failed ($reason), returning empty to trigger next Go mode")
-                    "" // keep autoSolveAttempted=true so next call goes to dialog
+                    val isSlider = e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED
+                    val reason = if (isSlider) "slider detected" else e.message
+                    Log.d(TAG, "Captcha failed ($reason), signalling Go for next mode")
+                    // On slider: return a sentinel so Go runs the slider POC before
+                    // falling back to the visible dialog. Otherwise empty → next mode.
+                    // autoSolveAttempted stays true so the next call goes to the dialog.
+                    if (isSlider) CAPTCHA_SLIDER_SENTINEL else ""
                 }
             } else {
                 autoSolveAttempted = false
@@ -188,6 +191,11 @@ class Application : android.app.Application() {
     companion object {
         val USER_AGENT = String.format(Locale.ENGLISH, "WireGuard/%s (Android %d; %s; %s; %s %s; %s; %s)", BuildConfig.VERSION_NAME, Build.VERSION.SDK_INT, if (Build.SUPPORTED_ABIS.isNotEmpty()) Build.SUPPORTED_ABIS[0] else "unknown ABI", Build.BOARD, Build.MANUFACTURER, Build.MODEL, Build.FINGERPRINT, BuildConfig.APPLICATION_ID)
         private const val TAG = "WireGuard/Application"
+        // Sentinel returned from the captcha handler when the invisible WebView
+        // positively identified a slider captcha. Go recognises this exact string
+        // (see captchaSliderSentinel in vk.go) and runs the slider POC before
+        // escalating to the visible dialog. Must stay in sync with vk.go.
+        private const val CAPTCHA_SLIDER_SENTINEL = "__WGK_SLIDER_DETECTED__"
         private lateinit var weakSelf: WeakReference<Application>
 
         fun get(): Application {

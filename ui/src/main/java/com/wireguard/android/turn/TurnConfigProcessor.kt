@@ -77,8 +77,9 @@ object TurnConfigProcessor {
 
         try {
             ifaceBuilder.setListenPort(iface.listenPort.orElse(0))
-            // Force MTU to 1280 for TURN proxy to handle encapsulation overhead
-            ifaceBuilder.setMtu(1280)
+            // MTU 1200 — WRAP (+12 RTP, +0-32 pad, +2 trailer) + TURN (+4) + WG (+60)
+            // keeps wire size ≤ 1310, safe for cellular path MTU (~1350-1400).
+            ifaceBuilder.setMtu(1200)
         } catch (e: Exception) {
             // Should not happen with valid port/mtu
         }

@@ -30,9 +30,6 @@ import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
-import android.content.res.Configuration
-import android.os.LocaleList
-import java.util.Locale
 
 /**
  * Невидимый WebView для автоматического прохождения VK Smart Captcha.
@@ -277,26 +274,12 @@ object CaptchaWebViewManager {
                         .createConfigurationContext(context.resources.configuration)
                 } else context
 
-                // WebView init has a long-standing Android bug: it touches
-                // ApplicationContext.Resources and silently resets the JVM default Locale
-                // (and applicationContext Configuration locales) to the system default —
-                // so after the user's tunnel connects, an Activity recreate (e.g. theme
-                // toggle) picks up the wrong language. Snapshot the locales now and
-                // restore them right after the WebView constructor returns.
-                val savedJvmLocale = Locale.getDefault()
-                val savedAppLocales = context.resources.configuration.locales
-
                 val wv = WebView(wvContext)
 
-                if (Locale.getDefault() != savedJvmLocale) {
-                    Locale.setDefault(savedJvmLocale)
-                }
-                val appConfig = context.resources.configuration
-                if (appConfig.locales != savedAppLocales) {
-                    val restored = Configuration(appConfig).apply { setLocales(savedAppLocales) }
-                    @Suppress("DEPRECATION")
-                    context.resources.updateConfiguration(restored, context.resources.displayMetrics)
-                }
+                // WebView init clobbers the process locale (see LocaleGuard).
+                // Repair immediately; destroyCurrentWebView() repairs again since
+                // the clobber can also happen later during page load / render.
+                com.wireguard.android.util.LocaleGuard.restore(context)
                 wv.apply {
                     settings.apply {
                         javaScriptEnabled = true
@@ -417,6 +400,11 @@ object CaptchaWebViewManager {
                 Log.d(TAG, "WebView уничтожен ✓")
             } catch (e: Exception) {
                 Log.e(TAG, "Ошибка уничтожения: ${e.message}")
+            } finally {
+                // WebView may have clobbered the locale during its lifetime
+                // (page load / render), not just at construction — repair now
+                // that it's fully torn down.
+                appContext?.let { com.wireguard.android.util.LocaleGuard.restore(it) }
             }
         }
 
