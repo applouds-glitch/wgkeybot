@@ -312,6 +312,10 @@ class TunnelManager(
                     getTurnProxyManager().onTunnelEstablished(tunnel.name, turn)
                 }
                 if (!turnStarted) {
+                    // TURN failed — stop VpnService so VPN icon doesn't stay active with no traffic.
+                    if (getBackend() is GoBackend) {
+                        get().stopService(Intent(get(), GoBackend.VpnService::class.java))
+                    }
                     throw Exception(context.getString(R.string.turn_start_failed))
                 }
             }
