@@ -67,6 +67,10 @@
     <string name="wgk_connect_action">Connect</string>
     <string name="wgk_or_divider">or</string>
 
+    <!-- ── Proxy mode toggle ────────────────────────────────────────────── -->
+    <string name="turn_proxy_mode_standard">Standard</string>
+    <string name="turn_proxy_mode_reserve">Reserve</string>
+
     <!-- ── Auto-refresh / theme toggle ─────────────────────────────────── -->
     <string name="wgk_auto_refresh_cd">Config auto-refresh</string>
     <string name="wgk_theme_toggle_cd">Switch theme</string>
