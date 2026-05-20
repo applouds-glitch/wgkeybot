@@ -110,6 +110,10 @@ class TunnelListFragment : BaseFragment() {
         binding?.apply {
             wgkConnectButtonView.wgkConnectBtn.setOnClickListener { toggleWgKeybot() }
             wgkFooterRow.wgkSplitBtn.setOnClickListener { openSplitTunnelDialog() }
+            wgkFooterRow.wgkProxyModeGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+                if (isChecked) onProxyModeSelected(checkedId)
+            }
+            updateProxyModeGroup()
             wgkProfileCard.wgkRefreshBtn.setOnClickListener { refreshConfig() }
             wgkProfileCard.wgkAutoRefreshBtn.setOnClickListener { toggleAutoRefresh() }
             wgkProfileCard.wgkProfileIcon.setOnClickListener { onLogIconTap() }
@@ -818,6 +822,19 @@ class TunnelListFragment : BaseFragment() {
         tv?.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, null, null, null)
         tv?.compoundDrawablePadding = resources.getDimensionPixelSize(R.dimen.wgk_snackbar_icon_padding)
         snackbar.show()
+    }
+
+    private fun onProxyModeSelected(checkedId: Int) {
+        val prefs = requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
+        val stability = checkedId == R.id.wgk_mode_reserve_btn
+        prefs.edit().putBoolean(KEY_STABILITY_MODE, stability).apply()
+    }
+
+    private fun updateProxyModeGroup() {
+        val group = binding?.wgkFooterRow?.wgkProxyModeGroup ?: return
+        val prefs = requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
+        val stability = prefs.getBoolean(KEY_STABILITY_MODE, false)
+        group.check(if (stability) R.id.wgk_mode_reserve_btn else R.id.wgk_mode_standard_btn)
     }
 
     companion object {
