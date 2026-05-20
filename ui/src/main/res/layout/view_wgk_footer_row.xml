@@ -5,15 +5,49 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal">
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
+
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/wgk_proxy_mode_group"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:singleSelection="true"
+            app:selectionRequired="true"
+            app:checkedButton="@id/wgk_mode_standard_btn">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/wgk_mode_standard_btn"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="40dp"
+                android:text="@string/turn_proxy_mode_standard"
+                android:textAppearance="?attr/textAppearanceLabelSmall"
+                android:textColor="@color/wgk_on_surface_variant"
+                android:gravity="center"
+                app:strokeColor="@color/wgk_outline" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/wgk_mode_reserve_btn"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="40dp"
+                android:text="@string/turn_proxy_mode_reserve"
+                android:textAppearance="?attr/textAppearanceLabelSmall"
+                android:textColor="@color/wgk_on_surface_variant"
+                android:gravity="center"
+                app:strokeColor="@color/wgk_outline" />
+
+        </com.google.android.material.button.MaterialButtonToggleGroup>
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/wgk_split_btn"
             style="?attr/materialButtonOutlinedStyle"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="44dp"
-            android:layout_weight="1"
+            android:layout_marginTop="12dp"
             android:text="@string/wgk_action_split_tunneling"
             android:textColor="@color/wgk_on_surface_variant"
             app:cornerRadius="22dp"

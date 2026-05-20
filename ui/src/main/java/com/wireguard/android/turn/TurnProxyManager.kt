@@ -200,13 +200,16 @@ class TurnProxyManager(private val context: Context) {
                 val networkType = getNetworkTypeString(lastKnownNetwork)
                 Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $lastKnownNetwork (type=$networkType, handle=$networkHandle)")
 
-                val effectiveVkLink = if (isStabilityMode()) {
+                val stability = isStabilityMode()
+                val effectiveVkLink = if (stability) {
                     settings.vkLink.split(",", "|").map { it.trim() }
                         .firstOrNull { it.isNotEmpty() } ?: settings.vkLink
                 } else {
                     settings.vkLink
                 }
-                Log.d(TAG, "Mode: ${if (isStabilityMode()) "Stability (1 link)" else "Speed (${settings.vkLink.split(",","|").count { it.isNotBlank() }} links)"}")
+                val effectivePeerType = if (stability) "proxy_v2" else settings.peerType
+                val effectiveWrapKey = if (stability) "" else settings.wrapKey
+                Log.d(TAG, "Mode: ${if (stability) "Stability (proxy_v2, 1 link, no WRAP)" else "Speed (${settings.peerType}, ${settings.vkLink.split(",","|").count { it.isNotBlank() }} links, WRAP=${settings.wrapKey.isNotBlank()})"}")
 
                 val ret = TurnBackend.wgTurnProxyStart(
                     settings.peer, effectiveVkLink, settings.mode, settings.streams,
@@ -214,10 +217,10 @@ class TurnProxyManager(private val context: Context) {
                     "127.0.0.1:${settings.localPort}",
                     settings.turnIp,
                     settings.turnPort,
-                    settings.peerType,
+                    effectivePeerType,
                     settings.streamsPerCred,
                     settings.watchdogTimeout,
-                    settings.wrapKey,
+                    effectiveWrapKey,
                     networkHandle
                 )
 

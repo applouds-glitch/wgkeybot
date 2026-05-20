@@ -280,6 +280,8 @@
     <string name="turn_server_mode">TURN server</string>
     <string name="turn_mode_vk_link">VK Link</string>
     <string name="turn_mode_wb">WB</string>
+    <string name="turn_proxy_mode_standard">Стандартный</string>
+    <string name="turn_proxy_mode_reserve">Резервный</string>
     <string name="turn_peer">Peer</string>
     <string name="turn_peer_hint">IP:Port</string>
     <string name="turn_vk_link">VK Calls link(s)</string>
