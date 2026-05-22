@@ -79,8 +79,6 @@
     <string name="dark_theme_summary_on">දැනට අඳුරු (රාත්‍රී) තේමාව භාවිතා කරයි</string>
     <string name="dark_theme_title">අඳුරු තේමාව භාවිතය</string>
     <string name="delete">මකන්න</string>
-    <string name="tv_select_a_storage_drive">ගබඩා ධාවකයක් තෝරන්න</string>
-    <string name="tv_no_file_picker">කරුණාකර ගොනු පිරික්සීමට ගොනු කළමනාකරණ උපයෝගිතා ස්ථාපනය කරන්න</string>
     <string name="disable_config_export_description">වින්‍යාස අපනයනය අක්‍රිය කිරීම පුද්ගලික යතුරු වලට ප්‍රවේශ වීම අඩු කරයි</string>
     <string name="dns_servers">ව.නා.ප. සේවාදායක</string>
     <string name="dns_search_domains">වසම් සොයන්න</string>

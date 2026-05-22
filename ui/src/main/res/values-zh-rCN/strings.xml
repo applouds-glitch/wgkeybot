@@ -90,10 +90,6 @@
     <string name="dark_theme_summary_on">正在使用暗色（黑夜）主题</string>
     <string name="dark_theme_title">使用暗色主题</string>
     <string name="delete">删除</string>
-    <string name="tv_delete">选择要删除的隧道</string>
-    <string name="tv_select_a_storage_drive">选择一个存储驱动器</string>
-    <string name="tv_no_file_picker">请安装一个文件管理工具以浏览文件</string>
-    <string name="tv_add_tunnel_get_started">添加第一条网络隧道</string>
     <string name="donate_title">♥ 为 WG Turn 捐赠</string>
     <string name="donate_summary">无论多寡，聚沙成塔</string>
     <string name="donate_google_play_disappointment">感谢您对 WG Turn 项目的支持！\n\n只可惜，受谷歌的政策所限，我们不能在此展示项目捐赠页面的链接，还望您自行访问捐赠页面！\n\n再次感谢您的贡献。</string>

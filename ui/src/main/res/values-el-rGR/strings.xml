@@ -87,7 +87,6 @@
     <string name="copied_to_clipboard">Το %s αντιγράφηκε στο πρόχειρο</string>
     <string name="dark_theme_title">Χρήση σκούρου θέματος</string>
     <string name="delete">Διαγραφή</string>
-    <string name="tv_delete">Επιλέξτε δίοδο προς διαγραφή</string>
     <string name="dns_servers">Διακομιστές DNS</string>
     <string name="dns_search_domains">Αναζήτηση τομέων</string>
     <string name="edit">Επεξεργασία</string>

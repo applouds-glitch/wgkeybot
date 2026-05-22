@@ -90,10 +90,6 @@
     <string name="dark_theme_summary_on">Saat ini menggunakan tema gelap (malam)</string>
     <string name="dark_theme_title">Gunakan tema gelap</string>
     <string name="delete">Hapus</string>
-    <string name="tv_delete">Pilih tunnel yang akan dihapus</string>
-    <string name="tv_select_a_storage_drive">Pilih lokasi penyimpanan</string>
-    <string name="tv_no_file_picker">Silakan instal aplikasi file manajer untuk memilih file</string>
-    <string name="tv_add_tunnel_get_started">Tambahkan tunnel untuk memulai</string>
     <string name="donate_title">Donasi ke Proyek WG Turn</string>
     <string name="donate_summary">Setiap kontribusi anda sangat membantu</string>
     <string name="donate_google_play_disappointment">Terima kasih telah mendung Proyek WG Turn!\n\nAkan tetapi, dikarenakan kebijakan Google, Kami tidak diizinkan untuk menautkan bagian halaman website yang dapat digunakan untuk melakukan donasi. Semoga anda dapat menemukan solusi untuk kendala ini!\n\nTerima kasih sekali lagi atas kontribusi anda.</string>

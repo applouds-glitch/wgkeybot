@@ -129,10 +129,6 @@
     <string name="dark_theme_summary_on">Obecnie używany jest ciemny motyw</string>
     <string name="dark_theme_title">Użyj ciemnego motywu</string>
     <string name="delete">Usuń</string>
-    <string name="tv_delete">Wybierz tunel do usunięcia</string>
-    <string name="tv_select_a_storage_drive">Wybierz dysk pamięci</string>
-    <string name="tv_no_file_picker">Zainstaluj narzędzie do zarządzania plikami, aby przeglądać pliki</string>
-    <string name="tv_add_tunnel_get_started">Dodaj tunel, aby rozpocząć</string>
     <string name="donate_title">♥ Wpłać na rzecz projektu WG Turn</string>
     <string name="donate_summary">Każdy wkład pomaga</string>
     <string name="donate_google_play_disappointment">Dziękujemy za wsparcie projektu WG Turn!\n\nNiestety, ze względu na zasady Google, nie możemy umieszczać linków do części strony projektu, w której możesz przekazać darowiznę. Mamy nadzieję, że uda Ci się to rozgryźć!\n\nJeszcze raz dziękujemy za Twój wkład.</string>
