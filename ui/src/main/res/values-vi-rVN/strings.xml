@@ -90,10 +90,6 @@
     <string name="dark_theme_summary_on">Đang sử dụng đề tối (ban đêm)</string>
     <string name="dark_theme_title">Sử dụng đề tối</string>
     <string name="delete">Xóa</string>
-    <string name="tv_delete">Chọn tunnel để xóa</string>
-    <string name="tv_select_a_storage_drive">Chọn bộ lưu trữ</string>
-    <string name="tv_no_file_picker">Vui lòng cài đặt tệp tiện ích lưu trữ để tìm kiếm các tệp</string>
-    <string name="tv_add_tunnel_get_started">Thêm một tunnel để bắt đầu</string>
     <string name="donate_title">❤️ Đóng góp cho Dự án Wireguard</string>
     <string name="donate_summary">Mọi đóng góp đều giúp ích</string>
     <string name="donate_google_play_disappointment">Cảm ơn bạn đã ủng hộ WG Turn!\n\nThật tiếc, dựa trên điều khoản của Google, chúng tôi không thể đưa vào liên kết dẫn đến trang đóng góp ở trang chủ của dự án. Mong rằng bạn có thể tìm cách cho việc này!\n\nXin cảm ơn bạn một lần nữa vì đã đóng góp.</string>

@@ -48,10 +48,6 @@
     <string name="dark_theme_summary_on">Momentálne používate tmavý (nočný) vzhľad</string>
     <string name="dark_theme_title">Používať tmavý vzhľad</string>
     <string name="delete">Odstrániť</string>
-    <string name="tv_delete">Vyberte tunel na odstránenie</string>
-    <string name="tv_select_a_storage_drive">Vyberte úložnú jednotku</string>
-    <string name="tv_no_file_picker">Prosím nainštalujte manažéra súborov aby ste mohli prehliadať súbory</string>
-    <string name="tv_add_tunnel_get_started">Pridajte tunel aby ste mohli začať</string>
     <string name="disable_config_export_title">Zakázať export konfigurácie</string>
     <string name="disable_config_export_description">Zakázanie exportu konfigurácie spôsobí, že prístup k súkromným kľúčom sa stáva zložitým</string>
     <string name="dns_servers">Servery DNS</string>

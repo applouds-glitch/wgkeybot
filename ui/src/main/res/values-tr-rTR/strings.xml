@@ -103,10 +103,6 @@
     <string name="dark_theme_summary_on">Şu anda koyu (gece) tema kullanılıyor</string>
     <string name="dark_theme_title">Koyu temayı kullan</string>
     <string name="delete">Sil</string>
-    <string name="tv_delete">Silinecek tüneli seçin</string>
-    <string name="tv_select_a_storage_drive">Bir depolama sürücüsü seçin</string>
-    <string name="tv_no_file_picker">Dosyalara göz atmak için lütfen bir dosya yönetim aracı yükleyin</string>
-    <string name="tv_add_tunnel_get_started">Başlamak için bir tünel ekleyin</string>
     <string name="donate_title">♥ WG Turn projesine bağış yap</string>
     <string name="donate_summary">Tüm bağışlarınız bizim için değerli</string>
     <string name="donate_google_play_disappointment">WG Turn projesini desteklediğiniz için teşekkür ederiz!\n\nNe yazık ki Google\'ın politikaları nedeniyle web sitemizin bağış yapabileceğiniz bölümüne bağlantı veremiyoruz. Umarız ilgili sayfayı kendiniz bulabilirsiniz.\n\nKatkılarınız için tekrar teşekkür ederiz.</string>

@@ -155,10 +155,6 @@
     <string name="dark_theme_summary_on">المظهر الغامق مستخدم حالياً</string>
     <string name="dark_theme_title">إستخدام المظهر الغامق</string>
     <string name="delete">حذف</string>
-    <string name="tv_delete">اختر نفقاً لحذفه</string>
-    <string name="tv_select_a_storage_drive">تحديد محرك تخزين</string>
-    <string name="tv_no_file_picker">الرجاء تثبيت مدير ملفات لتتمكن من تصفح الملفات</string>
-    <string name="tv_add_tunnel_get_started">أضف نفقاً لتبدأ</string>
     <string name="donate_title">♥️ تبرع لمشروع وايرجارد</string>
     <string name="donate_summary">كل مساهمة تساعد</string>
     <string name="donate_google_play_disappointment">شكرًا لك على دعم مشروع\n\nWG Turn! للأسف، نظرًا لسياسات Google، لا يُسمح لنا بالارتباط بجزء من صفحة الويب الخاصة بالمشروع حيث يمكنك التبرع. نأمل أن تتمكن من معرفة ذلك!\n\nشكرًا مرة أخرى على مساهمتك.</string>

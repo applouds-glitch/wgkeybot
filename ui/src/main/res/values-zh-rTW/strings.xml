@@ -90,10 +90,6 @@
     <string name="dark_theme_summary_on">目前使用暗黑(夜晚)主題</string>
     <string name="dark_theme_title">使用暗黑主題</string>
     <string name="delete">刪除</string>
-    <string name="tv_delete">選擇要刪除的通道</string>
-    <string name="tv_select_a_storage_drive">選擇一個儲存裝置</string>
-    <string name="tv_no_file_picker">請安裝一個檔案管理程式以便瀏覽檔案</string>
-    <string name="tv_add_tunnel_get_started">新增第一個通道</string>
     <string name="donate_title">♥ 捐贈給 WG Turn 專案</string>
     <string name="donate_summary">任何的貢獻都能幫助我們</string>
     <string name="donate_google_play_disappointment">感謝您支援 Wireguard 計畫！\n\n由於 Google 的政策不允許我們將計畫官網的捐款連結放在應用程式中，希望您能自行造訪我們的官網來進行捐款！\n\n再次感謝您的貢獻。</string>

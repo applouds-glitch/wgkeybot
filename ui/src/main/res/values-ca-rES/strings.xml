@@ -103,10 +103,6 @@
     <string name="dark_theme_summary_on">Actualment fent servir el tema fosc (nit)</string>
     <string name="dark_theme_title">Utilitza tema fosc</string>
     <string name="delete">Elimina</string>
-    <string name="tv_delete">Slecciona túnel a esborrar</string>
-    <string name="tv_select_a_storage_drive">Seleccioneu un disc d\'emmagatzematge</string>
-    <string name="tv_no_file_picker">Si us plau, instsleu un gestor de fitxers per navegar pels arxius</string>
-    <string name="tv_add_tunnel_get_started">Afegeix un túnel per començar</string>
     <string name="donate_title">♥ Donar al Projecte WG Turn</string>
     <string name="donate_summary">Totes les contribucions ajuden</string>
     <string name="donate_google_play_disappointment">Gràcies per donar suport al Projecte WG Turn!\n\nMalauradament, a causa de les polítiques de Google, no estem permesos a enllaçar a la part del web del projecte on pots realitzar una donació. Esperem que puguis trobar-ho!\n\nGràcies de nou per la teva contribució.</string>
