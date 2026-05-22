@@ -75,6 +75,19 @@ func invalidateAllCaches() {
 	turnLog("[Auth] All credential caches cleared (streamsPerCred=%d)", streamsPerCred)
 }
 
+// invalidateGroupCreds drops the cached credential for a single group so the
+// next fetch goes back to the VK API for a fresh one. Called when the TURN
+// server rejects allocations for this credential with a quota error (486).
+func invalidateGroupCreds(groupID int) {
+	cacheID := getCacheID(groupID * streamsPerCred)
+	credentialsStore.mu.Lock()
+	defer credentialsStore.mu.Unlock()
+	if _, ok := credentialsStore.caches[cacheID]; ok {
+		delete(credentialsStore.caches, cacheID)
+		turnLog("[Auth] Credential cache for group %d (slot %d) invalidated", groupID, cacheID)
+	}
+}
+
 // fetchFunc is the raw credential retrieval function (no cache logic).
 // Returns (username, password, serverAddr, lifetimeSecs, error).
 type fetchFunc func(ctx context.Context, link string) (string, string, string, int, error)

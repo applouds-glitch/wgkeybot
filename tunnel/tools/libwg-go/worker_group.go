@@ -21,6 +21,8 @@ const (
 	workerStagger       = 500 * time.Millisecond
 	staleCredsThreshold = 8
 	quotaThreshold      = 5
+	maxRetriesPerCycle  = 5
+	minRotationInterval = 120 * time.Second
 )
 
 // vkSemaphore limits concurrent VK API credential fetches across all groups.
@@ -54,6 +56,7 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 	var prevRefreshCh chan struct{}
 
 	var lastUser, lastPass, lastAddr string
+	var lastRotationTime time.Time
 
 	killBatch := func() {
 		if prevCancel != nil {
@@ -69,6 +72,23 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 		}
 	}
 	defer killBatch()
+
+	// prevBatchAlive reports whether at least one worker from the previous batch
+	// is still running (its done channel not yet closed). The unchanged-creds
+	// optimisation must not be taken when the whole batch has already died — e.g.
+	// DPI blocked every stream and all workers hit their retry cap. Skipping the
+	// restart then would leave the group idle for the full TTL (up to 10 h) with
+	// no live streams instead of retrying at the throttled cooldown rate.
+	prevBatchAlive := func() bool {
+		for _, ch := range prevDoneChs {
+			select {
+			case <-ch:
+			default:
+				return true
+			}
+		}
+		return false
+	}
 
 	cycleNumber := 0
 
@@ -140,11 +160,12 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 		turnLog("[GROUP %d] Credentials OK, TURN=%s, TTL=%ds", cfg.GroupID, addr, sleepSecs)
 
 		// ── Unchanged-creds optimisation ──────────────────────────────────────
-		// If creds are identical to the previous cycle and streams are already
-		// running, skip kill+restart. Just wait until TTL drops below the
-		// cache-hit threshold so the next fetch triggers a real VK refresh.
-		if prevCancel != nil && user == lastUser && pass == lastPass && addr == lastAddr {
-			waitSecs := lifetime - int((2*cacheSafetyMargin).Seconds())
+		// If creds are identical to the previous cycle and at least one stream
+		// from that batch is still alive, skip kill+restart and just wait. If the
+		// whole batch has died (prevBatchAlive == false) fall through to a real
+		// restart so the group recovers instead of idling for the full TTL.
+		if prevCancel != nil && prevBatchAlive() && user == lastUser && pass == lastPass && addr == lastAddr {
+			waitSecs := lifetime - int((2 * cacheSafetyMargin).Seconds())
 			if waitSecs < 60 {
 				// lifetime too close to the safety margin — same fallback as the
 				// main sleep path; stale-creds detection will trigger early rotation.
@@ -219,7 +240,13 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 
 					errLow := strings.ToLower(err.Error())
 
-					// TURN quota: 5+ workers → early rotation
+					// TURN allocation quota (486): rotate only once quotaThreshold
+					// workers report it — a couple of 486s just means the
+					// per-credential quota is tight, so stay stable on the streams
+					// that did allocate instead of churning. When we do rotate,
+					// invalidate the cached credential first so the next cycle
+					// fetches a fresh one — a stale cache hit would otherwise hand
+					// back the same exhausted credential and quota would recur.
 					if strings.Contains(errLow, "quota") ||
 						strings.Contains(errLow, "486") ||
 						strings.Contains(errLow, "allocation quota reached") {
@@ -227,9 +254,10 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 						cnt := 0
 						quotaWorkers.Range(func(k, v any) bool { cnt++; return true })
 						if cnt >= quotaThreshold {
+							invalidateGroupCreds(cfg.GroupID)
 							select {
 							case refreshCh <- struct{}{}:
-								turnLog("[GROUP %d] TURN quota on %d workers → rotation", cfg.GroupID, cnt)
+								turnLog("[GROUP %d] TURN quota on %d workers → invalidate creds + rotation", cfg.GroupID, cnt)
 							default:
 							}
 						}
@@ -263,6 +291,10 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 					}
 
 					attempt++
+					if attempt > maxRetriesPerCycle {
+						turnLog("[WORKER %d] Max retries (%d) exceeded — giving up", s.id, maxRetriesPerCycle)
+						return
+					}
 					exp := uint(attempt - 1)
 					if exp > 4 {
 						exp = 4
@@ -286,15 +318,46 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 		prevDoneChs = doneChs
 		prevRefreshCh = refreshCh
 
+		// allWorkersDone watches for the case where every worker in the batch
+		// exits (after max retries, persistent errors, etc.). Without this,
+		// the group could sit idle until TTL expiry (default 10 h) with no
+		// active streams. We signal refreshCh so the group rotates and gets
+		// fresh credentials — if the network problem has cleared, streams
+		// will recover; if not, the rotation cooldown throttles the rate.
+		go func() {
+			for _, ch := range doneChs {
+				select {
+				case <-ch:
+				case <-batchCtx.Done():
+					return
+				}
+			}
+			select {
+			case refreshCh <- struct{}{}:
+			default:
+			}
+		}()
+
 		// ── Step 4: Wait for TTL or early-rotation signal ─────────────────────
 		select {
 		case <-time.After(cycleDur):
 			turnLog("[GROUP %d] TTL expired (%v) → planned rotation", cfg.GroupID, cycleDur)
 		case <-refreshCh:
+			elapsed := time.Since(lastRotationTime)
+			if elapsed < minRotationInterval {
+				remaining := minRotationInterval - elapsed
+				turnLog("[GROUP %d] Early rotation deferred — cooldown %v remaining", cfg.GroupID, remaining)
+				select {
+				case <-time.After(remaining):
+				case <-ctx.Done():
+					return
+				}
+			}
 			turnLog("[GROUP %d] Early rotation", cfg.GroupID)
 		case <-ctx.Done():
 			return
 		}
+		lastRotationTime = time.Now()
 		cycleNumber++
 	}
 }

@@ -20,6 +20,12 @@ const (
 	wrapMaxPad    = 32
 	wrapPadLen    = 2
 	wrapCoverMark = 0xFFFF
+	// wrapCounterMod bounds the counter so counter*960 always fits the 32-bit
+	// RTP timestamp field (max safe counter floor((2^32-1)/960) = 4 473 924).
+	// Past it the server's timestamp round-trip (ts/960) no longer recovers
+	// the counter, the keystream index diverges, and every packet fails to
+	// decrypt. Must stay in sync with the server's wrapCounterMod.
+	wrapCounterMod = 4_000_000
 )
 
 var wrapCounter atomic.Uint64
@@ -43,9 +49,9 @@ func putHeader(buf []byte, counter uint64, payloadLen int) {
 	} else {
 		buf[1] = marker | 0x6F // PT=111 (Opus)
 	}
-	binary.BigEndian.PutUint16(buf[2:4], uint16(counter&0xFFFF))     // seq
-	binary.BigEndian.PutUint32(buf[4:8], uint32(counter*960))        // ts (Opus 48kHz)
-	binary.BigEndian.PutUint32(buf[8:12], rtpSSRC)                   // ssrc
+	binary.BigEndian.PutUint16(buf[2:4], uint16(counter&0xFFFF)) // seq
+	binary.BigEndian.PutUint32(buf[4:8], uint32(counter*960))    // ts (Opus 48kHz)
+	binary.BigEndian.PutUint32(buf[8:12], rtpSSRC)               // ssrc
 	_ = payloadLen
 }
 
@@ -132,7 +138,7 @@ func wrapPacket(key, payload []byte) ([]byte, error) {
 	if len(key) != wrapKeyLen {
 		return nil, fmt.Errorf("wrap: key must be %d bytes", wrapKeyLen)
 	}
-	counter := wrapCounter.Add(1) - 1
+	counter := (wrapCounter.Add(1) - 1) % wrapCounterMod
 
 	padLen := randPadLen()
 	plaintext := make([]byte, len(payload)+padLen+wrapPadLen)
@@ -185,7 +191,7 @@ func wrapCoverPacket(key []byte) ([]byte, error) {
 	if len(key) != wrapKeyLen {
 		return nil, fmt.Errorf("wrap: key must be %d bytes", wrapKeyLen)
 	}
-	counter := wrapCounter.Add(1) - 1
+	counter := (wrapCounter.Add(1) - 1) % wrapCounterMod
 
 	bodyLen := 30 + randPadLen()*4
 	plaintext := make([]byte, bodyLen+wrapPadLen)

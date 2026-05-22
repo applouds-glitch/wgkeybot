@@ -32,6 +32,11 @@ class TunnelListViewModel : ViewModel() {
     @Volatile var cancelledByUser = false
     var autoRefreshCheckedThisSession = false
 
+    // Survives Activity recreation (theme change, rotation, …) so the connect
+    // vibration fires only on a real transition into Connected, not on the first
+    // render after the fragment is recreated while already connected.
+    var lastRenderedState: TunnelState = TunnelState.Disconnected
+
     private var statsJob: Job? = null
     private var uptimeJob: Job? = null
     private var connectedSinceMs = 0L
