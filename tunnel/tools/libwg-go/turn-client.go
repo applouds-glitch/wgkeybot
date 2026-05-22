@@ -354,6 +354,13 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		}()
 	}
 
+	// Give the server a moment to process the session handshake before
+	// we mark the stream as ready. Without this pause the first WG
+	// handshake packet can reach the server ahead of the session
+	// announcement, the server drops it, and we wait through WG's 15 s
+	// retry timer — a spurious startup delay.
+	time.Sleep(300 * time.Millisecond)
+
 	s.ready.Store(true)
 	s.okFunc()
 	wg.Wait()
