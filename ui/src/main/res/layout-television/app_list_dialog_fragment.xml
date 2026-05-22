@@ -1,0 +1,293 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Android TV variant of the split-tunneling app picker.
+  ~ Adds overscan-safe padding and larger D-pad targets. Resolved only on
+  ~ uiMode=television devices; phones/tablets keep layout/app_list_dialog_fragment.xml.
+  ~ Must keep every @id and the databinding variables of the default layout intact.
+  -->
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <data>
+        <import type="android.view.View" />
+        <import type="com.wireguard.android.model.ApplicationData" />
+        <variable
+            name="appData"
+            type="com.wireguard.android.databinding.ObservableKeyedArrayList&lt;String, ApplicationData&gt;" />
+    </data>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/wgk_background"
+        android:fitsSystemWindows="true"
+        android:orientation="vertical"
+        android:paddingHorizontal="48dp"
+        android:paddingVertical="24dp">
+
+        <!-- Top bar -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_back"
+                style="?attr/materialIconButtonStyle"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:contentDescription="@android:string/cancel"
+                android:insetBottom="0dp"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:insetTop="0dp"
+                app:icon="@drawable/ic_arrow_back"
+                app:iconGravity="textTop"
+                app:iconPadding="0dp"
+                app:iconSize="24dp"
+                app:iconTint="@color/wgk_on_surface" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/wgk_action_split_tunneling"
+                    android:textAppearance="?attr/textAppearanceTitleLarge"
+                    android:textColor="@color/wgk_on_surface"
+                    android:textSize="22sp" />
+
+                <TextView
+                    android:id="@+id/subtitle_text"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textAppearance="?attr/textAppearanceLabelMedium"
+                    android:textColor="@color/wgk_on_surface_variant"
+                    tools:text="4 из 12 выбрано" />
+
+            </LinearLayout>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_filter"
+                style="?attr/materialIconButtonStyle"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:contentDescription="@string/wgk_split_show_system"
+                android:insetBottom="0dp"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:insetTop="0dp"
+                app:icon="@drawable/ic_filter_list"
+                app:iconGravity="textTop"
+                app:iconPadding="0dp"
+                app:iconSize="24dp"
+                app:iconTint="@color/wgk_on_surface_variant" />
+
+        </LinearLayout>
+
+        <!-- Tab bar -->
+        <com.google.android.material.tabs.TabLayout
+            android:id="@+id/tabs"
+            style="@style/Widget.Material3.TabLayout.OnSurface"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@color/wgk_background"
+            app:tabIndicatorColor="@color/wgk_primary"
+            app:tabSelectedTextColor="@color/wgk_primary"
+            app:tabTextColor="@color/wgk_on_surface_variant">
+
+            <com.google.android.material.tabs.TabItem
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/exclude_from_tunnel" />
+
+            <com.google.android.material.tabs.TabItem
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/include_in_tunnel" />
+
+        </com.google.android.material.tabs.TabLayout>
+
+        <!-- Search field -->
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/search_layout"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.Dense"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="8dp"
+            android:hint="@string/wgk_split_search_hint"
+            app:boxCornerRadiusBottomEnd="24dp"
+            app:boxCornerRadiusBottomStart="24dp"
+            app:boxCornerRadiusTopEnd="24dp"
+            app:boxCornerRadiusTopStart="24dp"
+            app:boxStrokeColor="@color/wgk_outline"
+            app:hintTextColor="@color/wgk_on_surface_variant"
+            app:startIconDrawable="@drawable/ic_search"
+            app:startIconTint="@color/wgk_on_surface_variant">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/search_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:imeOptions="actionSearch"
+                android:inputType="text"
+                android:maxLines="1"
+                android:textColor="@color/wgk_on_surface" />
+
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <!-- Info banner -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/info_banner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            app:cardBackgroundColor="@color/wgk_primary_12"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="0dp"
+            app:strokeColor="@color/wgk_primary_30"
+            app:strokeWidth="1dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="top"
+                android:orientation="horizontal"
+                android:padding="12dp">
+
+                <TextView
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:layout_marginTop="1dp"
+                    android:layout_marginEnd="10dp"
+                    android:background="@drawable/wgk_info_dot_bg"
+                    android:gravity="center"
+                    android:text="i"
+                    android:textColor="@color/wgk_on_primary"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/info_text"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:lineSpacingMultiplier="1.45"
+                    android:textColor="@color/wgk_on_surface_variant"
+                    android:textSize="13sp"
+                    tools:text="Выбранные приложения пойдут в обход VPN." />
+
+            </LinearLayout>
+
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- System apps row -->
+        <LinearLayout
+            android:id="@+id/system_apps_row"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <CheckBox
+                android:id="@+id/show_system_apps_checkbox"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:paddingStart="14dp"
+                android:text="@string/wgk_split_show_system"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:textColor="@color/wgk_on_surface" />
+
+        </LinearLayout>
+
+        <View
+            android:id="@+id/system_apps_divider"
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/wgk_outline_variant"
+            android:visibility="gone" />
+
+        <!-- App list -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <ProgressBar
+                android:id="@+id/progress_bar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:indeterminate="true"
+                android:visibility="@{appData.isEmpty() ? View.VISIBLE : View.GONE}"
+                tools:visibility="gone" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/app_list"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingVertical="4dp"
+                app:items="@{appData}"
+                app:layout="@{@layout/app_list_item}"
+                tools:itemCount="10"
+                tools:listitem="@layout/app_list_item" />
+
+        </FrameLayout>
+
+        <!-- Bottom bar -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingTop="12dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_toggle_all"
+                style="?attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:text="@string/wgk_split_toggle_all"
+                android:textColor="@color/wgk_primary" />
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_cancel"
+                style="?attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:text="@string/wgk_split_cancel"
+                android:textColor="@color/wgk_on_surface_variant" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_apply"
+                style="@style/Widget.Material3.Button"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:layout_marginStart="8dp"
+                android:text="@string/wgk_split_apply"
+                app:backgroundTint="@color/wgk_primary"
+                app:iconTint="@color/wgk_on_primary" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+</layout>
