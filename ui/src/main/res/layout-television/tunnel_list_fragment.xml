@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Android TV variant of tunnel_list_fragment.
+  ~ Landscape two-column layout with overscan-safe padding. Resolved only on
+  ~ devices reporting uiMode=television; phones/tablets keep layout/tunnel_list_fragment.xml.
+  ~ Must keep every @id present in the default layout so the generated
+  ~ TunnelListFragmentBinding fields stay non-null.
+  -->
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <androidx.coordinatorlayout.widget.CoordinatorLayout
+        android:id="@+id/main_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/wgk_background">
+
+        <androidx.constraintlayout.widget.ConstraintLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:paddingHorizontal="48dp"
+            android:paddingVertical="27dp">
+
+            <!-- Splits the screen into a left (control) and right (info) zone -->
+            <androidx.constraintlayout.widget.Guideline
+                android:id="@+id/wgk_tv_guideline"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                app:layout_constraintGuide_percent="0.45" />
+
+            <!-- ════════ Connected / control state ════════ -->
+
+            <!-- Connect button (260dp circle) centred in the left zone -->
+            <include
+                android:id="@+id/wgk_connect_button_view"
+                layout="@layout/view_wgk_connect_button"
+                android:layout_width="260dp"
+                android:layout_height="260dp"
+                app:layout_constraintBottom_toTopOf="@id/wgk_headline"
+                app:layout_constraintEnd_toStartOf="@id/wgk_tv_guideline"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent"
+                app:layout_constraintVertical_chainStyle="packed" />
+
+            <TextView
+                android:id="@+id/wgk_headline"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:gravity="center"
+                android:text="@string/wgk_headline_disconnected"
+                android:textAppearance="?attr/textAppearanceTitleLarge"
+                android:textColor="@color/wgk_on_surface_variant"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toStartOf="@id/wgk_tv_guideline"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@id/wgk_connect_button_view" />
+
+            <!-- Right zone: profile + status + footer, scrollable for small TVs -->
+            <ScrollView
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_marginStart="28dp"
+                android:scrollbars="none"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toEndOf="@id/wgk_tv_guideline"
+                app:layout_constraintTop_toTopOf="parent">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingVertical="4dp">
+
+                    <include
+                        android:id="@+id/wgk_profile_card"
+                        layout="@layout/view_wgk_profile_card"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content" />
+
+                    <include
+                        android:id="@+id/wgk_status_zone"
+                        layout="@layout/view_wgk_status_zone"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp" />
+
+                    <include
+                        android:id="@+id/wgk_footer_row"
+                        layout="@layout/view_wgk_footer_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp" />
+
+                </LinearLayout>
+            </ScrollView>
+
+            <!-- ════════ No-config / no-auth state ════════ -->
+
+            <LinearLayout
+                android:id="@+id/wgk_no_config_container"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:orientation="horizontal"
+                android:visibility="gone"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent">
+
+                <!-- Left: instructions + Telegram bot link -->
+                <ScrollView
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:paddingEnd="28dp"
+                    android:scrollbars="none">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:minHeight="400dp"
+                        android:orientation="vertical"
+                        android:paddingVertical="16dp">
+
+                        <FrameLayout
+                            android:layout_width="80dp"
+                            android:layout_height="80dp"
+                            android:background="@drawable/wgk_no_key_icon_bg">
+
+                            <ImageView
+                                android:layout_width="36dp"
+                                android:layout_height="36dp"
+                                android:layout_gravity="center"
+                                android:contentDescription="@null"
+                                android:src="@drawable/ic_key"
+                                app:tint="@color/wgk_primary" />
+                        </FrameLayout>
+
+                        <TextView
+                            android:id="@+id/wgk_no_key_title"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="24dp"
+                            android:gravity="center"
+                            android:text="@string/wgk_no_key_title"
+                            android:textAppearance="?attr/textAppearanceHeadlineSmall"
+                            android:textColor="@color/wgk_on_surface" />
+
+                        <TextView
+                            android:id="@+id/wgk_no_key_subtitle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:gravity="center"
+                            android:lineSpacingMultiplier="1.4"
+                            android:text="@string/wgk_no_key_subtitle"
+                            android:textAppearance="?attr/textAppearanceBodyLarge"
+                            android:textColor="@color/wgk_on_surface_variant" />
+
+                        <!-- Hidden on TV (D-pad keyboard is used) but kept so the
+                             shared fragment code can still reference these ids. -->
+                        <FrameLayout
+                            android:id="@+id/wgk_token_input_wrapper"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="24dp"
+                            android:visibility="gone">
+
+                            <EditText
+                                android:id="@+id/wgk_token_input"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:background="@drawable/wgk_token_field_bg"
+                                android:fontFamily="monospace"
+                                android:hint="@string/wgk_token_hint"
+                                android:inputType="textNoSuggestions"
+                                android:maxLines="1"
+                                android:paddingStart="14dp"
+                                android:paddingTop="14dp"
+                                android:paddingEnd="52dp"
+                                android:paddingBottom="14dp"
+                                android:textColor="@color/wgk_on_surface"
+                                android:textColorHint="@color/wgk_on_surface_variant" />
+
+                            <ImageButton
+                                android:id="@+id/wgk_paste_btn"
+                                android:layout_width="44dp"
+                                android:layout_height="44dp"
+                                android:layout_gravity="end|center_vertical"
+                                android:background="?attr/selectableItemBackgroundBorderless"
+                                android:contentDescription="@string/wgk_paste_cd"
+                                android:src="@drawable/ic_content_paste"
+                                app:tint="@color/wgk_on_surface_variant" />
+
+                        </FrameLayout>
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/wgk_connect_with_token_btn"
+                            style="@style/Widget.Material3.Button"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:text="@string/wgk_connect_action"
+                            android:textColor="@color/wgk_on_primary"
+                            android:visibility="gone"
+                            app:backgroundTint="@color/wgk_primary"
+                            app:cornerRadius="24dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/wgk_bot_link_btn"
+                            style="@style/Widget.Material3.Button"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="28dp"
+                            android:text="@string/wgk_no_key_action"
+                            android:textColor="@color/wgk_on_primary"
+                            app:backgroundTint="@color/wgk_primary"
+                            app:cornerRadius="24dp"
+                            app:icon="@drawable/ic_send"
+                            app:iconGravity="textStart"
+                            app:iconPadding="8dp"
+                            app:iconSize="18dp"
+                            app:iconTint="@color/wgk_on_primary" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/wgk_check_subscription_btn"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:text="@string/wgk_check_subscription_action"
+                            android:visibility="gone"
+                            app:cornerRadius="24dp"
+                            app:strokeColor="@color/wgk_outline" />
+
+                    </LinearLayout>
+                </ScrollView>
+
+                <!-- Right: D-pad hex keyboard mounts here at runtime -->
+                <LinearLayout
+                    android:id="@+id/wgk_tv_keyboard_host"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1.1"
+                    android:gravity="center_vertical"
+                    android:orientation="vertical" />
+
+            </LinearLayout>
+
+        </androidx.constraintlayout.widget.ConstraintLayout>
+    </androidx.coordinatorlayout.widget.CoordinatorLayout>
+</layout>
