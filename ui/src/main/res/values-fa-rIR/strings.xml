@@ -104,10 +104,6 @@
     <string name="dark_theme_summary_on">اکنون از پوسته تاریک(شب) استفاده می‌شود</string>
     <string name="dark_theme_title">استفاده از پوسته تاریک</string>
     <string name="delete">حذف</string>
-    <string name="tv_delete">موارد را برای حذف انتخاب کنید</string>
-    <string name="tv_select_a_storage_drive">حافظه ذخیره سازی موردنظر را انتخاب کنید</string>
-    <string name="tv_no_file_picker">برای مدیریت پوشه های حافظه، یک برنامه مدیریت فایل نصب کنید</string>
-    <string name="tv_add_tunnel_get_started">یک پروفایل تونل برای شروع انتخاب کنید</string>
     <string name="donate_title">♥ کمک مالی به پروژه WG Turn</string>
     <string name="donate_summary">هر کمک شما تاثیرگذار است</string>
     <string name="donate_google_play_disappointment">از اینکه از پروژه WG Turn حمایت می‌کنید متشکریم!\n\nمتأسفانه، به دلیل خط‌مشی‌های Google، ما مجاز به پیوند دادن به بخشی از صفحه وب پروژه که می‌توانید در آن کمک مالی کنید، نداریم. امیدواریم بتوانید این را درک کنید!\n\nباز هم از مشارکت شما سپاسگزاریم.</string>

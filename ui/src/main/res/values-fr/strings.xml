@@ -103,10 +103,6 @@
     <string name="dark_theme_summary_on">Utilisation en cours du thème sombre (nuit)</string>
     <string name="dark_theme_title">Utilisez le thème sombre</string>
     <string name="delete">Supprimer</string>
-    <string name="tv_delete">Sélectionner le tunnel à supprimer</string>
-    <string name="tv_select_a_storage_drive">Sélectionner un disque de stockage</string>
-    <string name="tv_no_file_picker">Veuillez installer un utilitaire de gestion de fichiers pour parcourir les fichiers</string>
-    <string name="tv_add_tunnel_get_started">Ajouter un tunnel pour commencer</string>
     <string name="donate_title">♥ Faire un don au projet WG Turn</string>
     <string name="donate_summary">Chaque contribution aide</string>
     <string name="donate_google_play_disappointment">Merci de votre soutien au projet WG Turn !\n\nMalheureusement, en raisons des politiques de Google, nous ne pouvons pas vous rediriger vers la page vous permettant de faire un don. Heureusement, vous pouvez le trouver par vous-même !\n\nMerci encore pour votre soutien.</string>

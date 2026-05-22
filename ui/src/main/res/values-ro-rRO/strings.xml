@@ -116,10 +116,6 @@
     <string name="dark_theme_summary_on">În prezent este utilizată tema întunecată (noapte)</string>
     <string name="dark_theme_title">Utilizare temă întunecată</string>
     <string name="delete">Ștergere</string>
-    <string name="tv_delete">Selectează tunelul de șters</string>
-    <string name="tv_select_a_storage_drive">Selectează o unitate de stocare</string>
-    <string name="tv_no_file_picker">Instalează un serviciu de administrare a fișierelor pentru a căuta fișiere</string>
-    <string name="tv_add_tunnel_get_started">Adaugă un tunel pentru a începe</string>
     <string name="donate_title">♥ Donează pentru proiectul WG Turn</string>
     <string name="donate_summary">Fiecare contribuţie ajută</string>
     <string name="donate_google_play_disappointment">Vă mulțumim pentru sprijinul acordat Proiectului WG Turn!\n\nDin păcate, din cauza politicilor Google, nu avem voie să punem un link către pagina web a proiectului unde poți face o donație. Sperăm că vă puteți descurca!\n\nMulțumim din nou pentru contribuție.</string>

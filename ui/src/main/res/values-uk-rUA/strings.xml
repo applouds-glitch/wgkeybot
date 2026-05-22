@@ -129,10 +129,6 @@
     <string name="dark_theme_summary_on">Зараз використовується темна (нічна) тема</string>
     <string name="dark_theme_title">Використовувати темну тему</string>
     <string name="delete">Видалити</string>
-    <string name="tv_delete">Оберіть тунель для видалення</string>
-    <string name="tv_select_a_storage_drive">Виберіть диск зберігання</string>
-    <string name="tv_no_file_picker">Будь ласка, встановіть провідник для перегляду файлів</string>
-    <string name="tv_add_tunnel_get_started">Додайте тунель, щоб почати</string>
     <string name="donate_title">♥️ Пожертвуйте на проект WG Turn</string>
     <string name="donate_summary">Кожен внесок допомагає</string>
     <string name="donate_google_play_disappointment">Дякуємо за підтримку проекту WG Turn!\n\nНа жаль, через політику Google нам заборонено розміщувати посилання на веб-сторінку проекту, де можна зробити пожертву. Сподіваємося на розуміння!\n\nЩе раз дякую за ваш внесок.</string>
