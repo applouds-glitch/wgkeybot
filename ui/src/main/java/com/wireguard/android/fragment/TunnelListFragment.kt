@@ -5,8 +5,10 @@
 package com.wireguard.android.fragment
 
 import android.animation.ObjectAnimator
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -33,7 +35,6 @@ import com.wireguard.android.R
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.databinding.TunnelListFragmentBinding
 import com.wireguard.android.model.ObservableTunnel
-import com.wireguard.android.updater.SnackbarUpdateShower
 import com.wireguard.android.util.ApiClient
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.ErrorMessages
@@ -47,6 +48,7 @@ import androidx.security.crypto.MasterKey
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.TurnBackend
 import com.wireguard.android.turn.TurnConfigProcessor
+import com.wireguard.android.widget.TvHexKeyboard
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -62,8 +64,8 @@ class TunnelListFragment : BaseFragment() {
 
     private var binding: TunnelListFragmentBinding? = null
     private val vm: TunnelListViewModel by viewModels()
-    private val snackbarUpdateShower = SnackbarUpdateShower(this)
     private var pendingTunnel: ObservableTunnel? = null
+    private var tvKeyboard: TvHexKeyboard? = null
     private var refreshAnim: ObjectAnimator? = null
     private var _prefs: SharedPreferences? = null
 
@@ -118,7 +120,6 @@ class TunnelListFragment : BaseFragment() {
             wgkProfileCard.wgkRefreshBtn.setOnClickListener { refreshConfig() }
             wgkProfileCard.wgkAutoRefreshBtn.setOnClickListener { toggleAutoRefresh() }
             wgkProfileCard.wgkProfileIcon.setOnClickListener { onLogIconTap() }
-            snackbarUpdateShower.attach(mainContainer, wgkConnectButtonView.wgkConnectBtn)
         }
 
         // Register once so stale pending results from previous dialogs don't re-fire.
@@ -245,12 +246,23 @@ class TunnelListFragment : BaseFragment() {
                 return@launch
             }
 
+            tvKeyboard?.detach()
             b.wgkNoConfigContainer.isVisible = false
             b.wgkProfileCard.root.isVisible = true
             b.wgkConnectButtonView.root.isVisible = true
             b.wgkHeadline.isVisible = true
             b.wgkStatusZone.root.isVisible = true
             b.wgkFooterRow.root.isVisible = true
+
+            if (isTv()) {
+                // Give the D-pad an explicit landing spot when the control UI
+                // first appears; don't steal focus if the user already moved it.
+                val connectBtn = b.wgkConnectButtonView.wgkConnectBtn
+                connectBtn.post {
+                    val bb = binding ?: return@post
+                    if (bb.mainContainer.findFocus() == null) connectBtn.requestFocus()
+                }
+            }
 
             renderAutoRefreshIcon(b)
             checkAutoRefresh(auth)
@@ -280,6 +292,10 @@ class TunnelListFragment : BaseFragment() {
         }
     }
 
+    private fun isTv(): Boolean {
+        return requireContext().packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    }
+
     private fun showNoAuthContainer(b: TunnelListFragmentBinding, expired: Boolean) {
         vm.notifyTunnelDown()
         b.wgkNoConfigContainer.isVisible = true
@@ -298,22 +314,43 @@ class TunnelListFragment : BaseFragment() {
         b.wgkBotLinkBtn.setOnClickListener {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/wg_key_bot")))
         }
-        b.wgkTokenInput.setOnFocusChangeListener { _, hasFocus ->
-            if (hasFocus && b.wgkTokenInput.text.isNullOrEmpty()) {
+
+        if (isTv()) {
+            // TV: hide mobile input, show D-pad hex keyboard
+            b.wgkTokenInputWrapper.isVisible = false
+            b.wgkConnectWithTokenBtn.isVisible = false
+            if (tvKeyboard == null) {
+                tvKeyboard = TvHexKeyboard(requireContext()) { token ->
+                    initWithToken(token)
+                }
+            }
+            tvKeyboard?.setVisible(true)
+            // Mount into the dedicated TV keyboard column; fall back to the
+            // container itself on layouts without it (defensive — TV layout has it).
+            val keyboardHost = b.wgkTvKeyboardHost ?: b.wgkNoConfigContainer
+            tvKeyboard?.attachTo(keyboardHost)
+        } else {
+            b.wgkTokenInputWrapper.isVisible = true
+            b.wgkConnectWithTokenBtn.isVisible = true
+            tvKeyboard?.detach()
+            b.wgkTokenInput.setOnFocusChangeListener { _, hasFocus ->
+                if (hasFocus && b.wgkTokenInput.text.isNullOrEmpty()) {
+                    pasteTokenFromClipboard(b)
+                }
+            }
+            b.wgkPasteBtn.setOnClickListener {
                 pasteTokenFromClipboard(b)
             }
-        }
-        b.wgkPasteBtn.setOnClickListener {
-            pasteTokenFromClipboard(b)
-        }
-        b.wgkConnectWithTokenBtn.setOnClickListener {
-            val token = b.wgkTokenInput.text?.toString()?.trim() ?: ""
-            if (token.isBlank()) {
-                showSnackbar(getString(R.string.wgk_token_error_empty))
-                return@setOnClickListener
+            b.wgkConnectWithTokenBtn.setOnClickListener {
+                val token = b.wgkTokenInput.text?.toString()?.trim() ?: ""
+                if (token.isBlank()) {
+                    showSnackbar(getString(R.string.wgk_token_error_empty))
+                    return@setOnClickListener
+                }
+                initWithToken(token)
             }
-            initWithToken(token)
         }
+
         if (expired) {
             b.wgkCheckSubscriptionBtn.isVisible = true
             b.wgkCheckSubscriptionBtn.setOnClickListener { refreshConfig() }

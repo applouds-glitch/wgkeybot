@@ -21,16 +21,12 @@ import com.google.android.material.color.DynamicColors
 import com.wireguard.android.backend.Backend
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.TurnBackend
-import com.wireguard.android.backend.WgQuickBackend
 import com.wireguard.android.activity.CaptchaActivity
 import com.wireguard.android.captcha.CaptchaWebViewManager
 import com.wireguard.android.configStore.FileConfigStore
 import com.wireguard.android.model.TunnelManager
 import com.wireguard.android.turn.TurnProxyManager
 import com.wireguard.android.turn.TurnSettingsStore
-import com.wireguard.android.updater.Updater
-import com.wireguard.android.util.RootShell
-import com.wireguard.android.util.ToolsInstaller
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.UserKnobs
 import com.wireguard.android.util.applicationScope
@@ -39,7 +35,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -51,9 +46,7 @@ class Application : android.app.Application() {
     private val futureBackend = CompletableDeferred<Backend>()
     private val coroutineScope = CoroutineScope(Job() + Dispatchers.Main.immediate)
     private var backend: Backend? = null
-    private lateinit var rootShell: RootShell
     private lateinit var preferencesDataStore: DataStore<Preferences>
-    private lateinit var toolsInstaller: ToolsInstaller
     private lateinit var tunnelManager: TunnelManager
     private lateinit var turnProxyManager: TurnProxyManager
 
@@ -69,24 +62,9 @@ class Application : android.app.Application() {
         }
     }
 
-    private suspend fun determineBackend(): Backend {
-        var backend: Backend? = null
-        if (UserKnobs.enableKernelModule.first() && WgQuickBackend.hasKernelSupport()) {
-            try {
-                rootShell.start()
-                val wgQuickBackend = WgQuickBackend(applicationContext, rootShell, toolsInstaller)
-                wgQuickBackend.setMultipleTunnels(UserKnobs.multipleTunnels.first())
-                backend = wgQuickBackend
-                UserKnobs.multipleTunnels.onEach {
-                    wgQuickBackend.setMultipleTunnels(it)
-                }.launchIn(coroutineScope)
-            } catch (ignored: Exception) {
-            }
-        }
-        if (backend == null) {
-            backend = GoBackend(applicationContext)
-            GoBackend.setAlwaysOnCallback { get().applicationScope.launch { get().tunnelManager.restoreState(true) } }
-        }
+    private fun determineBackend(): Backend {
+        val backend = GoBackend(applicationContext)
+        GoBackend.setAlwaysOnCallback { get().applicationScope.launch { get().tunnelManager.restoreState(true) } }
         return backend
     }
 
@@ -111,8 +89,6 @@ class Application : android.app.Application() {
             nm?.createNotificationChannel(channel)
         }
         DynamicColors.applyToActivitiesIfAvailable(this)
-        rootShell = RootShell(applicationContext)
-        toolsInstaller = ToolsInstaller(applicationContext, rootShell)
         preferencesDataStore = PreferenceDataStoreFactory.create { applicationContext.preferencesDataStoreFile("settings") }
         AppCompatDelegate.setDefaultNightMode(
             when (AuthStore.getInstance(this).getThemeMode()) {
@@ -166,16 +142,9 @@ class Application : android.app.Application() {
         
         tunnelManager.onCreate()
         coroutineScope.launch(Dispatchers.IO) {
-            try {
-                backend = determineBackend()
-                futureBackend.complete(backend!!)
-            } catch (e: Throwable) {
-                Log.e(TAG, Log.getStackTraceString(e))
-            }
+            backend = determineBackend()
+            futureBackend.complete(backend!!)
         }
-        // Updater.monitorForUpdates()  // Disabled for fork
-        // If you want to enable updates, set up your own update server and configure Updater.kt
-
         if (BuildConfig.DEBUG) {
             StrictMode.setVmPolicy(VmPolicy.Builder().detectAll().penaltyLog().build())
             StrictMode.setThreadPolicy(ThreadPolicy.Builder().detectAll().penaltyLog().build())
@@ -204,11 +173,7 @@ class Application : android.app.Application() {
 
         suspend fun getBackend() = get().futureBackend.await()
 
-        fun getRootShell() = get().rootShell
-
         fun getPreferencesDataStore() = get().preferencesDataStore
-
-        fun getToolsInstaller() = get().toolsInstaller
 
         fun getTunnelManager() = get().tunnelManager
 

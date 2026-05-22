@@ -107,11 +107,6 @@
             android:parentActivityName=".activity.MainActivity" />
 
         <activity
-            android:name=".activity.TunnelCreatorActivity"
-            android:label="@string/create_activity_title"
-            android:parentActivityName=".activity.MainActivity" />
-
-        <activity
             android:name="com.journeyapps.barcodescanner.CaptureActivity"
             android:screenOrientation="fullSensor"
             tools:replace="screenOrientation" />
@@ -146,13 +141,6 @@
             </intent-filter>
         </receiver>
 
-        <receiver
-            android:name=".updater.Updater$AppUpdatedReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-            </intent-filter>
-        </receiver>
 
         <receiver
             android:name=".model.TunnelManager$IntentReceiver"

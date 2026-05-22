@@ -11,7 +11,6 @@ import com.google.zxing.NotFoundException
 import com.wireguard.android.Application
 import com.wireguard.android.R
 import com.wireguard.android.backend.BackendException
-import com.wireguard.android.util.RootShell.RootShellException
 import com.wireguard.config.BadConfigException
 import com.wireguard.config.InetEndpoint
 import com.wireguard.config.InetNetwork
@@ -56,15 +55,6 @@ object ErrorMessages {
         InetNetwork::class.java to R.string.parse_error_inet_network,
         Int::class.java to R.string.parse_error_integer
     )
-    private val RSE_REASON_MAP = mapOf(
-        RootShellException.Reason.NO_ROOT_ACCESS to R.string.error_root,
-        RootShellException.Reason.SHELL_MARKER_COUNT_ERROR to R.string.shell_marker_count_error,
-        RootShellException.Reason.SHELL_EXIT_STATUS_READ_ERROR to R.string.shell_exit_status_read_error,
-        RootShellException.Reason.SHELL_START_ERROR to R.string.shell_start_error,
-        RootShellException.Reason.CREATE_BIN_DIR_ERROR to R.string.create_bin_dir_error,
-        RootShellException.Reason.CREATE_TEMP_DIR_ERROR to R.string.create_temp_dir_error
-    )
-
     operator fun get(throwable: Throwable?): String {
         val resources = Application.get().resources
         if (throwable == null) return resources.getString(R.string.unknown_error)
@@ -83,10 +73,6 @@ object ErrorMessages {
 
             rootCause is BackendException -> {
                 resources.getString(BE_REASON_MAP.getValue(rootCause.reason), *rootCause.format)
-            }
-
-            rootCause is RootShellException -> {
-                resources.getString(RSE_REASON_MAP.getValue(rootCause.reason), *rootCause.format)
             }
 
             rootCause is NotFoundException -> {
@@ -146,9 +132,7 @@ object ErrorMessages {
     private fun rootCause(throwable: Throwable): Throwable {
         var cause = throwable
         while (cause.cause != null) {
-            if (cause is BadConfigException || cause is BackendException ||
-                cause is RootShellException
-            ) break
+            if (cause is BadConfigException || cause is BackendException) break
             val nextCause = cause.cause!!
             if (nextCause is RemoteException) break
             cause = nextCause

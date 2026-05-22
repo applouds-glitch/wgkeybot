@@ -28,6 +28,36 @@
         <item name="android:windowIsFloating">false</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
+    <style name="TvKeyButton" parent="Widget.Material3.Button">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">52dp</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:layout_marginHorizontal">3dp</item>
+        <item name="android:focusable">true</item>
+        <item name="android:textSize">18sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="cornerRadius">8dp</item>
+        <!-- Bright border appears only while the key is D-pad focused -->
+        <item name="strokeColor">@color/wgk_tv_key_stroke</item>
+        <item name="strokeWidth">2dp</item>
+    </style>
+
+    <style name="TvKeyButton.Action" parent="TvKeyButton">
+        <item name="android:textSize">14sp</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="backgroundTint">@color/wgk_surface_container_high</item>
+        <item name="android:textColor">@color/wgk_on_surface</item>
+    </style>
+
+    <style name="TvKeyButton.Connect" parent="TvKeyButton">
+        <item name="android:textSize">14sp</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="backgroundTint">@color/wgk_primary</item>
+        <item name="android:textColor">@color/wgk_on_primary</item>
+    </style>
 
     <style name="NoBackgroundTheme" parent="AppTheme">
         <item name="android:windowIsTranslucent">true</item>
