@@ -19,12 +19,9 @@ import androidx.preference.PreferenceFragmentCompat
 import com.wireguard.android.Application
 import com.wireguard.android.QuickTileService
 import com.wireguard.android.R
-import com.wireguard.android.backend.WgQuickBackend
 import com.wireguard.android.preference.PreferencesPreferenceDataStore
 import com.wireguard.android.util.AdminKnobs
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Interface for changing application-global persistent settings.
@@ -76,37 +73,9 @@ class SettingsActivity : AppCompatActivity() {
                 val zipExporter = preferenceManager.findPreference<Preference>("zip_exporter")
                 zipExporter?.parent?.removePreference(zipExporter)
             }
-            val wgQuickOnlyPrefs = arrayOf(
-                preferenceManager.findPreference("tools_installer"),
-                preferenceManager.findPreference("restore_on_boot"),
-                preferenceManager.findPreference<Preference>("multiple_tunnels")
-            ).filterNotNull()
-            wgQuickOnlyPrefs.forEach { it.isVisible = false }
-            lifecycleScope.launch {
-                if (Application.getBackend() is WgQuickBackend) {
-                    ++preferenceScreen.initialExpandedChildrenCount
-                    wgQuickOnlyPrefs.forEach { it.isVisible = true }
-                } else {
-                    wgQuickOnlyPrefs.forEach { it.parent?.removePreference(it) }
-                }
-            }
             preferenceManager.findPreference<Preference>("log_viewer")?.setOnPreferenceClickListener {
                 startActivity(Intent(requireContext(), LogViewerActivity::class.java))
                 true
-            }
-            val kernelModuleEnabler = preferenceManager.findPreference<Preference>("kernel_module_enabler")
-            if (WgQuickBackend.hasKernelSupport()) {
-                lifecycleScope.launch {
-                    if (Application.getBackend() !is WgQuickBackend) {
-                        try {
-                            withContext(Dispatchers.IO) { Application.getRootShell().start() }
-                        } catch (_: Throwable) {
-                            kernelModuleEnabler?.parent?.removePreference(kernelModuleEnabler)
-                        }
-                    }
-                }
-            } else {
-                kernelModuleEnabler?.parent?.removePreference(kernelModuleEnabler)
             }
         }
     }

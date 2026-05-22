@@ -13,9 +13,6 @@ import androidx.preference.Preference
 import com.wireguard.android.Application
 import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
-import com.wireguard.android.backend.Backend
-import com.wireguard.android.backend.GoBackend
-import com.wireguard.android.backend.WgQuickBackend
 import com.wireguard.android.util.ErrorMessages
 import com.wireguard.android.util.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -40,22 +37,19 @@ class VersionPreference(context: Context, attrs: AttributeSet?) : Preference(con
     }
 
     companion object {
-        private fun getBackendPrettyName(context: Context, backend: Backend) = when (backend) {
-            is WgQuickBackend -> context.getString(R.string.type_name_kernel_module)
-            is GoBackend -> context.getString(R.string.type_name_go_userspace)
-            else -> ""
-        }
+        private fun getBackendPrettyName(context: Context) =
+            context.getString(R.string.type_name_go_userspace)
     }
 
     init {
         lifecycleScope.launch {
             val backend = Application.getBackend()
-            versionSummary = getContext().getString(R.string.version_summary_checking, getBackendPrettyName(context, backend).lowercase())
+            versionSummary = getContext().getString(R.string.version_summary_checking, getBackendPrettyName(context).lowercase())
             notifyChanged()
             versionSummary = try {
-                getContext().getString(R.string.version_summary, getBackendPrettyName(context, backend), withContext(Dispatchers.IO) { backend.version })
+                getContext().getString(R.string.version_summary, getBackendPrettyName(context), withContext(Dispatchers.IO) { backend.version })
             } catch (_: Throwable) {
-                getContext().getString(R.string.version_summary_unknown, getBackendPrettyName(context, backend).lowercase())
+                getContext().getString(R.string.version_summary_unknown, getBackendPrettyName(context).lowercase())
             }
             notifyChanged()
         }
