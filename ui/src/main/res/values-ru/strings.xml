@@ -284,4 +284,7 @@
     <string name="biometric_auth_error_reason">Ошибка аутентификации: %s</string>
     <string name="excluded_applications">Раздельное туннелирование</string>
     <string name="turn_start_failed">Не удалось установить соединение через TURN</string>
+    <string name="vpn_alert_channel_name">Уведомления VPN</string>
+    <string name="tunnel_connection_lost_title">VPN отключён</string>
+    <string name="tunnel_connection_lost_text">Соединение потеряно, восстановить не удалось.</string>
 </resources>

@@ -123,6 +123,9 @@ class TurnProxyManager(private val context: Context) {
     )
 
     private val instances = ConcurrentHashMap<String, Instance>()
+    // Remember the stream count that last succeeded, so the next connect
+    // can start with it instead of waiting for the primary count to time out.
+    private val lastSuccessfulStreams = ConcurrentHashMap<String, Int>()
     // Mutex to serialize start/stop operations and prevent race conditions between
     // onTunnelEstablished and handleNetworkChange
     private val operationMutex = kotlinx.coroutines.sync.Mutex()
@@ -149,6 +152,18 @@ class TurnProxyManager(private val context: Context) {
 
         val success = startForTunnelInternal(tunnelName, turnSettings)
 
+        if (!success) {
+            // Start failed: clear session state so PhysicalNetworkMonitor does not
+            // try to "restart" a tunnel that never came up — which would otherwise
+            // hammer the TURN server on every network change.
+            Log.w(TAG, "TURN start failed — clearing session state")
+            activeTunnelName = null
+            activeSettings = null
+            lastKnownNetwork = null
+            userInitiatedStop = true
+            return false
+        }
+
         // After initial start, allow network changes to trigger restarts
         // We delay slightly to ensure we don't catch the immediate network fluctuation caused by VPN itself
         scope.launch {
@@ -156,7 +171,7 @@ class TurnProxyManager(private val context: Context) {
             Log.d(TAG, "Initialization phase complete, network monitoring active")
         }
 
-        return success
+        return true
     }
 
     suspend fun startForTunnel(tunnelName: String, settings: TurnSettings): Boolean {
@@ -211,32 +226,70 @@ class TurnProxyManager(private val context: Context) {
                 val effectiveWrapKey = if (stability) "" else settings.wrapKey
                 Log.d(TAG, "Mode: ${if (stability) "Stability (proxy_v2, 1 link, no WRAP)" else "Speed (${settings.peerType}, ${settings.vkLink.split(",","|").count { it.isNotBlank() }} links, WRAP=${settings.wrapKey.isNotBlank()})"}")
 
-                val ret = TurnBackend.wgTurnProxyStart(
-                    settings.peer, effectiveVkLink, settings.mode, settings.streams,
-                    if (settings.useUdp) 1 else 0,
-                    "127.0.0.1:${settings.localPort}",
-                    settings.turnIp,
-                    settings.turnPort,
-                    effectivePeerType,
-                    settings.streamsPerCred,
-                    settings.watchdogTimeout,
-                    effectiveWrapKey,
-                    networkHandle
-                )
+                // Build list of stream counts to try.
+                // 1. Last successful count (fast path on reconnect)
+                // 2. Primary configured count
+                // 3. Explicit fallback (if configured)
+                val streamCountsToTry = mutableListOf<Int>()
+                val remembered = lastSuccessfulStreams[tunnelName]
+                if (remembered != null && remembered != settings.streams) {
+                    streamCountsToTry.add(remembered)
+                }
+                streamCountsToTry.add(settings.streams)
+                val fallback = settings.fallbackStreams
+                if (fallback > 0 && fallback != settings.streams && fallback != remembered) {
+                    streamCountsToTry.add(fallback)
+                }
 
                 val listenAddr = "127.0.0.1:${settings.localPort}"
-                if (ret == 0) {
-                    instance.running = true
-                    val msg = "TURN started for tunnel \"$tunnelName\" listening on $listenAddr"
-                    Log.d(TAG, msg)
-                    appendLogLine(tunnelName, msg)
-                    true
-                } else {
-                    val msg = "Failed to start TURN proxy (error $ret)"
-                    Log.e(TAG, msg)
-                    appendLogLine(tunnelName, msg)
-                    false
+                var ret = -1
+                for ((attempt, streamsToTry) in streamCountsToTry.withIndex()) {
+                    if (attempt > 0) {
+                        val label = when {
+                            remembered != null && attempt == 1 && streamsToTry == settings.streams -> "remembered count failed, trying primary $streamsToTry"
+                            else -> "falling back to $streamsToTry streams"
+                        }
+                        Log.d(TAG, label)
+                        appendLogLine(tunnelName, "Retrying with $streamsToTry streams...")
+                        TurnBackend.wgTurnProxyStop()
+                        delay(100)
+                    }
+
+                    ret = TurnBackend.wgTurnProxyStart(
+                        settings.peer, effectiveVkLink, settings.mode, streamsToTry,
+                        if (settings.useUdp) 1 else 0,
+                        listenAddr,
+                        settings.turnIp,
+                        settings.turnPort,
+                        effectivePeerType,
+                        settings.streamsPerCred,
+                        settings.watchdogTimeout,
+                        effectiveWrapKey,
+                        networkHandle
+                    )
+
+                    if (ret == 0) {
+                        instance.running = true
+                        lastSuccessfulStreams[tunnelName] = streamsToTry
+                        val streamInfo = when {
+                            attempt > 0 && streamsToTry == settings.streams -> " (primary after fallback)"
+                            attempt > 0 -> " (via fallback $streamsToTry streams)"
+                            remembered != null -> " (remembered)"
+                            else -> ""
+                        }
+                        val msg = "TURN started for tunnel \"$tunnelName\" listening on $listenAddr$streamInfo"
+                        Log.d(TAG, msg)
+                        appendLogLine(tunnelName, msg)
+                        return@withContext true
+                    }
+
+                    Log.e(TAG, "Failed to start TURN proxy with $streamsToTry streams (error $ret)")
                 }
+
+                val msg = "Failed to start TURN proxy (error $ret)"
+                Log.e(TAG, msg)
+                appendLogLine(tunnelName, msg)
+                false
             } finally {
                 operationMutex.unlock()
             }
@@ -248,6 +301,9 @@ class TurnProxyManager(private val context: Context) {
             activeTunnelName = null
             activeSettings = null
             lastKnownNetwork = null
+
+            // Clear remembered stream count so next manual connect starts fresh
+            lastSuccessfulStreams.remove(tunnelName)
 
             // Reset VpnService reference
             TurnBackend.onVpnServiceCreated(null)

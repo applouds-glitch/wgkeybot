@@ -47,6 +47,7 @@ class TurnSettingsStore(private val context: Context) {
                 peerType = json.optString("peerType", peerTypeDefault),
                 streamsPerCred = json.optInt("streamsPerCred", 4),
                 wrapKey = json.optString("wrapKey", ""),
+                fallbackStreams = json.optInt("fallbackStreams", 0),
             )
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to load TURN settings for tunnel $name", t)
@@ -76,6 +77,7 @@ class TurnSettingsStore(private val context: Context) {
             .put("peerType", settings.peerType)
             .put("streamsPerCred", settings.streamsPerCred)
             .put("wrapKey", settings.wrapKey)
+            .put("fallbackStreams", settings.fallbackStreams)
 
         SecureFileStorage.write(context, file, json.toString().toByteArray(StandardCharsets.UTF_8))
     }

@@ -23,6 +23,7 @@ data class TurnSettings(
     val streamsPerCred: Int = 4,
     val watchdogTimeout: Int = 0,
     val wrapKey: String = "",          // ← новое: 64-hex ChaCha20 ключ, "" = WRAP выключен
+    val fallbackStreams: Int = 0,      // 0 = disabled; if >0, retry with this count when primary fails
 ) {
     fun toComments(): List<String> {
         val lines = mutableListOf(
@@ -42,6 +43,7 @@ data class TurnSettings(
         if (turnPort > 0) lines.add("#@wgt:TurnPort = $turnPort")
         if (watchdogTimeout > 0) lines.add("#@wgt:WatchdogTimeout = $watchdogTimeout")
         if (wrapKey.isNotBlank()) lines.add("#@wgt:WrapKey = $wrapKey")
+        if (fallbackStreams > 0) lines.add("#@wgt:FallbackStreamNum = $fallbackStreams")
         return lines
     }
 
@@ -62,6 +64,7 @@ data class TurnSettings(
             var noDtlsLegacy = false
             var foundAny = false
             var wrapKey = ""
+            var fallbackStreams = 0
 
             for (line in comments) {
                 if (!line.startsWith("#@wgt:")) continue
@@ -86,6 +89,7 @@ data class TurnSettings(
                     "peertype"       -> peerType         = value
                     "streamspercred" -> streamsPerCred   = (value.toIntOrNull() ?: 4).coerceIn(1, 16)
                     "wrapkey"        -> wrapKey = value
+                    "fallbackstreamnum" -> fallbackStreams = (value.toIntOrNull() ?: 0).coerceIn(0, 128)
                 }
             }
 
@@ -94,7 +98,7 @@ data class TurnSettings(
                 peerType = if (noDtlsLegacy) "wireguard" else "proxy_v2"
             }
 
-            return if (foundAny) TurnSettings(enabled, peer, vkLink, mode, streams, useUdp, localPort, turnIp, turnPort, peerType, streamsPerCred, watchdogTimeout, wrapKey = wrapKey) else null
+            return if (foundAny) TurnSettings(enabled, peer, vkLink, mode, streams, useUdp, localPort, turnIp, turnPort, peerType, streamsPerCred, watchdogTimeout, wrapKey = wrapKey, fallbackStreams = fallbackStreams) else null
         }
 
         fun validate(settings: TurnSettings): TurnSettings {
