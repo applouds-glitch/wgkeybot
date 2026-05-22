@@ -71,8 +71,6 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass, addr string, cfg 
 	switch cfg.PeerType {
 	case "wireguard":
 		return s.runNoDTLS(ctx, relayConn, cfg.PeerAddr)
-	case "proxy_v1":
-		return s.runDTLS(ctx, relayConn, cfg.PeerAddr, false)
 	default:
 		return s.runDTLS(ctx, relayConn, cfg.PeerAddr, true)
 	}
