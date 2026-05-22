@@ -69,7 +69,6 @@ class TunnelListFragment : BaseFragment() {
 
     private var currentSplitProxy: ConfigProxy? = null
     private var updateShownThisSession = false
-    private var lastRenderedState: TunnelState = TunnelState.Disconnected
 
     private var logTapCount = 0
     private var logTapLastMs = 0L
@@ -85,8 +84,10 @@ class TunnelListFragment : BaseFragment() {
             if (result.resultCode == android.app.Activity.RESULT_OK) {
                 lifecycleScope.launch {
                     try {
-                        tunnel.setStateAsync(Tunnel.State.UP)
-                        vm.notifyTunnelUp()
+                        // Use the real resulting state: an atomic connect may end DOWN
+                        // (handshake failed and was torn down, or cancelled concurrently).
+                        val resultState = tunnel.setStateAsync(Tunnel.State.UP)
+                        if (resultState == Tunnel.State.UP) vm.notifyTunnelUp() else vm.notifyTunnelDown()
                     } catch (e: Exception) {
                         vm.notifyTunnelDown()
                         showSnackbar(ErrorMessages[e])
@@ -199,8 +200,10 @@ class TunnelListFragment : BaseFragment() {
                     withContext(Dispatchers.IO) { TurnBackend.wgTurnProxyStop() }
                 }
 
-                tunnel.setStateAsync(newState)
-                if (newState == Tunnel.State.UP) vm.notifyTunnelUp() else vm.notifyTunnelDown()
+                // Judge by the real resulting state, not the requested one: an atomic
+                // connect can end DOWN if the WireGuard handshake never completes.
+                val resultState = tunnel.setStateAsync(newState)
+                if (resultState == Tunnel.State.UP) vm.notifyTunnelUp() else vm.notifyTunnelDown()
             } catch (e: Exception) {
                 vm.notifyTunnelDown()
                 if (!vm.cancelledByUser) showSnackbar(ErrorMessages[e])
@@ -342,10 +345,10 @@ class TunnelListFragment : BaseFragment() {
 
     private fun render(ui: TunnelUiState) {
         val b = binding ?: return
-        if (ui.state == TunnelState.Connected && lastRenderedState != TunnelState.Connected) {
+        if (ui.state == TunnelState.Connected && vm.lastRenderedState != TunnelState.Connected) {
             vibrateConnected()
         }
-        lastRenderedState = ui.state
+        vm.lastRenderedState = ui.state
         renderProfile(b, ui)
         renderConnectButton(b, ui)
         renderHeadline(b, ui)

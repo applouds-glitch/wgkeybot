@@ -28,16 +28,17 @@ type TunnelGroupsConfig struct {
 	SessionID       []byte
 	PauseFlag       *int32
 	WatchdogTimeout int
-	WrapKey         []byte  // ← добавить: 32 байта = WRAP включён, nil = выключен
+	WrapKey         []byte // ← добавить: 32 байта = WRAP включён, nil = выключен
 }
 
 // StartTunnelGroups launches N WorkerGroups concurrently.
 // Credential fetches are still serialised by groupFetchMu inside WorkerGroup,
 // but TURN/DTLS connections are established in parallel across groups.
-// Returns cancel, okChan (first ready stream signal), error.
-func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsConfig) (context.CancelFunc, <-chan struct{}, error) {
+// Returns cancel, okChan (first ready stream signal), done (closed once every
+// WorkerGroup has fully exited), error.
+func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsConfig) (context.CancelFunc, <-chan struct{}, <-chan struct{}, error) {
 	if len(cfg.Links) == 0 {
-		return nil, nil, fmt.Errorf("no links provided")
+		return nil, nil, nil, fmt.Errorf("no links provided")
 	}
 	n := cfg.StreamsPerGroup
 	if n <= 0 {
@@ -72,7 +73,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			cert:            cfg.Cert,
 			watchdogTimeout: wd,
 			okFunc:          okFunc,
-			wrapKey:         cfg.WrapKey,  // ← добавить
+			wrapKey:         cfg.WrapKey, // ← добавить
 		}
 	}
 
@@ -81,6 +82,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 		cfg.PauseFlag = &pauseFlag
 	}
 
+	var groupsWg sync.WaitGroup
 	for gi, link := range cfg.Links {
 		if gi > 0 {
 			// Jittered gap between group launches so multi-stream setups from
@@ -93,24 +95,43 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 		groupStreams := allStreams[gi*n : gi*n+n]
 
 		groupCfg := WorkerGroupConfig{
-			GroupID:  gi,
-			Link:     link,
-			PeerAddr: cfg.PeerAddr,
-			UseUDP:   cfg.UseUDP,
-			PeerType: cfg.PeerType,
-			TurnIP:   cfg.TurnIP,
-			TurnPort: cfg.TurnPort,
+			GroupID:   gi,
+			Link:      link,
+			PeerAddr:  cfg.PeerAddr,
+			UseUDP:    cfg.UseUDP,
+			PeerType:  cfg.PeerType,
+			TurnIP:    cfg.TurnIP,
+			TurnPort:  cfg.TurnPort,
 			PauseFlag: cfg.PauseFlag,
 		}
 
-		go WorkerGroup(gCtx, groupCfg, groupStreams)
+		groupsWg.Add(1)
+		go func() {
+			defer groupsWg.Done()
+			WorkerGroup(gCtx, groupCfg, groupStreams)
+		}()
 		turnLog("[INIT] Group %d started (link=%.12s, streams %d-%d)", gi, link, gi*n, gi*n+n-1)
 	}
 
-	// Round-robin dispatcher: routes incoming UDP packets to ready streams
+	// done closes once every WorkerGroup has fully exited. Each WorkerGroup's
+	// deferred killBatch waits for its workers, whose runWithCreds defers run
+	// relayConn.Close() → TURN Refresh(lifetime=0). Waiting on done therefore
+	// means every server-side allocation has been told to release.
+	done := make(chan struct{})
+	go func() {
+		groupsWg.Wait()
+		close(done)
+	}()
+
+	// Chunked dispatcher: sends chunkSize consecutive packets through the
+	// same stream before rotating, preserving packet order within a chunk.
+	// Reduces WireGuard-level reordering caused by per-stream latency variance
+	// across independent DTLS/TURN paths.
 	go func() {
 		nStreams := totalStreams
+		const chunkSize = 8
 		lastUsed := 0
+		packetsInChunk := 0
 		for {
 			b := packetPool.Get().([]byte)[:iPacketBuffMaxSize]
 			nRead, addr, err := lc.ReadFrom(b)
@@ -119,7 +140,6 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 				return
 			}
 
-			lastUsed = (lastUsed + 1) % nStreams
 			var s *stream
 			for i := 0; i < nStreams; i++ {
 				st := allStreams[(lastUsed+i)%nStreams]
@@ -133,6 +153,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 				continue
 			}
 
+			packetsInChunk++
 			returnAddr := addr
 			s.peer.Store(&returnAddr)
 			select {
@@ -140,8 +161,13 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			default:
 				packetPool.Put(b[:cap(b)])
 			}
+
+			if packetsInChunk >= chunkSize {
+				lastUsed = (lastUsed + 1) % nStreams
+				packetsInChunk = 0
+			}
 		}
 	}()
 
-	return gCancel, okChan, nil
+	return gCancel, okChan, done, nil
 }

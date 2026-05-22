@@ -144,29 +144,52 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	sCtx, sCancel := context.WithCancel(ctx)
 	defer sCancel()
 
+	// firstErr captures the root cause when a goroutine fails and calls sCancel().
+	// See runDTLS for full rationale.
+	firstErr := make(chan error, 1)
+	reportErr := func(err error) {
+		select {
+		case firstErr <- err:
+		default:
+		}
+	}
+
 	hasWrap := s.wrapKey != nil
 	turnLog("[STREAM %d] NoDTLS mode (wrap=%v) — %s", s.id, hasWrap, peer)
 
-	// Session handshake: 17-byte header (sessionID + streamID).
+	// Session handshake: 17-byte header (sessionID + streamID). Kept in
+	// sessionHS so the keepalive goroutine can re-announce it periodically.
+	var sessionHS []byte
 	if s.sessionID != nil {
-		hs := make([]byte, 17)
-		copy(hs[:16], s.sessionID)
-		hs[16] = byte(s.id)
+		sessionHS = make([]byte, 17)
+		copy(sessionHS[:16], s.sessionID)
+		sessionHS[16] = byte(s.id)
 		var payload []byte
 		if hasWrap {
 			var hErr error
-			payload, hErr = wrapPacket(s.wrapKey, hs)
+			payload, hErr = wrapPacket(s.wrapKey, sessionHS)
 			if hErr != nil {
 				return fmt.Errorf("session handshake wrap: %w", hErr)
 			}
 		} else {
-			payload = hs
+			payload = sessionHS
 		}
 		if _, hErr := relayConn.WriteTo(payload, peer); hErr != nil {
 			return fmt.Errorf("session handshake send: %w", hErr)
 		}
 		turnLog("[STREAM %d] Session handshake sent", s.id)
 	}
+
+	// Cancelling sCtx (watchdog, error, parent stop) closes the relay conn so
+	// the RX goroutine's blocking ReadFrom unblocks immediately instead of
+	// waiting out its 60s deadline.
+	context.AfterFunc(sCtx, func() { relayConn.Close() })
+
+	// lastRx tracks the last sign of life on the relay path — a packet from
+	// the peer, or a keepalive that was accepted for sending. The watchdog
+	// below tears the stream down if it goes stale.
+	var lastRx atomic.Int64
+	lastRx.Store(time.Now().Unix())
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -188,6 +211,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 						packetPool.Put(b[:cap(b)])
 						noDtlsTxDropCount.Add(1)
 						turnLog("[STREAM %d] WRAP TX error: %v", s.id, err)
+						reportErr(fmt.Errorf("WRAP TX: %w", err))
 						return
 					}
 				} else {
@@ -198,6 +222,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				if err != nil {
 					noDtlsTxDropCount.Add(1)
 					turnLog("[STREAM %d] TX error: %v", s.id, err)
+					reportErr(fmt.Errorf("relay TX: %w", err))
 					return
 				}
 			}
@@ -214,11 +239,13 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			n, from, err := relayConn.ReadFrom(wire)
 			if err != nil {
 				noDtlsRxErrorCount.Add(1)
+				reportErr(fmt.Errorf("relay RX: %w", err))
 				return
 			}
 			if from.String() != peer.String() {
 				continue
 			}
+			lastRx.Store(time.Now().Unix())
 			a := s.peer.Load()
 			if a == nil {
 				continue
@@ -234,11 +261,13 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				}
 				if _, err := s.out.WriteTo(plain[:m], *a); err != nil {
 					noDtlsRxErrorCount.Add(1)
+					reportErr(fmt.Errorf("TUN write: %w", err))
 					return
 				}
 			} else {
 				if _, err := s.out.WriteTo(wire[:n], *a); err != nil {
 					noDtlsRxErrorCount.Add(1)
+					reportErr(fmt.Errorf("TUN write: %w", err))
 					return
 				}
 			}
@@ -257,33 +286,100 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				return
 			case <-ticker.C:
 				relayConn.SetDeadline(time.Now().Add(60 * time.Second))
+				var sendErr error
 				if hasWrap {
 					enc, err := wrapPacket(s.wrapKey, stunBindingIndication)
 					if err == nil {
-						relayConn.WriteTo(enc, peer)
+						_, sendErr = relayConn.WriteTo(enc, peer)
+					} else {
+						sendErr = err
 					}
 					if tickCount%3 == 0 {
-						cover, err := wrapCoverPacket(s.wrapKey)
-						if err == nil {
+						if cover, cErr := wrapCoverPacket(s.wrapKey); cErr == nil {
 							relayConn.WriteTo(cover, peer)
 						}
 					}
 				} else {
-					relayConn.WriteTo(stunBindingIndication, peer)
+					_, sendErr = relayConn.WriteTo(stunBindingIndication, peer)
+				}
+				if sendErr == nil {
+					// A keepalive accepted for sending proves the relay path
+					// is still usable; refresh lastRx so the watchdog doesn't
+					// trip a stream that is merely waiting its turn in the
+					// server's round-robin downstream.
+					lastRx.Store(time.Now().Unix())
+				}
+				// Re-announce the 17-byte session header. If the server was
+				// restarted it lost all session state and otherwise never
+				// learns this stream again — re-sending lets it re-adopt the
+				// stream within one tick, with no reconnect. On a live stream
+				// the server just forwards it to WireGuard, which drops it.
+				if sessionHS != nil {
+					if hasWrap {
+						if enc, wErr := wrapPacket(s.wrapKey, sessionHS); wErr == nil {
+							relayConn.WriteTo(enc, peer)
+						}
+					} else {
+						relayConn.WriteTo(sessionHS, peer)
+					}
 				}
 				tickCount++
 			}
 		}
 	}()
 
+	// RX watchdog: tears the stream down if neither a peer packet nor a
+	// successful keepalive has been seen for watchdogTimeout seconds, so a
+	// silently broken path is rebuilt by WorkerGroup instead of hanging.
+	if s.watchdogTimeout > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer sCancel()
+			interval := time.Duration(s.watchdogTimeout) * time.Second
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-sCtx.Done():
+					return
+				case <-ticker.C:
+					if time.Since(time.Unix(lastRx.Load(), 0)) > interval {
+						turnLog("[STREAM %d] RX watchdog: no data for %ds — closing", s.id, s.watchdogTimeout)
+						reportErr(fmt.Errorf("RX watchdog: no data for %ds", s.watchdogTimeout))
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	s.ready.Store(true)
 	s.okFunc()
 	wg.Wait()
-	return nil
+	select {
+	case err := <-firstErr:
+		return err
+	default:
+		return nil
+	}
 }
 func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr, sendHandshake bool) error {
 	sCtx, sCancel := context.WithCancel(ctx)
 	defer sCancel()
+
+	// firstErr captures the root cause when a goroutine fails and calls sCancel().
+	// Without this, any internal failure (watchdog, RX error, TX error) would
+	// return nil, which WorkerGroup misinterprets as "server closed stream,
+	// rotate credentials" — causing an infinite stream creation/destruction loop
+	// when DPI blocks traffic through an otherwise healthy DTLS tunnel.
+	firstErr := make(chan error, 1)
+	reportErr := func(err error) {
+		select {
+		case firstErr <- err:
+		default:
+		}
+	}
 
 	c1, c2 := connutil.AsyncPacketPipe()
 	defer c1.Close()
@@ -301,6 +397,11 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			dtls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 			dtls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 		},
+		// Connection ID lets the DTLS session survive a client-side NAT
+		// rebind (mobile network switch, NAT timeout) without a fresh
+		// handshake. The server negotiates CID too; if a peer doesn't,
+		// pion silently falls back to no-CID.
+		ConnectionIDGenerator: dtls.RandomCIDGenerator(8),
 	})
 	if err != nil {
 		return fmt.Errorf("DTLS client creation failed: %w", err)
@@ -334,6 +435,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 				if err != nil {
 					turnLog("[STREAM %d] WRAP TX error: %v", s.id, err)
 					relayTxErrorCount.Add(1)
+					reportErr(fmt.Errorf("WRAP TX: %w", err))
 					return
 				}
 			} else {
@@ -343,6 +445,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			if _, err := relayConn.WriteTo(payload, peer); err != nil {
 				relayTxErrorCount.Add(1)
 				turnLog("[STREAM %d] relay TX error: %v", s.id, err)
+				reportErr(fmt.Errorf("relay TX: %w", err))
 				return
 			}
 		}
@@ -361,6 +464,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			if err != nil {
 				relayRxErrorCount.Add(1)
 				turnLog("[STREAM %d] relay RX error: %v", s.id, err)
+				reportErr(fmt.Errorf("relay RX: %w", err))
 				return
 			}
 			if from.String() == peer.String() {
@@ -378,6 +482,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 				}
 				if _, err := c2.WriteTo(data, peer); err != nil {
 					relayTxErrorCount.Add(1)
+					reportErr(fmt.Errorf("pipe write: %w", err))
 					return
 				}
 			}
@@ -425,12 +530,14 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 					packetPool.Put(b[:cap(b)])
 					dtlsTxDropCount.Add(1)
 					turnLog("[STREAM %d] TX watchdog (%ds)", s.id, s.watchdogTimeout)
+					reportErr(fmt.Errorf("TX watchdog: no RX for %ds", s.watchdogTimeout))
 					return
 				}
 				_, err := dtlsConn.Write(b)
 				packetPool.Put(b[:cap(b)])
 				if err != nil {
 					dtlsTxDropCount.Add(1)
+					reportErr(fmt.Errorf("DTLS write: %w", err))
 					return
 				}
 			}
@@ -446,12 +553,14 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			n, err := dtlsConn.Read(buf)
 			if err != nil {
 				dtlsRxErrorCount.Add(1)
+				reportErr(fmt.Errorf("DTLS read: %w", err))
 				return
 			}
 			lastRx.Store(time.Now().Unix())
 			if a := s.peer.Load(); a != nil {
 				if _, err := s.out.WriteTo(buf[:n], *a); err != nil {
 					dtlsRxErrorCount.Add(1)
+					reportErr(fmt.Errorf("TUN write: %w", err))
 					return
 				}
 			}
@@ -504,6 +613,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 				case <-ticker.C:
 					if time.Since(time.Unix(lastRx.Load(), 0)) > interval {
 						turnLog("[STREAM %d] RX watchdog: no data for %ds — closing", s.id, s.watchdogTimeout)
+						reportErr(fmt.Errorf("RX watchdog: no data for %ds", s.watchdogTimeout))
 						return
 					}
 				}
@@ -512,7 +622,12 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	}
 
 	wg.Wait()
-	return nil
+	select {
+	case err := <-firstErr:
+		return err
+	default:
+		return nil
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -520,6 +635,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 // ─────────────────────────────────────────────────────────────────────────────
 
 var currentTurnCancel context.CancelFunc
+var currentTurnDone <-chan struct{}
 var turnMutex sync.Mutex
 var globalGetCreds getCredsFunc
 
@@ -561,7 +677,7 @@ func parseLinks(raw string, maxLinks int) []string {
 
 //export wgTurnProxyStart
 func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char, networkHandleC C.longlong) int32 {
-	clearTransientState() // flush DNS + HTTP without clearing credential caches
+	clearTransientState()                  // flush DNS + HTTP without clearing credential caches
 	atomic.StoreInt32(&globalPauseFlag, 0) // reset on each new tunnel start
 
 	if networkHandleC != 0 {
@@ -584,15 +700,15 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 
 	// ── WRAP key parsing ──────────────────────────────────────────────────────
 	var wrapKey []byte
-    if wrapKeyStr := C.GoString(wrapKeyC); wrapKeyStr != "" {
-        decoded, err := decodeWrapKey(true, wrapKeyStr)
-        if err != nil {
-            turnLog("[PROXY] Invalid wrapKey: %v", err)
-            return -1
-        }
-        wrapKey = decoded
-        turnLog("[PROXY] WRAP obfuscation enabled")
-    }
+	if wrapKeyStr := C.GoString(wrapKeyC); wrapKeyStr != "" {
+		decoded, err := decodeWrapKey(true, wrapKeyStr)
+		if err != nil {
+			turnLog("[PROXY] Invalid wrapKey: %v", err)
+			return -1
+		}
+		wrapKey = decoded
+		turnLog("[PROXY] WRAP obfuscation enabled")
+	}
 
 	turnMutex.Lock()
 	if currentTurnCancel != nil {
@@ -618,6 +734,22 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		return getCredsCached(ctx, lk, streamID, fetchVkCreds)
 	}
 
+	// ── Apply StreamNum cap ────────────────────────────────────────────────────
+	// StreamNum (n) is the user-facing total stream count. If it is smaller than
+	// len(links)*streamsPerCred, reduce streamsPerCred so the total matches n.
+	// streamsPerCred must stay in sync because credential cache slots are keyed
+	// by streamID/streamsPerCred (credentials.go:getCacheID).
+	if maxTotal := int(n); maxTotal > 0 {
+		defaultTotal := len(links) * streamsPerCred
+		if maxTotal < defaultTotal {
+			perGroup := maxTotal / len(links)
+			if perGroup < 1 {
+				perGroup = 1
+			}
+			streamsPerCred = perGroup
+		}
+	}
+
 	totalStreams := len(links) * streamsPerCred
 	turnLog("[PROXY] Starting: listen=%s StreamNum=%d streamsPerGroup=%d links=%d actualTotal=%d mode=%s peerType=%s watchdog=%ds",
 		listenAddr, int(n), streamsPerCred, len(links), totalStreams, mode, peerType, watchdogTimeout)
@@ -631,12 +763,12 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	}
 
 	// ── Local listener ────────────────────────────────────────────────────────
-lc, err := net.ListenPacket("udp", listenAddr)
-if err != nil {
-    turnLog("[PROXY] ListenPacket failed: %v", err)
-    return -1
-}
-context.AfterFunc(ctx, func() { lc.Close() })
+	lc, err := net.ListenPacket("udp", listenAddr)
+	if err != nil {
+		turnLog("[PROXY] ListenPacket failed: %v", err)
+		return -1
+	}
+	context.AfterFunc(ctx, func() { lc.Close() })
 
 	sessionID, _ := uuid.New().MarshalBinary()
 	cert, err := selfsign.GenerateSelfSigned()
@@ -645,9 +777,7 @@ context.AfterFunc(ctx, func() { lc.Close() })
 		return -1
 	}
 
-var packetLc net.PacketConn = lc
-
-
+	var packetLc net.PacketConn = lc
 
 	// ── Pre-fetch credentials for all groups ─────────────────────────────────
 	// Done before VPN tunnel is established so any captcha WebView runs over
@@ -679,7 +809,7 @@ var packetLc net.PacketConn = lc
 	prefetchWg.Wait()
 
 	// ── Launch groups ─────────────────────────────────────────────────────────
-	_, okChan, err := StartTunnelGroups(ctx, packetLc, TunnelGroupsConfig{
+	_, okChan, done, err := StartTunnelGroups(ctx, packetLc, TunnelGroupsConfig{
 		Links:           links,
 		PeerAddr:        peer,
 		PeerType:        peerType,
@@ -698,6 +828,11 @@ var packetLc net.PacketConn = lc
 		cancel()
 		return -1
 	}
+	// Publish the done channel so wgTurnProxyStop can wait for every group (and
+	// thus every relayConn.Close() / allocation-delete) to drain.
+	turnMutex.Lock()
+	currentTurnDone = done
+	turnMutex.Unlock()
 
 	// Startup timeout: if no stream completes its DTLS handshake within this
 	// window, the server is unreachable or DTLS is being blocked. Bail out so
@@ -719,15 +854,39 @@ var packetLc net.PacketConn = lc
 	}
 }
 
+// allocationDrainTimeout bounds how long wgTurnProxyStop waits for worker
+// goroutines to unwind (and flush their TURN allocation-delete packets).
+const allocationDrainTimeout = 3 * time.Second
+
 //export wgTurnProxyStop
 func wgTurnProxyStop() {
 	turnMutex.Lock()
-	defer turnMutex.Unlock()
-	if currentTurnCancel != nil {
+	cancel := currentTurnCancel
+	done := currentTurnDone
+	currentTurnCancel = nil
+	currentTurnDone = nil
+	turnMutex.Unlock()
+
+	if cancel != nil {
 		turnLog("[PROXY] Stopping TURN proxy")
-		currentTurnCancel()
-		currentTurnCancel = nil
+		cancel()
+		// Wait (bounded) for worker goroutines to unwind so each stream's
+		// relayConn.Close() runs and sends TURN Refresh(lifetime=0) — this frees
+		// the server-side allocation now instead of letting it linger until its
+		// lifetime expires (which would otherwise eat the per-credential quota
+		// on a quick reconnect).
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(allocationDrainTimeout):
+				turnLog("[PROXY] Stop: allocation drain timed out")
+			}
+		}
 	}
+	// Drop cached credentials so the next connect fetches fresh ones — a fresh
+	// username gets a clean per-credential allocation quota, unaffected by any
+	// allocations still lingering server-side.
+	invalidateAllCaches()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
