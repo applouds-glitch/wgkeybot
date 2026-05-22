@@ -103,10 +103,6 @@
     <string name="dark_theme_summary_on">Hetkel kasutusel tume (öine) teema</string>
     <string name="dark_theme_title">Kasuta tumedat teemat</string>
     <string name="delete">Kustuta</string>
-    <string name="tv_delete">Vali tunnel, mida kustutada</string>
-    <string name="tv_select_a_storage_drive">Vali salvestusseade</string>
-    <string name="tv_no_file_picker">Failide vaatamiseks paigalda failide haldusvahend</string>
-    <string name="tv_add_tunnel_get_started">Alustamiseks lisa uus tunnel</string>
     <string name="donate_title">♥ Anneta WG Turn\'i projektile</string>
     <string name="donate_summary">Iga panus aitab</string>
     <string name="donate_google_play_disappointment">Aitäh, et toetad WG Turn\'i projekti!\n\nKahjuks ei saa me Google\'i eeskirjade tõttu linkida projekti veebilehele, kus saab annetusi teha. Loodetavasti leiad selle ise!\n\n

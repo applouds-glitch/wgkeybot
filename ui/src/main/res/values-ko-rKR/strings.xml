@@ -90,10 +90,6 @@
     <string name="dark_theme_summary_on">다크(야간) 테마 사용 중</string>
     <string name="dark_theme_title">다크 테마 사용하기</string>
     <string name="delete">삭제</string>
-    <string name="tv_delete">삭제할 터널을 선택</string>
-    <string name="tv_select_a_storage_drive">저장소를 선택</string>
-    <string name="tv_no_file_picker">파일을 찾는 데 사용할 파일 관리자를 설치하시오</string>
-    <string name="tv_add_tunnel_get_started">시작하려면 터널을 추가하시오</string>
     <string name="donate_title">♥ WG Turn 프로젝트에 기부해주세요</string>
     <string name="donate_summary">모든 기여가 도움이 됩니다</string>
     <string name="donate_google_play_disappointment">WG Turn 프로젝트를 지원해 주셔서 감사합니다!\n\n안타깝게도 Google 정책으로 인해 프로젝트 웹페이지에서 기부할 수 있는 부분에 대한 링크가 허용되지 않습니다. 이 문제를 해결할 수 있기를 바랍니다!\n\n기여해 주셔서 다시 한번 감사드립니다.</string>

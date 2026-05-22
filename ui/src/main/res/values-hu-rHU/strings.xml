@@ -44,10 +44,6 @@
     <string name="dark_theme_summary_on">A \"dark\" azaz sötét téma van használatban</string>
     <string name="dark_theme_title">A sötét téma használata</string>
     <string name="delete">Törlés</string>
-    <string name="tv_delete">Alagút kiválasztása törlésre</string>
-    <string name="tv_select_a_storage_drive">Jelöjle ki a mentéshez a meghatjót</string>
-    <string name="tv_no_file_picker">Kérem installáljon egy fájlkezelőt az állományok használatához</string>
-    <string name="tv_add_tunnel_get_started">Add hozzá az indításhoz az alagutat</string>
     <string name="donate_title">♥ Kérlek támogasd a WG Turn Projectet</string>
     <string name="donate_summary">Minden hozzájárulás segítség</string>
     <string name="donate_google_play_disappointment">Köszönjük hogy támogatja a WG Turn projektet!\n\nSajnos a Google szabályai miatt, sajnos nem adhatjuk itt meg a támogatásokat fogadó weboldal linkjét. Remélem ezt ki tudod deríteni!\n\nMégegyszer köszönjük a támogatásod.</string>

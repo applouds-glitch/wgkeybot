@@ -90,10 +90,6 @@
     <string name="dark_theme_summary_on">ダークテーマを使用中</string>
     <string name="dark_theme_title">ダークテーマを使用する</string>
     <string name="delete">削除</string>
-    <string name="tv_delete">削除するトンネルを選択</string>
-    <string name="tv_select_a_storage_drive">ストレージを選択</string>
-    <string name="tv_no_file_picker">ファイルを参照するにはファイル管理アプリをインストールしてください</string>
-    <string name="tv_add_tunnel_get_started">トンネルを追加して開始する</string>
     <string name="donate_title">♥ WG Turn プロジェクトに寄付する</string>
     <string name="donate_summary">すべての貢献が役立ちます</string>
     <string name="donate_google_play_disappointment">WG Turn プロジェクトを支援していただきありがとうございます！\n\n残念ながら、Google のポリシーの影響で寄付のページへのリンクを記載することができません。見つけていただけることを願っています。\n\nもう一度、あなたの貢献に深く感謝します。</string>

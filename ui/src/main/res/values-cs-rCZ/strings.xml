@@ -129,10 +129,6 @@
     <string name="dark_theme_summary_on">Aktuálně používáte tmavé (noční) téma</string>
     <string name="dark_theme_title">Použít tmavé téma</string>
     <string name="delete">Smazat</string>
-    <string name="tv_delete">Vyberte tunel k odstranění</string>
-    <string name="tv_select_a_storage_drive">Vyberte úložný disk</string>
-    <string name="tv_no_file_picker">Prosím nainstalujte nástroj pro správu souborů pro procházení souborů</string>
-    <string name="tv_add_tunnel_get_started">Přidejte tunel, abyste mohli začít</string>
     <string name="donate_title">♥ Přispět na projekt WG Turn</string>
     <string name="donate_summary">Každý příspěvek pomáhá</string>
     <string name="donate_google_play_disappointment">Děkujeme, že podporujete projekt WG Turn!\n\nBohužel, kvůli pravidlům Googlu, nám není dovoleno odkazovat na část webové stránky projektu, kde můžete provést dar. Doufáme, že to zvládnete nějakým způsobem!\n\nJeště jednou děkujeme za váš příspěvek.</string>

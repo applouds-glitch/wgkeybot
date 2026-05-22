@@ -102,10 +102,6 @@
     <string name="dark_theme_summary_on">Atualmente a usar tema escuro (noite)</string>
     <string name="dark_theme_title">Usar tema escuro</string>
     <string name="delete">Eliminar</string>
-    <string name="tv_delete">Selecione o túnel para apagar</string>
-    <string name="tv_select_a_storage_drive">Selecione uma unidade de armazenamento</string>
-    <string name="tv_no_file_picker">Por favor, instale um utilitário de gestão de ficheiros para procurar arquivos</string>
-    <string name="tv_add_tunnel_get_started">Adicionar um túnel para começar</string>
     <string name="disable_config_export_title">Desativar exportação de configuração</string>
     <string name="disable_config_export_description">Desativar a exportação de configuração torna as chaves privadas menos acessíveis</string>
     <string name="dns_servers">Servidores de DNS</string>

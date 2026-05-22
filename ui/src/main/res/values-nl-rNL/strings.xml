@@ -103,10 +103,6 @@
     <string name="dark_theme_summary_on">Momenteel wordt donker (nacht) thema gebruikt</string>
     <string name="dark_theme_title">Gebruik donker thema</string>
     <string name="delete">Verwijder</string>
-    <string name="tv_delete">Selecteer tunnel om te verwijderen</string>
-    <string name="tv_select_a_storage_drive">Selecteer een opslaglocatie</string>
-    <string name="tv_no_file_picker">Installeer een bestandsbeheer applicatie</string>
-    <string name="tv_add_tunnel_get_started">Voeg een tunnel toe om te beginnen</string>
     <string name="donate_title">♥️ Doneer aan het WG Turn Project</string>
     <string name="donate_summary">Elke bijdrage helpt</string>
     <string name="donate_google_play_disappointment">Bedankt voor het steunen van het WG Turn Project!\n\nHelaas, als gevolg van Google beleid, We mogen niet linken naar de webpagina van het project waar u een donatie kunt doen. Hopelijk kunt u deze zelf wel vinden!\n\nNogmaals bedankt voor uw bijdrage.</string>
