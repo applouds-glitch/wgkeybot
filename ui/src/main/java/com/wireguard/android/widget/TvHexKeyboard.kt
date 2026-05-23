@@ -73,7 +73,10 @@ class TvHexKeyboard(
             )
         )
         clear()
-        rootView.findViewById<View>(R.id.tv_key_1).requestFocus()
+        // requestFocus() must run after the layout pass; calling it synchronously
+        // right after addView() is a no-op on many TV devices (view not measured yet).
+        val key1 = rootView.findViewById<View>(R.id.tv_key_1)
+        key1.post { key1.requestFocus() }
     }
 
     fun detach() {
