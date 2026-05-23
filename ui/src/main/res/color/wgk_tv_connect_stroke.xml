@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Stroke for the circular connect button on Android TV.
+  ~ Shows a bright accent ring when the button has D-pad focus.
+  -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true" android:color="@color/wgk_primary" />
+    <item android:state_pressed="true" android:color="@color/wgk_primary" />
+    <item android:color="@android:color/transparent" />
+</selector>
