@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Android TV variant of the profile card.
+  ~ Larger icon, bigger buttons (52 dp), larger text.
+  ~ IDs must match layout/view_wgk_profile_card.xml (same ViewBinding class).
+  ~ D-pad chain: ↑ → connect button  ↓ → proxy mode row  ↔ auto-refresh ↔ refresh
+  -->
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <com.google.android.material.card.MaterialCardView
+        style="@style/Widget.WGKeyBot.Card"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:cardCornerRadius="16dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="18dp"
+            android:paddingTop="16dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="16dp">
+
+            <!-- Profile icon: not focusable on TV (log view is secondary) -->
+            <FrameLayout
+                android:id="@+id/wgk_profile_icon"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:clickable="true"
+                android:focusable="false"
+                android:background="@drawable/wgk_profile_tile_bg">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_cloud"
+                    app:tint="@color/wgk_primary" />
+            </FrameLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="14dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/wgk_profile_name"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="@string/wgk_profile_name"
+                    android:textAppearance="?attr/textAppearanceLabelLarge"
+                    android:textAllCaps="true" />
+
+                <TextView
+                    android:id="@+id/wgk_profile_loaded"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textAppearance="?attr/textAppearanceBodyMedium"
+                    android:textAllCaps="false"
+                    android:textColor="@color/wgk_on_surface_variant"
+                    android:text="@string/wgk_profile_never_loaded" />
+            </LinearLayout>
+
+            <!-- Auto-refresh button (52 dp × 52 dp for D-pad) -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/wgk_auto_refresh_btn"
+                style="?attr/materialIconButtonOutlinedStyle"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:layout_marginEnd="8dp"
+                android:focusable="true"
+                android:nextFocusUp="@id/wgk_connect_btn"
+                android:nextFocusLeft="@id/wgk_connect_btn"
+                android:nextFocusRight="@id/wgk_refresh_btn"
+                android:nextFocusDown="@id/wgk_mode_standard_btn"
+                android:contentDescription="@string/wgk_auto_refresh_cd"
+                app:icon="@drawable/ic_auto_renew"
+                app:iconGravity="textTop"
+                app:iconPadding="0dp"
+                app:iconSize="22dp"
+                app:iconTint="@color/wgk_primary"
+                app:strokeColor="@color/wgk_outline" />
+
+            <!-- Refresh button (52 dp × 52 dp for D-pad) -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/wgk_refresh_btn"
+                style="?attr/materialIconButtonOutlinedStyle"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:focusable="true"
+                android:nextFocusUp="@id/wgk_connect_btn"
+                android:nextFocusLeft="@id/wgk_auto_refresh_btn"
+                android:nextFocusDown="@id/wgk_mode_reserve_btn"
+                android:contentDescription="@string/wgk_profile_refresh_cd"
+                app:icon="@drawable/ic_refresh"
+                app:iconGravity="textTop"
+                app:iconPadding="0dp"
+                app:iconSize="22dp"
+                app:iconTint="@color/wgk_primary"
+                app:strokeColor="@color/wgk_outline" />
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+</layout>

@@ -35,6 +35,7 @@
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_1"
             style="@style/TvKeyButton"
+            android:nextFocusLeft="@id/wgk_bot_link_btn"
             android:nextFocusRight="@id/tv_key_2"
             android:nextFocusDown="@id/tv_key_5"
             android:text="1" />

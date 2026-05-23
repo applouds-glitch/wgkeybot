@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Android TV variant of the circular connect button.
+  ~ Adds a bright accent stroke ring when the button gains D-pad focus.
+  ~ IDs must match layout/view_wgk_connect_button.xml (same binding class).
+  -->
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <FrameLayout
+        android:layout_width="260dp"
+        android:layout_height="260dp">
+
+        <View
+            android:layout_width="260dp"
+            android:layout_height="260dp"
+            android:layout_gravity="center"
+            android:alpha="0.18"
+            android:background="@drawable/wgk_ring_outer" />
+
+        <View
+            android:layout_width="224dp"
+            android:layout_height="224dp"
+            android:layout_gravity="center"
+            android:alpha="0.28"
+            android:background="@drawable/wgk_ring_mid" />
+
+        <View
+            android:layout_width="192dp"
+            android:layout_height="192dp"
+            android:layout_gravity="center"
+            android:alpha="0.42"
+            android:background="@drawable/wgk_ring_inner" />
+
+        <com.google.android.material.progressindicator.CircularProgressIndicator
+            android:id="@+id/wgk_busy_arc"
+            android:layout_width="200dp"
+            android:layout_height="200dp"
+            android:layout_gravity="center"
+            android:indeterminate="true"
+            android:visibility="gone"
+            app:indicatorColor="@color/wgk_primary"
+            app:indicatorSize="200dp"
+            app:trackThickness="3dp"
+            app:indeterminateAnimationType="disjoint" />
+
+        <!-- TV: uses ConnectButton.Tv style with accent stroke on focus.
+             nextFocusDown/Right land on the profile card controls. -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/wgk_connect_btn"
+            style="@style/Widget.WGKeyBot.ConnectButton.Tv"
+            android:layout_gravity="center"
+            android:nextFocusDown="@id/wgk_auto_refresh_btn"
+            android:nextFocusRight="@id/wgk_auto_refresh_btn"
+            android:contentDescription="@string/wgk_headline_disconnected"
+            app:backgroundTint="@color/wgk_connect_btn_background_tint"
+            app:icon="@drawable/ic_power"
+            app:iconTint="@color/wgk_connect_btn_icon_tint" />
+    </FrameLayout>
+</layout>
