@@ -4,6 +4,8 @@
  */
 package com.wireguard.android.widget
 
+import android.content.ClipboardManager
+import android.content.Context
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -12,13 +14,21 @@ import androidx.core.view.isVisible
 import com.google.android.material.button.MaterialButton
 import com.wireguard.android.R
 
+/**
+ * D-pad hex keyboard for entering UUID tokens on Android TV.
+ *
+ * The raw token (32 hex chars, lowercase) is kept separately from the
+ * displayed string, which is built fresh on every change as `8-4-4-4-12`
+ * with a `|` cursor marker so users can see where the next character lands.
+ */
 class TvHexKeyboard(
-    context: android.content.Context,
+    private val context: Context,
     private val onConnect: (token: String) -> Unit
 ) {
     val rootView: View
     private val display: TextView
-    private var token = StringBuilder()
+    private val token = StringBuilder()
+    private var cursor: Int = 0
 
     init {
         rootView = LayoutInflater.from(context)
@@ -35,23 +45,26 @@ class TvHexKeyboard(
             rootView.findViewById<MaterialButton>(keyId)
                 .setOnClickListener { appendChar((it as MaterialButton).text.first()) }
         }
+        rootView.findViewById<View>(R.id.tv_key_left)
+            .setOnClickListener { moveLeft() }
+        rootView.findViewById<View>(R.id.tv_key_right)
+            .setOnClickListener { moveRight() }
         rootView.findViewById<View>(R.id.tv_key_backspace)
             .setOnClickListener { backspace() }
         rootView.findViewById<View>(R.id.tv_key_clear)
             .setOnClickListener { clear() }
+        rootView.findViewById<View>(R.id.tv_key_paste)
+            .setOnClickListener { paste() }
         rootView.findViewById<View>(R.id.tv_key_connect)
             .setOnClickListener {
                 val t = token.toString()
-                if (t.length == TOKEN_LENGTH) {
-                    onConnect(formatUuid(t))
-                }
+                if (t.length == TOKEN_LENGTH) onConnect(formatUuid(t))
             }
+        render()
     }
 
     fun attachTo(parent: ViewGroup) {
         detach()
-        // Force a full-width layout regardless of the host's default params so the
-        // weighted hex keys lay out correctly inside any container.
         parent.addView(
             rootView,
             ViewGroup.LayoutParams(
@@ -71,31 +84,89 @@ class TvHexKeyboard(
         rootView.isVisible = visible
     }
 
+    // ── Editing operations ─────────────────────────────────────────────────────
+
     private fun appendChar(c: Char) {
         if (token.length >= TOKEN_LENGTH) return
-        token.append(c.uppercaseChar())
-        display.text = formatUuid(token.toString())
+        if (!c.isHex()) return
+        token.insert(cursor, c.lowercaseChar())
+        cursor++
+        render()
     }
 
     private fun backspace() {
-        if (token.isNotEmpty()) {
-            token.deleteCharAt(token.length - 1)
-            display.text = formatUuid(token.toString())
-        }
+        if (cursor == 0) return
+        token.deleteCharAt(cursor - 1)
+        cursor--
+        render()
     }
 
     private fun clear() {
         token.clear()
-        display.text = ""
+        cursor = 0
+        render()
     }
+
+    private fun moveLeft() {
+        if (cursor > 0) {
+            cursor--
+            render()
+        }
+    }
+
+    private fun moveRight() {
+        if (cursor < token.length) {
+            cursor++
+            render()
+        }
+    }
+
+    private fun paste() {
+        val cm = context.getSystemService(ClipboardManager::class.java) ?: return
+        val raw = cm.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+        // Accept the token with or without dashes / surrounding whitespace.
+        val hex = raw.filter { it.isHex() }.lowercase()
+        if (hex.length != TOKEN_LENGTH) return
+        token.clear()
+        token.append(hex)
+        cursor = token.length
+        render()
+    }
+
+    // ── Display ────────────────────────────────────────────────────────────────
+
+    private fun render() {
+        val raw = token.toString()
+        if (raw.isEmpty()) {
+            // Empty state: leave the field blank so the hint string ("Токен из бота") is visible.
+            display.text = ""
+            return
+        }
+        val sb = StringBuilder()
+        for (i in 0..raw.length) {
+            val atDash = i == 8 || i == 12 || i == 16 || i == 20
+            // Only show a dash if it sits between actual characters, or at the
+            // cursor when the user is parked exactly on the boundary.
+            if (atDash && (i < raw.length || i == cursor)) sb.append('-')
+            if (i == cursor) sb.append('|')
+            if (i < raw.length) sb.append(raw[i])
+        }
+        display.text = sb.toString()
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private fun Char.isHex(): Boolean =
+        this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'
 
     companion object {
         private const val TOKEN_LENGTH = 32
 
+        /** Format a raw 32-char hex string as `8-4-4-4-12`. */
         fun formatUuid(raw: String): String {
             val sb = StringBuilder()
             for ((i, c) in raw.withIndex()) {
-                if (i == 8 || i == 13 || i == 18 || i == 23) sb.append('-')
+                if (i == 8 || i == 12 || i == 16 || i == 20) sb.append('-')
                 sb.append(c)
             }
             return sb.toString()

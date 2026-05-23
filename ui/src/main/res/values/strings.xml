@@ -364,7 +364,8 @@
     <string name="wgk_theme_toggle_cd">Сменить тему</string>
     <string name="wgk_auto_refresh_enabled">Автообновление конфига раз в 12 часов включено</string>
     <string name="wgk_auto_refresh_disabled">Автообновление конфига раз в 12 часов отключено</string>
-    <string name="tv_keyboard_clear">Clear</string>
+    <string name="tv_keyboard_clear">Очистить</string>
+    <string name="wgk_tv_kb_paste">Вставить</string>
     <string name="wgk_token_hint">Токен из бота</string>
     <string name="wgk_token_error_empty">Введите токен</string>
     <string name="wgk_paste_cd">Вставить из буфера</string>

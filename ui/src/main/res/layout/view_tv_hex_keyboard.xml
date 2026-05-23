@@ -9,7 +9,7 @@
     android:layout_height="wrap_content"
     android:orientation="vertical">
 
-    <!-- Token display -->
+    <!-- Token display with `|` cursor marker -->
     <TextView
         android:id="@+id/tv_keyboard_display"
         android:layout_width="match_parent"
@@ -18,11 +18,11 @@
         android:background="@drawable/wgk_token_field_bg"
         android:fontFamily="monospace"
         android:gravity="center"
+        android:hint="@string/wgk_token_hint"
+        android:maxLines="1"
         android:textColor="@color/wgk_on_surface"
         android:textColorHint="@color/wgk_on_surface_variant"
-        android:textSize="14sp"
-        android:hint="@string/wgk_token_hint"
-        android:maxLines="1" />
+        android:textSize="14sp" />
 
     <!-- Row 1: 1 2 3 4 -->
     <LinearLayout
@@ -35,32 +35,32 @@
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_1"
             style="@style/TvKeyButton"
-            android:text="1"
             android:nextFocusRight="@id/tv_key_2"
-            android:nextFocusDown="@id/tv_key_5" />
+            android:nextFocusDown="@id/tv_key_5"
+            android:text="1" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_2"
             style="@style/TvKeyButton"
-            android:text="2"
             android:nextFocusLeft="@id/tv_key_1"
             android:nextFocusRight="@id/tv_key_3"
-            android:nextFocusDown="@id/tv_key_6" />
+            android:nextFocusDown="@id/tv_key_6"
+            android:text="2" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_3"
             style="@style/TvKeyButton"
-            android:text="3"
             android:nextFocusLeft="@id/tv_key_2"
             android:nextFocusRight="@id/tv_key_4"
-            android:nextFocusDown="@id/tv_key_7" />
+            android:nextFocusDown="@id/tv_key_7"
+            android:text="3" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_4"
             style="@style/TvKeyButton"
-            android:text="4"
             android:nextFocusLeft="@id/tv_key_3"
-            android:nextFocusDown="@id/tv_key_8" />
+            android:nextFocusDown="@id/tv_key_8"
+            android:text="4" />
     </LinearLayout>
 
     <!-- Row 2: 5 6 7 8 -->
@@ -74,39 +74,39 @@
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_5"
             style="@style/TvKeyButton"
-            android:text="5"
             android:nextFocusUp="@id/tv_key_1"
             android:nextFocusRight="@id/tv_key_6"
-            android:nextFocusDown="@id/tv_key_9" />
+            android:nextFocusDown="@id/tv_key_9"
+            android:text="5" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_6"
             style="@style/TvKeyButton"
-            android:text="6"
             android:nextFocusUp="@id/tv_key_2"
             android:nextFocusLeft="@id/tv_key_5"
             android:nextFocusRight="@id/tv_key_7"
-            android:nextFocusDown="@id/tv_key_0" />
+            android:nextFocusDown="@id/tv_key_0"
+            android:text="6" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_7"
             style="@style/TvKeyButton"
-            android:text="7"
             android:nextFocusUp="@id/tv_key_3"
             android:nextFocusLeft="@id/tv_key_6"
             android:nextFocusRight="@id/tv_key_8"
-            android:nextFocusDown="@id/tv_key_a" />
+            android:nextFocusDown="@id/tv_key_a"
+            android:text="7" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_8"
             style="@style/TvKeyButton"
-            android:text="8"
             android:nextFocusUp="@id/tv_key_4"
             android:nextFocusLeft="@id/tv_key_7"
-            android:nextFocusDown="@id/tv_key_b" />
+            android:nextFocusDown="@id/tv_key_b"
+            android:text="8" />
     </LinearLayout>
 
-    <!-- Row 3: 9 0 A B -->
+    <!-- Row 3: 9 0 a b -->
     <LinearLayout
         android:id="@+id/tv_keyboard_row3"
         android:layout_width="match_parent"
@@ -117,39 +117,39 @@
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_9"
             style="@style/TvKeyButton"
-            android:text="9"
             android:nextFocusUp="@id/tv_key_5"
             android:nextFocusRight="@id/tv_key_0"
-            android:nextFocusDown="@id/tv_key_c" />
+            android:nextFocusDown="@id/tv_key_c"
+            android:text="9" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_0"
             style="@style/TvKeyButton"
-            android:text="0"
             android:nextFocusUp="@id/tv_key_6"
             android:nextFocusLeft="@id/tv_key_9"
             android:nextFocusRight="@id/tv_key_a"
-            android:nextFocusDown="@id/tv_key_d" />
+            android:nextFocusDown="@id/tv_key_d"
+            android:text="0" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_a"
             style="@style/TvKeyButton"
-            android:text="A"
             android:nextFocusUp="@id/tv_key_7"
             android:nextFocusLeft="@id/tv_key_0"
             android:nextFocusRight="@id/tv_key_b"
-            android:nextFocusDown="@id/tv_key_e" />
+            android:nextFocusDown="@id/tv_key_e"
+            android:text="a" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_b"
             style="@style/TvKeyButton"
-            android:text="B"
             android:nextFocusUp="@id/tv_key_8"
             android:nextFocusLeft="@id/tv_key_a"
-            android:nextFocusDown="@id/tv_key_f" />
+            android:nextFocusDown="@id/tv_key_f"
+            android:text="b" />
     </LinearLayout>
 
-    <!-- Row 4: C D E F -->
+    <!-- Row 4: c d e f -->
     <LinearLayout
         android:id="@+id/tv_keyboard_row4"
         android:layout_width="match_parent"
@@ -160,39 +160,39 @@
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_c"
             style="@style/TvKeyButton"
-            android:text="C"
             android:nextFocusUp="@id/tv_key_9"
             android:nextFocusRight="@id/tv_key_d"
-            android:nextFocusDown="@id/tv_key_backspace" />
+            android:nextFocusDown="@id/tv_key_left"
+            android:text="c" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_d"
             style="@style/TvKeyButton"
-            android:text="D"
             android:nextFocusUp="@id/tv_key_0"
             android:nextFocusLeft="@id/tv_key_c"
             android:nextFocusRight="@id/tv_key_e"
-            android:nextFocusDown="@id/tv_key_clear" />
+            android:nextFocusDown="@id/tv_key_right"
+            android:text="d" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_e"
             style="@style/TvKeyButton"
-            android:text="E"
             android:nextFocusUp="@id/tv_key_a"
             android:nextFocusLeft="@id/tv_key_d"
             android:nextFocusRight="@id/tv_key_f"
-            android:nextFocusDown="@id/tv_key_connect" />
+            android:nextFocusDown="@id/tv_key_backspace"
+            android:text="e" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_f"
             style="@style/TvKeyButton"
-            android:text="F"
             android:nextFocusUp="@id/tv_key_b"
             android:nextFocusLeft="@id/tv_key_e"
-            android:nextFocusDown="@id/tv_key_connect" />
+            android:nextFocusDown="@id/tv_key_clear"
+            android:text="f" />
     </LinearLayout>
 
-    <!-- Row 5: Backspace / Clear / Connect -->
+    <!-- Row 5: ← → ⌫ Clear -->
     <LinearLayout
         android:id="@+id/tv_keyboard_row5"
         android:layout_width="match_parent"
@@ -201,35 +201,64 @@
         android:orientation="horizontal">
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/tv_key_left"
+            style="@style/TvKeyButton.Action"
+            android:nextFocusUp="@id/tv_key_c"
+            android:nextFocusRight="@id/tv_key_right"
+            android:nextFocusDown="@id/tv_key_paste"
+            android:text="←" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/tv_key_right"
+            style="@style/TvKeyButton.Action"
+            android:nextFocusUp="@id/tv_key_d"
+            android:nextFocusLeft="@id/tv_key_left"
+            android:nextFocusRight="@id/tv_key_backspace"
+            android:nextFocusDown="@id/tv_key_paste"
+            android:text="→" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_backspace"
             style="@style/TvKeyButton.Action"
-            android:layout_width="0dp"
-            android:layout_weight="1"
-            android:text="⌫"
-            android:nextFocusUp="@id/tv_key_c"
+            android:nextFocusUp="@id/tv_key_e"
+            android:nextFocusLeft="@id/tv_key_right"
             android:nextFocusRight="@id/tv_key_clear"
-            android:nextFocusDown="@id/tv_key_backspace" />
+            android:nextFocusDown="@id/tv_key_connect"
+            android:text="⌫" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_clear"
             style="@style/TvKeyButton.Action"
-            android:layout_width="0dp"
-            android:layout_weight="1"
-            android:text="@string/tv_keyboard_clear"
-            android:nextFocusUp="@id/tv_key_d"
+            android:nextFocusUp="@id/tv_key_f"
             android:nextFocusLeft="@id/tv_key_backspace"
+            android:nextFocusDown="@id/tv_key_connect"
+            android:text="@string/tv_keyboard_clear" />
+    </LinearLayout>
+
+    <!-- Row 6: Paste | Connect (1 : 2 weighted) -->
+    <LinearLayout
+        android:id="@+id/tv_keyboard_row6"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/tv_key_paste"
+            style="@style/TvKeyButton.Action"
+            android:layout_weight="1"
+            android:nextFocusUp="@id/tv_key_left"
             android:nextFocusRight="@id/tv_key_connect"
-            android:nextFocusDown="@id/tv_key_clear" />
+            android:nextFocusDown="@id/tv_key_paste"
+            android:text="@string/wgk_tv_kb_paste" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/tv_key_connect"
             style="@style/TvKeyButton.Connect"
-            android:layout_width="0dp"
-            android:layout_weight="1"
-            android:text="@string/wgk_connect_action"
-            android:nextFocusUp="@id/tv_key_e"
-            android:nextFocusLeft="@id/tv_key_clear"
-            android:nextFocusDown="@id/tv_key_connect" />
+            android:layout_weight="2"
+            android:nextFocusUp="@id/tv_key_clear"
+            android:nextFocusLeft="@id/tv_key_paste"
+            android:nextFocusDown="@id/tv_key_connect"
+            android:text="@string/wgk_connect_action" />
     </LinearLayout>
 
 </LinearLayout>
