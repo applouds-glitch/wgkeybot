@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-  ~ Stroke colour for TV D-pad keys: bright accent border only while focused.
+  ~ Text colour for TV action keys. Inverts to wgk_primary while focused.
   -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_focused="true" android:color="@color/wgk_primary" />
     <item android:state_pressed="true" android:color="@color/wgk_primary" />
-    <item android:color="@android:color/transparent" />
+    <item android:color="@color/wgk_on_surface" />
 </selector>

@@ -38,25 +38,28 @@
         <item name="android:textStyle">bold</item>
         <item name="android:fontFamily">monospace</item>
         <item name="cornerRadius">8dp</item>
-        <!-- Bright border appears only while the key is D-pad focused -->
+        <!-- Focused key inverts (white fill, primary text) and gains a thick
+             primary border so it's instantly identifiable from across the room. -->
+        <item name="backgroundTint">@color/wgk_tv_key_bg</item>
+        <item name="android:textColor">@color/wgk_tv_key_text</item>
         <item name="strokeColor">@color/wgk_tv_key_stroke</item>
-        <item name="strokeWidth">2dp</item>
+        <item name="strokeWidth">4dp</item>
     </style>
 
     <style name="TvKeyButton.Action" parent="TvKeyButton">
         <item name="android:textSize">14sp</item>
         <item name="android:textStyle">normal</item>
         <item name="android:fontFamily">sans-serif</item>
-        <item name="backgroundTint">@color/wgk_surface_container_high</item>
-        <item name="android:textColor">@color/wgk_on_surface</item>
+        <item name="backgroundTint">@color/wgk_tv_key_action_bg</item>
+        <item name="android:textColor">@color/wgk_tv_key_action_text</item>
     </style>
 
     <style name="TvKeyButton.Connect" parent="TvKeyButton">
         <item name="android:textSize">14sp</item>
         <item name="android:textStyle">normal</item>
         <item name="android:fontFamily">sans-serif</item>
-        <item name="backgroundTint">@color/wgk_primary</item>
-        <item name="android:textColor">@color/wgk_on_primary</item>
+        <!-- Inherits backgroundTint/textColor from TvKeyButton so the focus
+             inversion applies identically to the Connect key. -->
     </style>
 
     <style name="NoBackgroundTheme" parent="AppTheme">
