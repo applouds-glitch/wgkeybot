@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -293,7 +294,9 @@ class TunnelListFragment : BaseFragment() {
     }
 
     private fun isTv(): Boolean {
-        return requireContext().packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+        val uiType = resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK
+        return uiType == Configuration.UI_MODE_TYPE_TELEVISION ||
+               requireContext().packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
     }
 
     private fun showNoAuthContainer(b: TunnelListFragmentBinding, expired: Boolean) {
