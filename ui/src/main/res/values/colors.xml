@@ -65,6 +65,9 @@
     <color name="md_theme_dark_outlineVariant">#44474F</color>
     <color name="md_theme_dark_scrim">#000000</color>
 
+    <!-- TV splash background: always dark so there is no white flash on startup -->
+    <color name="wgk_tv_bg_splash">#FF0D0F12</color>
+
     <!-- WGKeyBot Connect screen — light palette -->
     <color name="wgk_primary">#FF005BC0</color>
     <color name="wgk_on_primary">#FFFFFFFF</color>

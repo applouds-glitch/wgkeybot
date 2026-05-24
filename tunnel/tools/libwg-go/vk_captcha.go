@@ -13,7 +13,7 @@ import "C"
 
 import (
 	"context"
-	"crypto/md5"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -24,6 +24,7 @@ import (
 	"math"
 	"math/rand"
 	neturl "net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,30 @@ import (
 // captcha, so the HTTP/checkbox path cannot solve it and a slider-aware
 // solver (slider POC or WebView) must run instead.
 var errSliderDetected = errors.New("slider_detected")
+
+// errCaptchaBot is returned when the VK API responds with status "bot" on a
+// checkbox check, signalling the account looks automated and a harder
+// challenge (slider) should be tried instead.
+var errCaptchaBot = errors.New("captcha_bot")
+
+// captchaDebugInfoCache caches debug_info strings keyed by script URL so we
+// only fetch the JS once per unique script version.
+var captchaDebugInfoCache sync.Map
+
+var (
+	reCaptchaScriptSrc = regexp.MustCompile(`src="(https://[^"]+not_robot_captcha[^"]+)"`)
+	reCaptchaDebugInfo = regexp.MustCompile(`debug_info:(?:[^"]*\|\|)?"([a-fA-F0-9]{64})"`)
+)
+
+// captchaHeaderOrder mirrors a real Chrome HTTP/2 header order so VK's bot
+// detector sees a plausible browser fingerprint.
+var captchaHeaderOrder = []string{
+	"host", "content-length", "sec-ch-ua-platform", "accept-language",
+	"sec-ch-ua", "content-type", "sec-ch-ua-mobile", "user-agent",
+	"accept", "origin", "sec-fetch-site", "sec-fetch-mode",
+	"sec-fetch-dest", "referer", "accept-encoding", "priority",
+}
+var captchaPHeaderOrder = []string{":method", ":path", ":authority", ":scheme"}
 
 type VkCaptchaError struct {
 	ErrorCode               int
@@ -227,12 +252,6 @@ func solveVkCaptchaAutomatic(ctx context.Context, streamID int, client tlsclient
 */
 
 func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID int, client tlsclient.HttpClient, profile Profile, useSliderPOC bool) (string, error) {
-	if useSliderPOC {
-		turnLog("[STREAM %d] [Captcha] Solving captcha with slider POC...", streamID)
-	} else {
-		turnLog("[STREAM %d] [Captcha] Solving captcha...", streamID)
-	}
-
 	if captchaErr.SessionToken == "" {
 		return "", fmt.Errorf("no session_token in redirect_uri for auto-solve")
 	}
@@ -240,36 +259,84 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID in
 		return "", fmt.Errorf("no redirect_uri for auto-solve")
 	}
 
+	const maxAttempts = 2
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		token, err := solveVkCaptchaOnce(ctx, captchaErr, streamID, client, profile, useSliderPOC)
+		if err == nil {
+			return token, nil
+		}
+		turnLog("[STREAM %d] [Captcha] attempt %d/%d failed: %v", streamID, attempt, maxAttempts, err)
+		if attempt < maxAttempts {
+			backoff := time.Duration(attempt) * 500 * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		return "", err
+	}
+	return "", fmt.Errorf("captcha attempts exhausted")
+}
+
+func solveVkCaptchaOnce(ctx context.Context, captchaErr *VkCaptchaError, streamID int, client tlsclient.HttpClient, profile Profile, useSliderPOC bool) (string, error) {
+	if useSliderPOC {
+		turnLog("[STREAM %d] [Captcha] Solving captcha with slider POC...", streamID)
+	} else {
+		turnLog("[STREAM %d] [Captcha] Solving captcha...", streamID)
+	}
+
 	bootstrap, err := fetchCaptchaBootstrap(ctx, captchaErr.RedirectURI, client, profile)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch captcha bootstrap: %w", err)
 	}
 
-	turnLog("[STREAM %d] [Captcha] PoW input: %s, difficulty: %d", streamID, bootstrap.PowInput, bootstrap.Difficulty)
-
-	hash := solvePoW(bootstrap.PowInput, bootstrap.Difficulty)
-	turnLog("[STREAM %d] [Captcha] PoW solved: hash=%s", streamID, hash)
-
-	var successToken string
-	if useSliderPOC {
-		successToken, err = callCaptchaNotRobotWithSliderPOC(
-			ctx,
-			captchaErr.SessionToken,
-			hash,
-			streamID,
-			client,
-			profile,
-			bootstrap.Settings,
-		)
-	} else {
-		successToken, err = callCaptchaNotRobot(ctx, captchaErr.SessionToken, hash, streamID, client, profile)
+	turnLog("[STREAM %d] [Captcha] PoW difficulty: %d", streamID, bootstrap.Difficulty)
+	hash := solvePoW(ctx, bootstrap.PowInput, bootstrap.Difficulty)
+	if hash == "" {
+		return "", fmt.Errorf("PoW solve failed or cancelled")
 	}
+	turnLog("[STREAM %d] [Captcha] PoW solved", streamID)
+
+	debugInfo, err := fetchDebugInfoFromScript(ctx, bootstrap.ScriptURL, client, profile)
 	if err != nil {
-		return "", fmt.Errorf("captchaNotRobot API failed: %w", err)
+		turnLog("[STREAM %d] [Captcha] Warning: could not fetch debug_info dynamically: %v — using fallback", streamID, err)
+		debugInfo = captchaDebugInfo
 	}
 
-	turnLog("[STREAM %d] [Captcha] Success! Got success_token", streamID)
-	return successToken, nil
+	if useSliderPOC {
+		successToken, err := callCaptchaNotRobotWithSliderPOC(
+			ctx, captchaErr.SessionToken, hash, debugInfo, streamID, client, profile, bootstrap.Settings,
+		)
+		if err != nil {
+			return "", fmt.Errorf("captchaNotRobot slider POC failed: %w", err)
+		}
+		turnLog("[STREAM %d] [Captcha] Success! Got success_token (slider POC)", streamID)
+		return successToken, nil
+	}
+
+	successToken, err := callCaptchaNotRobot(ctx, captchaErr.SessionToken, hash, debugInfo, streamID, client, profile)
+	if err == nil {
+		turnLog("[STREAM %d] [Captcha] Success! Got success_token", streamID)
+		return successToken, nil
+	}
+
+	// If checkbox returned bot/slider-detected and slider settings exist, try slider
+	if (errors.Is(err, errCaptchaBot) || errors.Is(err, errSliderDetected)) && bootstrap.Settings != nil {
+		if _, hasSlider := bootstrap.Settings.SettingsByType[sliderCaptchaType]; hasSlider {
+			turnLog("[STREAM %d] [Captcha] Checkbox failed (%v) — escalating to slider POC", streamID, err)
+			successToken, sliderErr := callCaptchaNotRobotWithSliderPOC(
+				ctx, captchaErr.SessionToken, hash, debugInfo, streamID, client, profile, bootstrap.Settings,
+			)
+			if sliderErr != nil {
+				return "", fmt.Errorf("captchaNotRobot slider POC failed: %w", sliderErr)
+			}
+			turnLog("[STREAM %d] [Captcha] Success! Got success_token (slider POC after bot escalation)", streamID)
+			return successToken, nil
+		}
+	}
+
+	return "", fmt.Errorf("captchaNotRobot API failed: %w", err)
 }
 
 func applyBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
@@ -294,10 +361,12 @@ func randomViewport() captchaViewport {
 	return captchaViewport{Width: widths[idx], Height: heights[idx]}
 }
 
-func generateBrowserFp(profile Profile, vp captchaViewport) string {
-	data := fmt.Sprintf("%s%s%dx%dx24%d", profile.UserAgent, profile.SecChUa, vp.Width, vp.Height, time.Now().UnixNano())
-	h := md5.Sum([]byte(data))
-	return fmt.Sprintf("%x", h)
+func generateBrowserFp(_ Profile, _ captchaViewport) string {
+	b := make([]byte, 16)
+	if _, err := cryptorand.Read(b); err != nil {
+		return fmt.Sprintf("%x", rand.Int63())
+	}
+	return hex.EncodeToString(b)
 }
 
 // generateHumanCursor produces a realistic mouse trajectory with returns, pauses, and micro-jitter.
@@ -432,11 +501,20 @@ func buildCaptchaDeviceJSON(profile Profile, vp captchaViewport) string {
 	)
 }
 
-func solvePoW(powInput string, difficulty int) string {
+func solvePoW(ctx context.Context, powInput string, difficulty int) string {
+	if powInput == "" || difficulty <= 0 {
+		return ""
+	}
 	target := strings.Repeat("0", difficulty)
 	for nonce := 1; nonce <= 10000000; nonce++ {
-		data := powInput + strconv.Itoa(nonce)
-		hash := sha256.Sum256([]byte(data))
+		if nonce%4096 == 0 {
+			select {
+			case <-ctx.Done():
+				return ""
+			default:
+			}
+		}
+		hash := sha256.Sum256([]byte(powInput + strconv.Itoa(nonce)))
 		hexHash := hex.EncodeToString(hash[:])
 		if strings.HasPrefix(hexHash, target) {
 			return hexHash
@@ -445,39 +523,78 @@ func solvePoW(powInput string, difficulty int) string {
 	return ""
 }
 
-func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamID int, client tlsclient.HttpClient, profile Profile) (string, error) {
+// fetchDebugInfoFromScript downloads the captcha JS bundle and extracts the
+// debug_info hash embedded in it.  Results are cached by script URL so we only
+// pay the fetch cost once per unique script version.
+func fetchDebugInfoFromScript(ctx context.Context, scriptURL string, client tlsclient.HttpClient, profile Profile) (string, error) {
+	if scriptURL == "" {
+		return "", fmt.Errorf("empty script URL")
+	}
+	if cached, ok := captchaDebugInfoCache.Load(scriptURL); ok {
+		if v, ok := cached.(string); ok {
+			return v, nil
+		}
+		captchaDebugInfoCache.Delete(scriptURL)
+	}
+
+	req, err := fhttp.NewRequestWithContext(ctx, "GET", scriptURL, nil)
+	if err != nil {
+		return "", err
+	}
+	applyBrowserProfileFhttp(req, profile)
+	req.Header.Set("Accept", "text/javascript,*/*")
+	req.Header.Set("Referer", "https://id.vk.ru/")
+	req.Header.Set("Sec-Fetch-Site", "same-site")
+	req.Header.Set("Sec-Fetch-Mode", "no-cors")
+	req.Header.Set("Sec-Fetch-Dest", "script")
+	req.Header[fhttp.HeaderOrderKey] = captchaHeaderOrder
+	req.Header[fhttp.PHeaderOrderKey] = captchaPHeaderOrder
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	m := reCaptchaDebugInfo.FindSubmatch(body)
+	if len(m) < 2 {
+		return "", fmt.Errorf("debug_info not found in captcha script")
+	}
+	v := string(m[1])
+	captchaDebugInfoCache.Store(scriptURL, v)
+	turnLog("[Captcha] debug_info fetched from script: %.12s...", v)
+	return v, nil
+}
+
+func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo string, streamID int, client tlsclient.HttpClient, profile Profile) (string, error) {
 	vkReq := func(method string, postData string) (map[string]interface{}, error) {
 		reqURL := "https://api.vk.ru/method/" + method + "?v=5.131"
-		parsedURL, err := neturl.Parse(reqURL)
-		if err != nil {
-			return nil, fmt.Errorf("parse request URL: %w", err)
-		}
-		domain := parsedURL.Hostname()
-
 		req, err := fhttp.NewRequestWithContext(ctx, "POST", reqURL, strings.NewReader(postData))
 		if err != nil {
 			return nil, err
 		}
-
-		req.Host = domain
 		applyBrowserProfileFhttp(req, profile)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "*/*")
-		req.Header.Set("Origin", "https://id.vk.ru")
-		req.Header.Set("Referer", "https://id.vk.ru/")
+		req.Header.Set("Origin", "https://id.vk.com")
+		req.Header.Set("Referer", "https://id.vk.com/")
 		req.Header.Set("Sec-Fetch-Site", "same-site")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
-		req.Header.Set("Sec-GPC", "1")
 		req.Header.Set("Priority", "u=1, i")
+		req.Header[fhttp.HeaderOrderKey] = captchaHeaderOrder
+		req.Header[fhttp.PHeaderOrderKey] = captchaPHeaderOrder
 
 		httpResp, err := client.Do(req)
 		if err != nil {
 			return nil, err
 		}
-		defer func(Body io.ReadCloser) {
-			_ = Body.Close()
-		}(httpResp.Body)
+		defer func() { _ = httpResp.Body.Close() }()
 
 		body, err := io.ReadAll(httpResp.Body)
 		if err != nil {
@@ -522,9 +639,6 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 	cursorJSON := generateHumanCursor()
 	answer := base64.StdEncoding.EncodeToString([]byte("{}"))
 
-	debugInfoBytes := md5.Sum([]byte(profile.UserAgent + strconv.FormatInt(time.Now().UnixNano(), 10)))
-	debugInfo := hex.EncodeToString(debugInfoBytes[:])
-
 	accelJSON := generateSensorNoise()
 	gyroJSON := generateGyroNoise()
 	connRtt, connDownlink := generateConnectionMetrics()
@@ -546,8 +660,14 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 	if !ok {
 		return "", fmt.Errorf("invalid check response: %v", checkResp)
 	}
-	status, ok := respObj["status"].(string)
-	if !ok || status != "OK" {
+	status, _ := respObj["status"].(string)
+	switch strings.ToUpper(status) {
+	case "OK":
+		// continue below
+	case "BOT":
+		turnLog("[STREAM %d] [Captcha] check returned BOT status", streamID)
+		return "", errCaptchaBot
+	default:
 		return "", fmt.Errorf("check status: %s", status)
 	}
 	successToken, ok := respObj["success_token"].(string)
@@ -558,8 +678,7 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 	time.Sleep(time.Duration(180+rand.Intn(80)) * time.Millisecond)
 
 	turnLog("[STREAM %d] [Captcha] Step 4/4: endSession", streamID)
-	_, err = vkReq("captchaNotRobot.endSession", baseParams)
-	if err != nil {
+	if _, err := vkReq("captchaNotRobot.endSession", baseParams); err != nil {
 		turnLog("[STREAM %d] [Captcha] Warning: endSession failed: %v", streamID, err)
 	}
 

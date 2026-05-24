@@ -6,8 +6,8 @@ package com.wireguard.android.activity
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.KeyEvent
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatDelegate
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.commit
 import androidx.appcompat.app.AppCompatActivity
@@ -26,9 +26,6 @@ class TvMainActivity : AppCompatActivity() {
     private var selectedTunnel: ObservableTunnel? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        if (AppCompatDelegate.getDefaultNightMode() != AppCompatDelegate.MODE_NIGHT_YES) {
-            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
-        }
         super.onCreate(savedInstanceState)
 
         setContentView(R.layout.tv_main_activity)
@@ -39,6 +36,14 @@ class TvMainActivity : AppCompatActivity() {
             }
         }
         handleDeeplinkIntent(intent)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val listFragment = supportFragmentManager.fragments
+            .filterIsInstance<com.wireguard.android.fragment.TunnelListFragment>()
+            .firstOrNull()
+        if (listFragment?.dispatchKeyEvent(event) == true) return true
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onNewIntent(intent: Intent) {

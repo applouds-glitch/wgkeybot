@@ -8,6 +8,7 @@ import android.animation.ObjectAnimator
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.res.ColorStateList
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
@@ -362,6 +363,10 @@ class TunnelListFragment : BaseFragment() {
         }
     }
 
+    /** Forward physical keyboard events to the TV hex keyboard when it is visible. */
+    fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean =
+        tvKeyboard?.takeIf { it.rootView.isVisible }?.handleKey(event) == true
+
     private fun initWithToken(token: String) {
         val b = binding ?: return
         val auth = AuthStore.getInstance(requireContext())
@@ -688,8 +693,10 @@ class TunnelListFragment : BaseFragment() {
     }
 
     private fun syncConfigLoadedAt() {
-        val ts = prefs().getLong(KEY_CONFIG_LOADED_AT, 0L)
-        if (ts != 0L) vm.setConfigLoadedAt(ts)
+        lifecycleScope.launch {
+            val ts = withContext(Dispatchers.IO) { prefs().getLong(KEY_CONFIG_LOADED_AT, 0L) }
+            if (ts != 0L) vm.setConfigLoadedAt(ts)
+        }
     }
 
     private fun prefs(): SharedPreferences {
@@ -871,13 +878,43 @@ class TunnelListFragment : BaseFragment() {
         val prefs = requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
         val stability = checkedId == R.id.wgk_mode_reserve_btn
         prefs.edit().putBoolean(KEY_STABILITY_MODE, stability).apply()
+        updateReserveButtonAppearance(stability)
+        if (stability) showReserveModeWarning()
+    }
+
+    private fun showReserveModeWarning() {
+        val b = binding ?: return
+        val snackbar = Snackbar.make(b.mainContainer, getString(R.string.turn_reserve_mode_warning), Snackbar.LENGTH_LONG)
+        snackbar.setBackgroundTint(ContextCompat.getColor(requireContext(), R.color.wgk_warning))
+        snackbar.setTextColor(android.graphics.Color.WHITE)
+        snackbar.show()
     }
 
     private fun updateProxyModeGroup() {
-        val group = binding?.wgkFooterRow?.wgkProxyModeGroup ?: return
-        val prefs = requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
-        val stability = prefs.getBoolean(KEY_STABILITY_MODE, false)
-        group.check(if (stability) R.id.wgk_mode_reserve_btn else R.id.wgk_mode_standard_btn)
+        lifecycleScope.launch {
+            val ctx = requireContext()
+            val stability = withContext(Dispatchers.IO) {
+                ctx.getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
+                    .getBoolean(KEY_STABILITY_MODE, false)
+            }
+            val group = binding?.wgkFooterRow?.wgkProxyModeGroup ?: return@launch
+            group.check(if (stability) R.id.wgk_mode_reserve_btn else R.id.wgk_mode_standard_btn)
+            updateReserveButtonAppearance(stability)
+        }
+    }
+
+    private fun updateReserveButtonAppearance(isReserve: Boolean) {
+        val btn = binding?.wgkFooterRow?.wgkModeReserveBtn ?: return
+        val warningColor = ContextCompat.getColor(requireContext(), R.color.wgk_warning)
+        val normalColor = ContextCompat.getColor(requireContext(), R.color.wgk_on_surface_variant)
+        val outlineColor = ContextCompat.getColor(requireContext(), R.color.wgk_outline)
+        if (isReserve) {
+            btn.setTextColor(warningColor)
+            btn.strokeColor = ColorStateList.valueOf(warningColor)
+        } else {
+            btn.setTextColor(normalColor)
+            btn.strokeColor = ColorStateList.valueOf(outlineColor)
+        }
     }
 
     companion object {

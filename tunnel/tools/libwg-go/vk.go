@@ -300,7 +300,16 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	}
 	turnLog("[VK Auth] Token 1 (anonym_token) received")
 
-	vkDelayRandom(500, 1000)
+	vkDelayRandom(100, 150)
+
+	// getCallPreview — имитация поведения VK-клиента перед запросом токена звонка
+	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&fields=photo_200&access_token=%s", link, token1)
+	_, err = doRequest(data, fmt.Sprintf("https://api.vk.ru/method/calls.getCallPreview?v=5.275&client_id=%s", creds.ClientID))
+	if err != nil {
+		turnLog("[VK Auth] getCallPreview warning: %v", err)
+	}
+
+	vkDelayRandom(200, 400)
 
 	// Token 2
 	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
@@ -502,7 +511,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 
 	turnLog("[VK Auth] Token 2 (messages token) received")
 
-	vkDelayRandom(100, 200)
+	vkDelayRandom(100, 150)
 
 	// Token 3
 	sessionData := fmt.Sprintf(`{"version":2,"device_id":"%s","client_version":1.1,"client_type":"SDK_JS"}`, uuid.New())
@@ -524,7 +533,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	}
 	turnLog("[VK Auth] Token 3 (session_key) received")
 
-	vkDelayRandom(100, 200)
+	vkDelayRandom(100, 150)
 
 	// Token 4 -> TURN Creds
 	data = fmt.Sprintf("joinLink=%s&isVideo=false&protocolVersion=5&capabilities=2F7F&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=CGMMEJLGDIHBABABA&session_key=%s", neturl.QueryEscape(link), token2, token3)
@@ -604,8 +613,6 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 		return keys
 	}())
 	turnLog("[VK Auth] TURN lifetime from API: %ds", lifetimeSecs)
-
-	vkDelayRandom(5000, 5000)
 
 	return username, credential, address, lifetimeSecs, nil
 }

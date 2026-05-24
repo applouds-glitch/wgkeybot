@@ -90,8 +90,11 @@ class Application : android.app.Application() {
         }
         DynamicColors.applyToActivitiesIfAvailable(this)
         preferencesDataStore = PreferenceDataStoreFactory.create { applicationContext.preferencesDataStoreFile("settings") }
+        val isTvDevice = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) ==
+                android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
         AppCompatDelegate.setDefaultNightMode(
-            when (AuthStore.getInstance(this).getThemeMode()) {
+            if (isTvDevice) AppCompatDelegate.MODE_NIGHT_YES
+            else when (AuthStore.getInstance(this).getThemeMode()) {
                 "light" -> AppCompatDelegate.MODE_NIGHT_NO
                 "dark"  -> AppCompatDelegate.MODE_NIGHT_YES
                 else    -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM

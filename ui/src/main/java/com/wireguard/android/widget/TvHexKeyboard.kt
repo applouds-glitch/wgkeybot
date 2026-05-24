@@ -6,6 +6,7 @@ package com.wireguard.android.widget
 
 import android.content.ClipboardManager
 import android.content.Context
+import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -85,6 +86,36 @@ class TvHexKeyboard(
 
     fun setVisible(visible: Boolean) {
         rootView.isVisible = visible
+    }
+
+    /**
+     * Handle a physical keyboard event. Returns true if the event was consumed.
+     * Call this from Activity.dispatchKeyEvent so USB/BT keyboards work alongside D-pad.
+     */
+    fun handleKey(event: KeyEvent): Boolean {
+        if (event.action != KeyEvent.ACTION_DOWN) return false
+        // Ctrl/Alt combos — don't interfere.
+        if (event.isCtrlPressed || event.isAltPressed) return false
+
+        // Backspace / Delete
+        if (event.keyCode == KeyEvent.KEYCODE_DEL ||
+            event.keyCode == KeyEvent.KEYCODE_FORWARD_DEL) {
+            backspace(); return true
+        }
+        // Enter / numpad Enter → connect if complete
+        if (event.keyCode == KeyEvent.KEYCODE_ENTER ||
+            event.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+            if (token.length == TOKEN_LENGTH) onConnect(formatUuid(token.toString()))
+            return true
+        }
+        // Paste shortcut Ctrl+V — handled by caller (Ctrl already filtered above);
+        // plain V is a hex digit, falls through to unicodeChar below.
+
+        // Printable character: convert to unicode and check if it's a hex digit.
+        val ch = event.unicodeChar.toChar()
+        if (ch.isHex()) { appendChar(ch); return true }
+
+        return false
     }
 
     // ── Editing operations ─────────────────────────────────────────────────────
