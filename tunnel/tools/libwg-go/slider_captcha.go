@@ -11,11 +11,15 @@ import (
 	_ "image/jpeg"
 	"io"
 	"log"
+	"math"
+	mathrand "math/rand"
 	neturl "net/url"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -32,6 +36,7 @@ type captchaNotRobotSession struct {
 	ctx          context.Context
 	sessionToken string
 	hash         string
+	debugInfo    string
 	streamID     int
 	client       tlsclient.HttpClient
 	profile      Profile
@@ -57,21 +62,27 @@ type sliderCaptchaContent struct {
 }
 
 type sliderCandidate struct {
-	Index       int
-	ActiveSteps []int
-	Score       int64
+	Index         int
+	ActiveSteps   []int
+	Score         int64
+	ScoreLuma     int64
+	ScoreRGB      int64
+	ScoreText     float64
+	ConsensusRank int
 }
 
 type captchaBootstrap struct {
 	PowInput   string
 	Difficulty int
 	Settings   *captchaSettingsResponse
+	ScriptURL  string
 }
 
 func newCaptchaNotRobotSession(
 	ctx context.Context,
 	sessionToken string,
 	hash string,
+	debugInfo string,
 	streamID int,
 	client tlsclient.HttpClient,
 	profile Profile,
@@ -80,6 +91,7 @@ func newCaptchaNotRobotSession(
 		ctx:          ctx,
 		sessionToken: sessionToken,
 		hash:         hash,
+		debugInfo:    debugInfo,
 		streamID:     streamID,
 		client:       client,
 		profile:      profile,
@@ -103,6 +115,17 @@ func (s *captchaNotRobotSession) request(method string, values neturl.Values) (m
 	if err != nil {
 		return nil, err
 	}
+	applyBrowserProfileFhttp(req, s.profile)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Origin", "https://id.vk.com")
+	req.Header.Set("Referer", "https://id.vk.com/")
+	req.Header.Set("Sec-Fetch-Site", "same-site")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Priority", "u=1, i")
+	req.Header[fhttp.HeaderOrderKey] = captchaHeaderOrder
+	req.Header[fhttp.PHeaderOrderKey] = captchaPHeaderOrder
 
 	httpResp, err := s.client.Do(req)
 	if err != nil {
@@ -190,7 +213,7 @@ func (s *captchaNotRobotSession) requestCheck(cursor string, answer string) (*ca
 	values.Set("browser_fp", s.browserFp)
 	values.Set("hash", s.hash)
 	values.Set("answer", answer)
-	values.Set("debug_info", captchaDebugInfo)
+	values.Set("debug_info", s.debugInfo)
 
 	resp, err := s.request("captchaNotRobot.check", values)
 	if err != nil {
@@ -210,12 +233,13 @@ func callCaptchaNotRobotWithSliderPOC(
 	ctx context.Context,
 	sessionToken string,
 	hash string,
+	debugInfo string,
 	streamID int,
 	client tlsclient.HttpClient,
 	profile Profile,
 	initialSettings *captchaSettingsResponse,
 ) (string, error) {
-	session := newCaptchaNotRobotSession(ctx, sessionToken, hash, streamID, client, profile)
+	session := newCaptchaNotRobotSession(ctx, sessionToken, hash, debugInfo, streamID, client, profile)
 
 	log.Printf("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
 	settingsResp, err := session.requestSettings()
@@ -379,10 +403,16 @@ func parseCaptchaBootstrapHTML(html string) (*captchaBootstrap, error) {
 		return nil, err
 	}
 
+	var scriptURL string
+	if m := reCaptchaScriptSrc.FindStringSubmatch(html); len(m) >= 2 {
+		scriptURL = m[1]
+	}
+
 	return &captchaBootstrap{
 		PowInput:   powInputMatch[1],
 		Difficulty: difficulty,
 		Settings:   settings,
+		ScriptURL:  scriptURL,
 	}, nil
 }
 
@@ -693,173 +723,404 @@ func rankSliderCandidates(img image.Image, gridSize int, swaps []int) ([]sliderC
 		return nil, fmt.Errorf("slider has no candidates")
 	}
 
-	candidates := make([]sliderCandidate, 0, candidateCount)
+	candidates := make([]sliderCandidate, candidateCount)
+
+	// Stage 1: luma seam score for all candidates.
 	for idx := 1; idx <= candidateCount; idx++ {
 		activeSteps := buildSliderActiveSteps(swaps, idx)
 		mapping, err := buildSliderTileMapping(gridSize, activeSteps)
 		if err != nil {
 			return nil, err
 		}
-
-		score, err := scoreSliderCandidate(img, gridSize, mapping)
-		if err != nil {
-			return nil, err
-		}
-
-		candidates = append(candidates, sliderCandidate{
+		candidates[idx-1] = sliderCandidate{
 			Index:       idx,
 			ActiveSteps: activeSteps,
-			Score:       score,
-		})
+			ScoreLuma:   seamScoreLuma(img, gridSize, mapping),
+		}
+	}
+
+	lumaOrder := append([]sliderCandidate(nil), candidates...)
+	sort.SliceStable(lumaOrder, func(i, j int) bool {
+		if lumaOrder[i].ScoreLuma == lumaOrder[j].ScoreLuma {
+			return lumaOrder[i].Index < lumaOrder[j].Index
+		}
+		return lumaOrder[i].ScoreLuma < lumaOrder[j].ScoreLuma
+	})
+	lumaRank := make(map[int]int, candidateCount)
+	for rank, g := range lumaOrder {
+		lumaRank[g.Index] = rank
+	}
+
+	// Stage 2: RGB + Gaussian text score for top-12 candidates, in parallel.
+	stage2Count := candidateCount
+	if stage2Count > 12 {
+		stage2Count = 12
+	}
+	stage2Set := make(map[int]struct{}, stage2Count)
+	for i := 0; i < stage2Count; i++ {
+		stage2Set[lumaOrder[i].Index] = struct{}{}
+	}
+
+	type stage2Result struct {
+		index int
+		rgb   int64
+		text  float64
+		err   error
+	}
+	jobs := make([]int, 0, stage2Count)
+	for idx := range stage2Set {
+		jobs = append(jobs, idx)
+	}
+	jobCh := make(chan int, len(jobs))
+	resCh := make(chan stage2Result, len(jobs))
+
+	workers := runtime.NumCPU()
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(jobs) {
+		workers = len(jobs)
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobCh {
+				mapping, err := buildSliderTileMapping(gridSize, candidates[index-1].ActiveSteps)
+				if err != nil {
+					resCh <- stage2Result{index: index, err: err}
+					continue
+				}
+				rgb, text := seamScoreRGBText(img, gridSize, mapping)
+				resCh <- stage2Result{index: index, rgb: rgb, text: text}
+			}
+		}()
+	}
+	for _, idx := range jobs {
+		jobCh <- idx
+	}
+	close(jobCh)
+	wg.Wait()
+	close(resCh)
+	for r := range resCh {
+		if r.err != nil {
+			return nil, r.err
+		}
+		g := &candidates[r.index-1]
+		g.ScoreRGB = r.rgb
+		g.ScoreText = r.text
+	}
+
+	// Build RGB and text ranks within the stage-2 set.
+	stage2 := make([]sliderCandidate, 0, stage2Count)
+	for _, g := range candidates {
+		if _, ok := stage2Set[g.Index]; ok {
+			stage2 = append(stage2, g)
+		}
+	}
+	rgbOrder := append([]sliderCandidate(nil), stage2...)
+	sort.SliceStable(rgbOrder, func(i, j int) bool {
+		if rgbOrder[i].ScoreRGB == rgbOrder[j].ScoreRGB {
+			return rgbOrder[i].Index < rgbOrder[j].Index
+		}
+		return rgbOrder[i].ScoreRGB < rgbOrder[j].ScoreRGB
+	})
+	rgbRank := make(map[int]int, len(rgbOrder))
+	for rank, g := range rgbOrder {
+		rgbRank[g.Index] = rank
+	}
+
+	textOrder := append([]sliderCandidate(nil), stage2...)
+	sort.SliceStable(textOrder, func(i, j int) bool {
+		if textOrder[i].ScoreText == textOrder[j].ScoreText {
+			return textOrder[i].Index < textOrder[j].Index
+		}
+		return textOrder[i].ScoreText < textOrder[j].ScoreText
+	})
+	textRank := make(map[int]int, len(textOrder))
+	for rank, g := range textOrder {
+		textRank[g.Index] = rank
+	}
+
+	// Consensus: sum of all available ranks.
+	for i := range candidates {
+		g := &candidates[i]
+		g.ConsensusRank = lumaRank[g.Index]
+		if _, ok := stage2Set[g.Index]; ok {
+			g.ConsensusRank += rgbRank[g.Index] + textRank[g.Index]
+		} else {
+			g.ConsensusRank += candidateCount
+		}
+		g.Score = int64(g.ConsensusRank)
 	}
 
 	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].Score == candidates[j].Score {
-			return candidates[i].Index < candidates[j].Index
+		if candidates[i].ConsensusRank == candidates[j].ConsensusRank {
+			if candidates[i].ScoreLuma == candidates[j].ScoreLuma {
+				return candidates[i].Index < candidates[j].Index
+			}
+			return candidates[i].ScoreLuma < candidates[j].ScoreLuma
 		}
-		return candidates[i].Score < candidates[j].Score
+		return candidates[i].ConsensusRank < candidates[j].ConsensusRank
 	})
 
 	return candidates, nil
 }
 
-func scoreSliderCandidate(img image.Image, gridSize int, mapping []int) (int64, error) {
-	rendered, err := renderSliderCandidate(img, gridSize, mapping)
-	if err != nil {
-		return 0, err
-	}
-
-	return scoreRenderedSliderImage(rendered, gridSize), nil
-}
-
-func renderSliderCandidate(img image.Image, gridSize int, mapping []int) (*image.RGBA, error) {
-	if gridSize <= 0 {
-		return nil, fmt.Errorf("invalid grid size: %d", gridSize)
-	}
-
-	tileCount := gridSize * gridSize
-	if len(mapping) != tileCount {
-		return nil, fmt.Errorf("unexpected tile mapping length: %d", len(mapping))
-	}
-
-	bounds := img.Bounds()
-	rendered := image.NewRGBA(bounds)
-	for dstIndex, srcIndex := range mapping {
-		srcRect := sliderTileRect(bounds, gridSize, srcIndex)
-		dstRect := sliderTileRect(bounds, gridSize, dstIndex)
-		copyScaledTile(rendered, dstRect, img, srcRect)
-	}
-
-	return rendered, nil
-}
-
-func scoreRenderedSliderImage(img image.Image, gridSize int) int64 {
+// seamScoreLuma scores a candidate by luminance discontinuity at tile boundaries.
+func seamScoreLuma(img image.Image, gridSize int, mapping []int) int64 {
 	bounds := img.Bounds()
 	var score int64
 
 	for row := 0; row < gridSize; row++ {
 		for col := 0; col < gridSize-1; col++ {
-			leftRect := sliderTileRect(bounds, gridSize, row*gridSize+col)
-			rightRect := sliderTileRect(bounds, gridSize, row*gridSize+col+1)
-			height := minInt(leftRect.Dy(), rightRect.Dy())
-			for offset := 0; offset < height; offset++ {
-				score += pixelDiff(
-					img.At(leftRect.Max.X-1, leftRect.Min.Y+offset),
-					img.At(rightRect.Min.X, rightRect.Min.Y+offset),
-				)
+			li, ri := row*gridSize+col, row*gridSize+col+1
+			lDst := sliderTileRect(bounds, gridSize, li)
+			rDst := sliderTileRect(bounds, gridSize, ri)
+			lSrc := sliderTileRect(bounds, gridSize, mapping[li])
+			rSrc := sliderTileRect(bounds, gridSize, mapping[ri])
+			h := minInt(lDst.Dy(), rDst.Dy())
+			for y := 0; y < h; y++ {
+				yy := lDst.Min.Y + y
+				a := sampleLumaMapped(img, lDst, lSrc, lDst.Max.X-1, yy)
+				b := sampleLumaMapped(img, rDst, rSrc, rDst.Min.X, yy)
+				d := int(a) - int(b)
+				if d < 0 {
+					d = -d
+				}
+				score += int64(d)
 			}
 		}
 	}
-
 	for row := 0; row < gridSize-1; row++ {
 		for col := 0; col < gridSize; col++ {
-			topRect := sliderTileRect(bounds, gridSize, row*gridSize+col)
-			bottomRect := sliderTileRect(bounds, gridSize, (row+1)*gridSize+col)
-			width := minInt(topRect.Dx(), bottomRect.Dx())
-			for offset := 0; offset < width; offset++ {
-				score += pixelDiff(
-					img.At(topRect.Min.X+offset, topRect.Max.Y-1),
-					img.At(bottomRect.Min.X+offset, bottomRect.Min.Y),
-				)
+			ti, bi := row*gridSize+col, (row+1)*gridSize+col
+			tDst := sliderTileRect(bounds, gridSize, ti)
+			bDst := sliderTileRect(bounds, gridSize, bi)
+			tSrc := sliderTileRect(bounds, gridSize, mapping[ti])
+			bSrc := sliderTileRect(bounds, gridSize, mapping[bi])
+			w := minInt(tDst.Dx(), bDst.Dx())
+			for x := 0; x < w; x++ {
+				xx := tDst.Min.X + x
+				a := sampleLumaMapped(img, tDst, tSrc, xx, tDst.Max.Y-1)
+				b := sampleLumaMapped(img, bDst, bSrc, xx, bDst.Min.Y)
+				d := int(a) - int(b)
+				if d < 0 {
+					d = -d
+				}
+				score += int64(d)
 			}
 		}
 	}
-
 	return score
 }
 
-func sliderTileRect(bounds image.Rectangle, gridSize int, index int) image.Rectangle {
-	row := index / gridSize
-	col := index % gridSize
-
-	x0 := bounds.Min.X + col*bounds.Dx()/gridSize
-	x1 := bounds.Min.X + (col+1)*bounds.Dx()/gridSize
-	y0 := bounds.Min.Y + row*bounds.Dy()/gridSize
-	y1 := bounds.Min.Y + (row+1)*bounds.Dy()/gridSize
-
-	return image.Rect(x0, y0, x1, y1)
-}
-
-func copyScaledTile(dst *image.RGBA, dstRect image.Rectangle, src image.Image, srcRect image.Rectangle) {
-	if dstRect.Empty() || srcRect.Empty() {
-		return
+// seamScoreRGBText scores by RGB discontinuity plus a Gaussian-weighted text score
+// (text rows sit near 20%, 50%, 80% of image height).
+func seamScoreRGBText(img image.Image, gridSize int, mapping []int) (int64, float64) {
+	bounds := img.Bounds()
+	height := float64(bounds.Dy())
+	textCenters := [3]float64{
+		float64(bounds.Min.Y) + 0.2*height,
+		float64(bounds.Min.Y) + 0.5*height,
+		float64(bounds.Min.Y) + 0.8*height,
+	}
+	sigma := height * 0.14
+	if sigma < 1.0 {
+		sigma = 1.0
+	}
+	weight := func(y int) float64 {
+		yf := float64(y)
+		best := math.Abs(yf - textCenters[0])
+		for i := 1; i < 3; i++ {
+			if d := math.Abs(yf - textCenters[i]); d < best {
+				best = d
+			}
+		}
+		return 1 + 3*math.Exp(-(best*best)/(2*sigma*sigma))
 	}
 
-	dstWidth := dstRect.Dx()
-	dstHeight := dstRect.Dy()
-	srcWidth := srcRect.Dx()
-	srcHeight := srcRect.Dy()
+	var rgbScore int64
+	var textScore float64
 
-	for y := 0; y < dstHeight; y++ {
-		sy := srcRect.Min.Y + y*srcHeight/dstHeight
-		for x := 0; x < dstWidth; x++ {
-			sx := srcRect.Min.X + x*srcWidth/dstWidth
-			dst.Set(dstRect.Min.X+x, dstRect.Min.Y+y, src.At(sx, sy))
+	for row := 0; row < gridSize; row++ {
+		for col := 0; col < gridSize-1; col++ {
+			li, ri := row*gridSize+col, row*gridSize+col+1
+			lDst := sliderTileRect(bounds, gridSize, li)
+			rDst := sliderTileRect(bounds, gridSize, ri)
+			lSrc := sliderTileRect(bounds, gridSize, mapping[li])
+			rSrc := sliderTileRect(bounds, gridSize, mapping[ri])
+			h := minInt(lDst.Dy(), rDst.Dy())
+			for y := 0; y < h; y++ {
+				yy := lDst.Min.Y + y
+				l := sampleColorMapped(img, lDst, lSrc, lDst.Max.X-1, yy)
+				r := sampleColorMapped(img, rDst, rSrc, rDst.Min.X, yy)
+				rgbScore += pixelDiff(l, r)
+				_, _, lb, _ := l.RGBA()
+				_, _, rb, _ := r.RGBA()
+				ld, rd := int(lb>>8), int(rb>>8)
+				diff := ld - rd
+				if diff < 0 {
+					diff = -diff
+				}
+				textScore += weight(yy) * float64(diff)
+			}
 		}
 	}
+	for row := 0; row < gridSize-1; row++ {
+		for col := 0; col < gridSize; col++ {
+			ti, bi := row*gridSize+col, (row+1)*gridSize+col
+			tDst := sliderTileRect(bounds, gridSize, ti)
+			bDst := sliderTileRect(bounds, gridSize, bi)
+			tSrc := sliderTileRect(bounds, gridSize, mapping[ti])
+			bSrc := sliderTileRect(bounds, gridSize, mapping[bi])
+			w := minInt(tDst.Dx(), bDst.Dx())
+			for x := 0; x < w; x++ {
+				xx := tDst.Min.X + x
+				t := sampleColorMapped(img, tDst, tSrc, xx, tDst.Max.Y-1)
+				b := sampleColorMapped(img, bDst, bSrc, xx, bDst.Min.Y)
+				rgbScore += pixelDiff(t, b)
+				_, _, tb, _ := t.RGBA()
+				_, _, bb, _ := b.RGBA()
+				td, bd := int(tb>>8), int(bb>>8)
+				diff := td - bd
+				if diff < 0 {
+					diff = -diff
+				}
+				textScore += 0.65 * float64(diff)
+			}
+		}
+	}
+	return rgbScore, textScore
+}
+
+func sampleColorMapped(img image.Image, dstRect, srcRect image.Rectangle, dstX, dstY int) color.Color {
+	dx := dstRect.Dx()
+	if dx < 1 {
+		dx = 1
+	}
+	dy := dstRect.Dy()
+	if dy < 1 {
+		dy = 1
+	}
+	sx := srcRect.Min.X + (dstX-dstRect.Min.X)*srcRect.Dx()/dx
+	sy := srcRect.Min.Y + (dstY-dstRect.Min.Y)*srcRect.Dy()/dy
+	return img.At(sx, sy)
+}
+
+func sampleLumaMapped(img image.Image, dstRect, srcRect image.Rectangle, dstX, dstY int) uint8 {
+	c := sampleColorMapped(img, dstRect, srcRect, dstX, dstY)
+	r, g, b, _ := c.RGBA()
+	y := (299*(r>>8) + 587*(g>>8) + 114*(b>>8)) / 1000
+	return uint8(y)
+}
+
+func sliderTileRect(bounds image.Rectangle, gridSize int, index int) image.Rectangle {
+	w := bounds.Dx() / gridSize
+	h := bounds.Dy() / gridSize
+	col := index % gridSize
+	row := index / gridSize
+	return image.Rect(
+		bounds.Min.X+col*w,
+		bounds.Min.Y+row*h,
+		bounds.Min.X+(col+1)*w,
+		bounds.Min.Y+(row+1)*h,
+	)
 }
 
 func pixelDiff(left color.Color, right color.Color) int64 {
 	lr, lg, lb, _ := left.RGBA()
 	rr, rg, rb, _ := right.RGBA()
-
-	return absDiff(lr, rr) + absDiff(lg, rg) + absDiff(lb, rb)
-}
-
-func absDiff(left uint32, right uint32) int64 {
-	if left > right {
-		return int64(left - right)
+	dr := int64(lr>>8) - int64(rr>>8)
+	dg := int64(lg>>8) - int64(rg>>8)
+	db := int64(lb>>8) - int64(rb>>8)
+	if dr < 0 {
+		dr = -dr
 	}
-	return int64(right - left)
+	if dg < 0 {
+		dg = -dg
+	}
+	if db < 0 {
+		db = -db
+	}
+	return dr + dg + db
 }
 
 func generateSliderCursor(candidateIndex int, candidateCount int) string {
-	return buildSliderCursor(candidateIndex, candidateCount, time.Now().Add(-220*time.Millisecond).UnixMilli())
+	return buildSliderCursor(candidateIndex, candidateCount)
 }
 
-func buildSliderCursor(candidateIndex int, candidateCount int, startTime int64) string {
+func buildSliderCursor(candidateIndex int, candidateCount int) string {
 	if candidateCount <= 0 {
 		return "[]"
 	}
-
-	type cursorPoint struct {
-		X int   `json:"x"`
-		Y int   `json:"y"`
-		T int64 `json:"t"`
+	if candidateIndex < 1 {
+		candidateIndex = 1
+	}
+	if candidateIndex > candidateCount {
+		candidateIndex = candidateCount
 	}
 
-	startX := 140
-	endX := startX + 620*candidateIndex/candidateCount
-	startY := 430
+	type cursorPoint struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	}
 
-	points := make([]cursorPoint, 0, 12)
-	for step := 0; step < 12; step++ {
-		x := startX + (endX-startX)*step/11
-		y := startY + ((step % 3) - 1)
+	startX := 570 + mathrand.Intn(40)
+	startY := 875 + mathrand.Intn(30)
+
+	denom := candidateCount - 1
+	if denom < 1 {
+		denom = 1
+	}
+	baseTargetX := 734 + (937-734)*(candidateIndex-1)/denom
+	targetX := baseTargetX + mathrand.Intn(10) - 5
+	targetY := 655 + mathrand.Intn(14)
+
+	points := make([]cursorPoint, 0, 28)
+
+	// Initial hover near start position.
+	for i := 0; i < 1+mathrand.Intn(3); i++ {
 		points = append(points, cursorPoint{
-			X: x,
-			Y: y,
-			T: startTime + int64(step*18),
+			X: startX + mathrand.Intn(5) - 2,
+			Y: startY + mathrand.Intn(5) - 2,
+		})
+	}
+
+	// Quadratic Bézier arc from start to target.
+	transitSteps := 2 + mathrand.Intn(3)
+	arcOffX := mathrand.Intn(60) - 30
+	arcOffY := -(mathrand.Intn(30) + 10)
+	for i := 1; i <= transitSteps; i++ {
+		t := float64(i) / float64(transitSteps+1)
+		cx := float64(startX+targetX)/2 + float64(arcOffX)
+		cy := float64(startY+targetY)/2 + float64(arcOffY)
+		bx := (1-t)*(1-t)*float64(startX) + 2*t*(1-t)*cx + t*t*float64(targetX)
+		by := (1-t)*(1-t)*float64(startY) + 2*t*(1-t)*cy + t*t*float64(targetY)
+		jitter := int((1-t)*8) + 2
+		points = append(points, cursorPoint{
+			X: int(math.Round(bx)) + mathrand.Intn(jitter*2+1) - jitter,
+			Y: int(math.Round(by)) + mathrand.Intn(jitter*2+1) - jitter,
+		})
+	}
+
+	// Fine approach to target.
+	approachSteps := 4 + mathrand.Intn(4)
+	prev := points[len(points)-1]
+	for i := 1; i <= approachSteps; i++ {
+		t := float64(i) / float64(approachSteps)
+		ax := prev.X + int(math.Round(t*float64(targetX-prev.X))) + mathrand.Intn(5) - 2
+		ay := prev.Y + int(math.Round(t*float64(targetY-prev.Y))) + mathrand.Intn(5) - 2
+		points = append(points, cursorPoint{X: ax, Y: ay})
+	}
+
+	// Settle at destination.
+	settleCount := 3 + mathrand.Intn(5)
+	for i := 0; i < settleCount; i++ {
+		points = append(points, cursorPoint{
+			X: targetX + mathrand.Intn(7) - 3,
+			Y: targetY + mathrand.Intn(7) - 3,
 		})
 	}
 

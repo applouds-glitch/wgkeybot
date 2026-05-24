@@ -90,9 +90,13 @@ object SecureFileStorage {
     fun write(context: Context, file: File, bytes: ByteArray) {
         file.parentFile?.mkdirs()
         // EncryptedFile.openFileOutput requires the destination not to exist.
-        if (file.exists() && !file.delete()) {
-            throw IllegalStateException("Cannot replace existing file: ${file.path}")
+        // Synchronize to prevent a TOCTOU race when two coroutines write the same file concurrently:
+        // both could see exists()==false, both proceed to openFileOutput(), and the second one crashes.
+        synchronized(this) {
+            if (file.exists() && !file.delete()) {
+                throw IllegalStateException("Cannot replace existing file: ${file.path}")
+            }
+            encryptedFile(context, file).openFileOutput().use { it.write(bytes) }
         }
-        encryptedFile(context, file).openFileOutput().use { it.write(bytes) }
     }
 }

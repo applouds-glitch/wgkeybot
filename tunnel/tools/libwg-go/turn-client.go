@@ -890,10 +890,10 @@ func wgTurnProxyStop() {
 			}
 		}
 	}
-	// Drop cached credentials so the next connect fetches fresh ones — a fresh
-	// username gets a clean per-credential allocation quota, unaffected by any
-	// allocations still lingering server-side.
-	invalidateAllCaches()
+	// Credential caches are intentionally preserved across stops so an immediate
+	// reconnect gets a cache hit and avoids a fresh VK API round-trip (and captcha).
+	// If old TURN allocations lingered (drain timed out) and the quota is exhausted,
+	// WorkerGroup's 486 handler calls invalidateGroupCreds → rotation automatically.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
