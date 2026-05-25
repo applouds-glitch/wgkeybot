@@ -120,6 +120,35 @@ var stunBindingIndication = []byte{
 
 const iPacketBuffMaxSize = 2048
 
+// sendSessionHSBurst sends the 17-byte session header burstCount times
+// with burstGap between sends. The redundancy survives UDP loss and gives
+// the server multiple chances to receive the header before the first WG
+// packet arrives — without it, a single race or drop costs a full 5s WG
+// handshake retry (and with 3 hashes commonly compounds to ~15s).
+func (s *stream) sendSessionHSBurst(relayConn net.PacketConn, peer net.Addr, sessionHS []byte, hasWrap bool) error {
+	const burstCount = 3
+	const burstGap = 50 * time.Millisecond
+	for i := 0; i < burstCount; i++ {
+		var payload []byte
+		if hasWrap {
+			enc, err := wrapPacket(s.wrapKey, sessionHS)
+			if err != nil {
+				return fmt.Errorf("session handshake wrap #%d: %w", i+1, err)
+			}
+			payload = enc
+		} else {
+			payload = sessionHS
+		}
+		if _, err := relayConn.WriteTo(payload, peer); err != nil {
+			return fmt.Errorf("session handshake send #%d: %w", i+1, err)
+		}
+		if i < burstCount-1 {
+			time.Sleep(burstGap)
+		}
+	}
+	return nil
+}
+
 var packetPool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, iPacketBuffMaxSize)
@@ -159,25 +188,17 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 
 	// Session handshake: 17-byte header (sessionID + streamID). Kept in
 	// sessionHS so the keepalive goroutine can re-announce it periodically.
+	// Sent in a small burst so a single UDP drop or server-side scheduling
+	// race doesn't push the first WG packet ahead of the registered stream.
 	var sessionHS []byte
 	if s.sessionID != nil {
 		sessionHS = make([]byte, 17)
 		copy(sessionHS[:16], s.sessionID)
 		sessionHS[16] = byte(s.id)
-		var payload []byte
-		if hasWrap {
-			var hErr error
-			payload, hErr = wrapPacket(s.wrapKey, sessionHS)
-			if hErr != nil {
-				return fmt.Errorf("session handshake wrap: %w", hErr)
-			}
-		} else {
-			payload = sessionHS
+		if hErr := s.sendSessionHSBurst(relayConn, peer, sessionHS, hasWrap); hErr != nil {
+			return hErr
 		}
-		if _, hErr := relayConn.WriteTo(payload, peer); hErr != nil {
-			return fmt.Errorf("session handshake send: %w", hErr)
-		}
-		turnLog("[STREAM %d] Session handshake sent", s.id)
+		turnLog("[STREAM %d] Session handshake burst sent", s.id)
 	}
 
 	// Cancelling sCtx (watchdog, error, parent stop) closes the relay conn so
@@ -355,11 +376,10 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	}
 
 	// Give the server a moment to process the session handshake before
-	// we mark the stream as ready. Without this pause the first WG
-	// handshake packet can reach the server ahead of the session
-	// announcement, the server drops it, and we wait through WG's 15 s
-	// retry timer — a spurious startup delay.
-	time.Sleep(300 * time.Millisecond)
+	// we mark the stream as ready. Reduced from 300ms because the burst
+	// above already gives the server 3 chances spread across ~100ms; only
+	// a short tail wait is needed for the last burst packet to land.
+	time.Sleep(200 * time.Millisecond)
 
 	s.ready.Store(true)
 	s.okFunc()
@@ -504,14 +524,25 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	dtlsConn.SetDeadline(time.Time{})
 	turnLog("[STREAM %d] DTLS handshake OK", s.id)
 
-	// Session + stream ID handshake (proxy_v2 only)
+	// Session + stream ID handshake (proxy_v2 only). Sent as a small burst
+	// for the same reason as runNoDTLS — even though DTLS is ordered, the
+	// server's handleConn does the session-ID parse on the first record only,
+	// so a missed/delayed first record can stall the stream. Duplicates after
+	// the first are skipped server-side (17-byte filter).
 	if sendHandshake {
 		dtlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		buf := make([]byte, 17)
 		copy(buf[:16], s.sessionID)
 		buf[16] = byte(s.id)
-		if _, err := dtlsConn.Write(buf); err != nil {
-			return fmt.Errorf("session handshake failed: %w", err)
+		const burstCount = 3
+		const burstGap = 50 * time.Millisecond
+		for i := 0; i < burstCount; i++ {
+			if _, err := dtlsConn.Write(buf); err != nil {
+				return fmt.Errorf("session handshake send #%d: %w", i+1, err)
+			}
+			if i < burstCount-1 {
+				time.Sleep(burstGap)
+			}
 		}
 		dtlsConn.SetWriteDeadline(time.Time{})
 	}

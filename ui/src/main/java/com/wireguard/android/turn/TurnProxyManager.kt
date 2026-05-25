@@ -8,13 +8,10 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
-import android.os.Build
 import android.util.Log
 import com.wireguard.android.backend.TurnBackend
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -22,7 +19,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.collectLatest
-import java.net.Inet4Address
 
 /**
  * Lightweight manager for per-tunnel TURN client processes and logs.
@@ -174,10 +170,6 @@ class TurnProxyManager(private val context: Context) {
         return true
     }
 
-    suspend fun startForTunnel(tunnelName: String, settings: TurnSettings): Boolean {
-        return startForTunnelInternal(tunnelName, settings)
-    }
-    
     private suspend fun startForTunnelInternal(tunnelName: String, settings: TurnSettings): Boolean =
         withContext(Dispatchers.IO) {
             operationMutex.lock()

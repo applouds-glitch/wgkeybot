@@ -203,6 +203,11 @@ class TunnelManager(
         UserKnobs.setRunningTunnels(tunnelMap.filter { it.state == Tunnel.State.UP }.map { it.name }.toSet())
     }
 
+    /** Names of currently-UP tunnels minus [excludedName] — used to persist a "going DOWN" state pre-emptively. */
+    private fun runningTunnelNamesExcluding(excludedName: String): Set<String> =
+        tunnelMap.filter { it.state == Tunnel.State.UP && it.name != excludedName }
+            .map { it.name }.toSet()
+
     suspend fun setTunnelConfig(
         tunnel: ObservableTunnel,
         config: Config,
@@ -309,10 +314,7 @@ class TunnelManager(
             // restoreState() would read stale runningTunnels and auto-reconnect.
             // Writing {} here (after DataStore edit() commits) eliminates that race window.
             if (shouldStopTurn) {
-                UserKnobs.setRunningTunnels(
-                    tunnelMap.filter { it.state == Tunnel.State.UP && it.name != tunnel.name }
-                        .map { it.name }.toSet()
-                )
+                UserKnobs.setRunningTunnels(runningTunnelNamesExcluding(tunnel.name))
             }
 
             if (turnEnabled && shouldStartTurn) {
@@ -356,10 +358,7 @@ class TunnelManager(
                         Log.w(TAG, "No WireGuard handshake within ${HANDSHAKE_TIMEOUT_MS}ms — aborting ${tunnel.name}")
                         // Persist DOWN before teardown so an AlwaysOn restart can't read
                         // stale runningTunnels and immediately reconnect into the same fail.
-                        UserKnobs.setRunningTunnels(
-                            tunnelMap.filter { it.state == Tunnel.State.UP && it.name != tunnel.name }
-                                .map { it.name }.toSet()
-                        )
+                        UserKnobs.setRunningTunnels(runningTunnelNamesExcluding(tunnel.name))
                         newState = withContext(Dispatchers.IO) { getBackend().setState(tunnel, Tunnel.State.DOWN, null) }
                         if (turnEnabled)
                             withContext(Dispatchers.IO) { getTurnProxyManager().stopForTunnel(tunnel.name) }

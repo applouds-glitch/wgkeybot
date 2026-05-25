@@ -20,7 +20,6 @@ import android.text.style.RelativeSizeSpan
 import android.text.style.TypefaceSpan
 import android.view.Menu
 import android.view.MenuItem
-import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.addCallback
@@ -46,7 +45,6 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener {
     private var actionBar: ActionBar? = null
-    private var isTwoPaneLayout = false
     private var backPressedCallback: OnBackPressedCallback? = null
 
     private val batteryOptLauncher =
@@ -54,7 +52,6 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
 
     private fun handleBackPressed() {
         val backStackEntries = supportFragmentManager.backStackEntryCount
-        if (isTwoPaneLayout && backStackEntries <= 1) { finish(); return }
         if (backStackEntries >= 1) supportFragmentManager.popBackStack()
         if (backStackEntries == 1) selectedTunnel = null
     }
@@ -63,8 +60,7 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         val backStackEntries = supportFragmentManager.backStackEntryCount
         backPressedCallback?.isEnabled = backStackEntries >= 1
         if (actionBar == null) return
-        val minBackStackEntries = if (isTwoPaneLayout) 2 else 1
-        actionBar!!.setDisplayHomeAsUpEnabled(backStackEntries >= minBackStackEntries)
+        actionBar!!.setDisplayHomeAsUpEnabled(backStackEntries >= 1)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -81,7 +77,6 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
                 it.setSpan(ForegroundColorSpan(Color.parseColor("#80909090")), 0, it.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
             }
         }
-        isTwoPaneLayout = findViewById<View?>(R.id.master_detail_wrapper) != null
         supportFragmentManager.addOnBackStackChangedListener(this)
         backPressedCallback = onBackPressedDispatcher.addCallback(this) { handleBackPressed() }
         onBackStackChanged()
@@ -210,7 +205,7 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
             fragmentManager.popBackStackImmediate()
         } else if (backStackEntries == 0) {
             fragmentManager.commit {
-                add(if (isTwoPaneLayout) R.id.detail_container else R.id.list_detail_container, TunnelDetailFragment())
+                add(R.id.list_detail_container, TunnelDetailFragment())
                 setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
                 addToBackStack(null)
             }
