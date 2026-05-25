@@ -154,8 +154,17 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			}
 
 			packetsInChunk++
+			// Broadcast the WG source addr to every stream — not just the one
+			// we picked for TX. The server's backendLoop round-robins peer
+			// responses across ALL registered streams (sorted by ID, chunked),
+			// so a stream that never saw a TX still needs to know where to
+			// forward an RX packet. Without this, ~7 of every 8 data packets
+			// after the first 8 are dropped client-side, triggering WG's 15s
+			// retry-handshake timer even though the tunnel is otherwise healthy.
 			returnAddr := addr
-			s.peer.Store(&returnAddr)
+			for _, st := range allStreams {
+				st.peer.Store(&returnAddr)
+			}
 			select {
 			case s.in <- b[:nRead]:
 			default:

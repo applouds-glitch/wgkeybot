@@ -98,7 +98,22 @@ data class TurnSettings(
                 peerType = if (noDtlsLegacy) "wireguard" else "proxy_v2"
             }
 
-            return if (foundAny) TurnSettings(enabled, peer, vkLink, mode, streams, useUdp, localPort, turnIp, turnPort, peerType, streamsPerCred, watchdogTimeout, wrapKey = wrapKey, fallbackStreams = fallbackStreams) else null
+            return if (foundAny) TurnSettings(
+                enabled = enabled,
+                peer = peer,
+                vkLink = vkLink,
+                mode = mode,
+                streams = streams,
+                useUdp = useUdp,
+                localPort = localPort,
+                turnIp = turnIp,
+                turnPort = turnPort,
+                peerType = peerType,
+                streamsPerCred = streamsPerCred,
+                watchdogTimeout = watchdogTimeout,
+                wrapKey = wrapKey,
+                fallbackStreams = fallbackStreams,
+            ) else null
         }
 
         fun validate(settings: TurnSettings): TurnSettings {
