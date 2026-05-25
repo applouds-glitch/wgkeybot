@@ -41,15 +41,32 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build with Gradle
-        run: ./gradlew :ui:assembleRelease --stacktrace
-
-      - name: Get version from gradle.properties
+      - name: Derive version
         id: version
         run: |
-          VERSION_NAME=$(grep wireguardVersionName gradle.properties | cut -d'=' -f2)
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION_NAME="${GITHUB_REF_NAME#v}"
+            if ! [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Tag '$GITHUB_REF_NAME' is not a strict vMAJOR.MINOR.PATCH semver"
+              exit 1
+            fi
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_NAME"
+            VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          else
+            VERSION_NAME=$(grep wireguardVersionName gradle.properties | cut -d'=' -f2)
+            VERSION_CODE=$(grep wireguardVersionCode gradle.properties | cut -d'=' -f2)
+            echo "workflow_dispatch — using gradle.properties"
+          fi
           echo "version=$VERSION_NAME" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION_NAME"
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION_NAME (code $VERSION_CODE)"
+
+      - name: Build with Gradle
+        run: |
+          ./gradlew :ui:assembleRelease \
+            -PwireguardVersionName=${{ steps.version.outputs.version }} \
+            -PwireguardVersionCode=${{ steps.version.outputs.version_code }} \
+            --stacktrace
 
       - name: Generate release notes
         id: release_notes
