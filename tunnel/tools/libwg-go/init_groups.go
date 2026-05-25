@@ -132,12 +132,29 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 		const chunkSize = 8
 		lastUsed := 0
 		packetsInChunk := 0
+		// Broadcast the WG source addr to every stream so each stream's RX
+		// can forward responses back to WG even if the dispatcher never
+		// picked it for TX. (The server's backendLoop round-robins peer
+		// responses across all registered streams, so a stream the client
+		// never TX'd through still receives RX packets; without an addr
+		// stored those packets hit s.peer.Load() == nil and are dropped.)
+		// WG's UDP source port is stable for the tunnel's lifetime, so we
+		// only re-broadcast when the address actually changes.
+		var lastAddrStr string
 		for {
 			b := packetPool.Get().([]byte)[:iPacketBuffMaxSize]
 			nRead, addr, err := lc.ReadFrom(b)
 			if err != nil {
 				packetPool.Put(b[:cap(b)])
 				return
+			}
+
+			if curStr := addr.String(); curStr != lastAddrStr {
+				returnAddr := addr
+				for _, st := range allStreams {
+					st.peer.Store(&returnAddr)
+				}
+				lastAddrStr = curStr
 			}
 
 			var s *stream
@@ -154,17 +171,6 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			}
 
 			packetsInChunk++
-			// Broadcast the WG source addr to every stream — not just the one
-			// we picked for TX. The server's backendLoop round-robins peer
-			// responses across ALL registered streams (sorted by ID, chunked),
-			// so a stream that never saw a TX still needs to know where to
-			// forward an RX packet. Without this, ~7 of every 8 data packets
-			// after the first 8 are dropped client-side, triggering WG's 15s
-			// retry-handshake timer even though the tunnel is otherwise healthy.
-			returnAddr := addr
-			for _, st := range allStreams {
-				st.peer.Store(&returnAddr)
-			}
 			select {
 			case s.in <- b[:nRead]:
 			default:
