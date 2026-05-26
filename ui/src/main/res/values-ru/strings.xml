@@ -222,6 +222,16 @@
     <string name="success_application_will_restart">Успешно. Приложение будет перезапущено…</string>
     <string name="toggle_all">Инвертировать все</string>
     <string name="toggle_error">Ошибка переключения туннеля WG Turn: %s</string>
+    <string name="widget_label">Переключатель WGKeyBot</string>
+    <string name="widget_description">Включить или выключить последний туннель WGKeyBot.</string>
+    <string name="widget_no_tunnel">Нет туннеля</string>
+    <string name="widget_status_on">Подключено</string>
+    <string name="widget_status_off">Отключено</string>
+    <string name="widget_status_connecting">Подключение…</string>
+    <string name="widget_status_disconnecting">Отключение…</string>
+    <string name="widget_status_handshake">Обмен ключами…</string>
+    <string name="widget_status_reconnecting">Переподключение…</string>
+    <string name="widget_status_failed">Ошибка подключения</string>
     <string name="tools_installer_already">wg и wg-quick уже установлены</string>
     <string name="tools_installer_failure">Не удалось установить инструменты командной строки (нет root?)</string>
     <string name="tools_installer_initial">Установить дополнительные инструменты для сценариев</string>

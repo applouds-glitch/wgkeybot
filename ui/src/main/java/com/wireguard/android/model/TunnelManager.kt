@@ -19,6 +19,7 @@ import androidx.databinding.Bindable
 import com.wireguard.android.Application.Companion.get
 import com.wireguard.android.Application.Companion.getBackend
 import com.wireguard.android.Application.Companion.getTunnelManager
+import com.wireguard.android.Application.Companion.getTunnelStateTracker
 import com.wireguard.android.Application.Companion.getTurnProxyManager
 import com.wireguard.android.BR
 import com.wireguard.android.R
@@ -553,6 +554,11 @@ class TunnelManager(
                 val tunnelName = intent.getStringExtra("tunnel") ?: return@launch
                 val tunnels = manager.getTunnels()
                 val tunnel = tunnels[tunnelName] ?: return@launch
+                // Pre-signal the tracker so the widget/UI switches to Disconnected
+                // immediately — same as pressing the button in the app.
+                if (isInternal && state == Tunnel.State.DOWN) {
+                    getTunnelStateTracker().signalUserDisconnect()
+                }
                 try {
                     manager.setTunnelState(tunnel, state)
                 } catch (e: Throwable) {

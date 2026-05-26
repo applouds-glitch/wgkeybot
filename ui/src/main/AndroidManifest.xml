@@ -59,6 +59,13 @@
             android:theme="@style/NoBackgroundTheme" />
 
         <activity
+            android:name=".activity.WidgetToggleActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@style/NoBackgroundTheme" />
+
+        <activity
             android:name=".activity.MainActivity"
             android:launchMode="singleTask"
             android:exported="true">
@@ -142,6 +149,19 @@
                 <action android:name="com.wireguard.android.action.SET_TUNNEL_UP" />
                 <action android:name="com.wireguard.android.action.SET_TUNNEL_DOWN" />
             </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".widget.TunnelToggleAppWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.wgkeybot.android.action.WIDGET_TOGGLE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/appwidget_tunnel_toggle_info" />
         </receiver>
 
         <service

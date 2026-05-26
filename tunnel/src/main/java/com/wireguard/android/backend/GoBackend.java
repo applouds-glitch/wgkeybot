@@ -339,16 +339,28 @@ public final class GoBackend implements Backend {
 
         private Notification buildNotification(@Nullable final String tunnelName) {
             final Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
-            final PendingIntent pendingIntent = PendingIntent.getActivity(
+            final PendingIntent contentIntent = PendingIntent.getActivity(
                     this, 0,
                     launchIntent != null ? launchIntent : new Intent(),
                     PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-            final String text = "VPN service running";
+
+            final Intent disconnectIntent = new Intent(this, VpnService.class);
+            disconnectIntent.setAction(ACTION_DISCONNECT);
+            final PendingIntent disconnectIntent2;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                disconnectIntent2 = PendingIntent.getForegroundService(
+                        this, 1, disconnectIntent,
+                        PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            } else {
+                disconnectIntent2 = PendingIntent.getService(
+                        this, 1, disconnectIntent,
+                        PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            }
+
             return new NotificationCompat.Builder(this, VPN_CHANNEL_ID)
                     .setSmallIcon(android.R.drawable.ic_lock_lock)
-                    //.setContentTitle("WGKeyBot")
-                    .setContentText(text)
-                    .setContentIntent(pendingIntent)
+                    .setContentText("VPN service running")
+                    .setContentIntent(contentIntent)
                     .setOngoing(true)
                     .setLocalOnly(true)
                     .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -358,7 +370,14 @@ public final class GoBackend implements Backend {
                     .setSilent(true)
                     .setShowWhen(false)
                     .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+                    .addAction(0, getDisconnectLabel(), disconnectIntent2)
                     .build();
+        }
+
+        private String getDisconnectLabel() {
+            final int resId = getResources().getIdentifier(
+                    "vpn_notification_disconnect", "string", getPackageName());
+            return resId != 0 ? getString(resId) : "Disconnect";
         }
 
         public void updateNotification(@Nullable final String tunnelName) {
@@ -544,6 +563,7 @@ public final class GoBackend implements Backend {
                     down.putExtra("internal", true);
                     sendBroadcast(down);
                 } else {
+                    stopForeground(true);
                     stopSelf();
                 }
                 return START_NOT_STICKY;

@@ -25,8 +25,10 @@ import com.wireguard.android.activity.CaptchaActivity
 import com.wireguard.android.captcha.CaptchaWebViewManager
 import com.wireguard.android.configStore.FileConfigStore
 import com.wireguard.android.model.TunnelManager
+import com.wireguard.android.model.TunnelStateTracker
 import com.wireguard.android.turn.TurnProxyManager
 import com.wireguard.android.turn.TurnSettingsStore
+import com.wireguard.android.widget.WidgetStateObserver
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.UserKnobs
 import com.wireguard.android.util.applicationScope
@@ -49,6 +51,7 @@ class Application : android.app.Application() {
     private lateinit var preferencesDataStore: DataStore<Preferences>
     private lateinit var tunnelManager: TunnelManager
     private lateinit var turnProxyManager: TurnProxyManager
+    private lateinit var tunnelStateTracker: TunnelStateTracker
 
     override fun attachBaseContext(context: Context) {
         super.attachBaseContext(context)
@@ -144,6 +147,9 @@ class Application : android.app.Application() {
         }
         
         tunnelManager.onCreate()
+        tunnelStateTracker = TunnelStateTracker(applicationContext)
+        tunnelStateTracker.attach()
+        WidgetStateObserver(applicationContext).attach()
         coroutineScope.launch(Dispatchers.IO) {
             backend = determineBackend()
             futureBackend.complete(backend!!)
@@ -181,6 +187,8 @@ class Application : android.app.Application() {
         fun getTunnelManager() = get().tunnelManager
 
         fun getTurnProxyManager() = get().turnProxyManager
+
+        fun getTunnelStateTracker() = get().tunnelStateTracker
 
         fun getCoroutineScope() = get().coroutineScope
     }

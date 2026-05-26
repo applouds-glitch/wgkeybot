@@ -86,4 +86,7 @@
     <color name="wgk_primary_30">#4D005BC0</color>
     <color name="wgk_warning">#FFB55B00</color>
     <color name="wgk_error">#FFB3261E</color>
+
+    <!-- Home-screen widget background. Slightly translucent so it blends with the launcher. -->
+    <color name="widget_bg">#E62A3142</color>
 </resources>

@@ -12,11 +12,7 @@ import android.content.res.ColorStateList
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -271,6 +267,12 @@ class TunnelListFragment : BaseFragment() {
 
             if (tunnel.state == Tunnel.State.UP && !vm.isConnecting) {
                 vm.ensurePollingActive()
+            } else if (tunnel.state != Tunnel.State.UP && !vm.isConnecting &&
+                vm.uiState.value.state != TunnelState.Disconnected) {
+                // Tunnel was stopped externally (widget, QS tile) while we were
+                // not visible — reset the UI so we don't show a stale Failed /
+                // Connecting state.
+                vm.notifyTunnelDown()
             }
 
             // Split tunneling button label
@@ -390,30 +392,10 @@ class TunnelListFragment : BaseFragment() {
 
     private fun render(ui: TunnelUiState) {
         val b = binding ?: return
-        if (ui.state == TunnelState.Connected && vm.lastRenderedState != TunnelState.Connected) {
-            vibrateConnected()
-        }
-        vm.lastRenderedState = ui.state
         renderProfile(b, ui)
         renderConnectButton(b, ui)
         renderHeadline(b, ui)
         renderStatusZone(b, ui)
-    }
-
-    private fun vibrateConnected() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vm = requireContext().getSystemService(VibratorManager::class.java)
-            vm?.defaultVibrator?.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE))
-        } else {
-            @Suppress("DEPRECATION")
-            val vibrator = requireContext().getSystemService(Vibrator::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator?.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE))
-            } else {
-                @Suppress("DEPRECATION")
-                vibrator?.vibrate(80)
-            }
-        }
     }
 
     private fun renderProfile(b: TunnelListFragmentBinding, ui: TunnelUiState) {
