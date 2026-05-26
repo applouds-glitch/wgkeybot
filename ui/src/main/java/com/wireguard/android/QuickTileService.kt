@@ -22,6 +22,7 @@ import androidx.databinding.Observable.OnPropertyChangedCallback
 import com.wireguard.android.activity.MainActivity
 import com.wireguard.android.activity.TunnelToggleActivity
 import com.wireguard.android.backend.Tunnel
+import com.wireguard.android.Application.Companion.getTunnelStateTracker
 import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.util.applicationScope
 import com.wireguard.android.widget.SlashDrawable
@@ -72,10 +73,14 @@ class QuickTileService : TileService() {
                 else -> {
                     unlockAndRun {
                         applicationScope.launch {
+                            val tracker = getTunnelStateTracker()
+                            val goingUp = tunnel.state != Tunnel.State.UP
+                            if (goingUp) tracker.signalUserConnect() else tracker.signalUserDisconnect()
                             try {
                                 tunnel.setStateAsync(Tunnel.State.TOGGLE)
                                 updateTile()
                             } catch (e: Throwable) {
+                                tracker.signalUserDisconnect()
                                 Log.d(TAG, "Failed to set state, so falling back", e)
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !Settings.canDrawOverlays(this@QuickTileService)) {
                                     Log.d(TAG, "Need overlay permissions")
@@ -105,11 +110,11 @@ class QuickTileService : TileService() {
     override fun onCreate() {
         isAdded = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            iconOn = Icon.createWithResource(this, R.drawable.ic_tile)
+            iconOn = Icon.createWithResource(this, R.drawable.ic_launcher_foreground)
             iconOff = iconOn
             return
         }
-        val icon = SlashDrawable(resources.getDrawable(R.drawable.ic_tile, Application.get().theme))
+        val icon = SlashDrawable(resources.getDrawable(R.drawable.ic_launcher_foreground, Application.get().theme))
         icon.setAnimationEnabled(false) /* Unfortunately we can't have animations, since Icons are marshaled. */
         icon.setSlashed(false)
         var b = Bitmap.createBitmap(icon.intrinsicWidth, icon.intrinsicHeight, Bitmap.Config.ARGB_8888)
