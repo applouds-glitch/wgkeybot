@@ -239,4 +239,100 @@
     <string name="biometric_prompt_private_key_title">查看私钥前需要通过认证</string>
     <string name="biometric_auth_error">认证失败</string>
     <string name="biometric_auth_error_reason">认证失败：%s</string>
+
+    <!-- WGKeyBot -->
+    <string name="wgk_headline_disconnected">点击连接</string>
+    <string name="wgk_headline_connecting">正在建立隧道</string>
+    <string name="wgk_headline_handshake">握手中</string>
+    <string name="wgk_headline_connected">隧道已激活</string>
+    <string name="wgk_headline_reconnecting">连接已断开</string>
+    <string name="wgk_headline_failed">连接失败</string>
+
+    <string name="wgk_profile_name">配置</string>
+    <string name="wgk_profile_loaded_at">加载于 %1$s</string>
+    <string name="wgk_profile_loaded_on">加载于 %1$s</string>
+    <string name="wgk_profile_never_loaded">—</string>
+    <string name="wgk_profile_refresh_cd">刷新配置</string>
+    <string name="wgk_menu_cd">菜单</string>
+
+    <string name="wgk_status_label">状态</string>
+    <string name="wgk_status_disconnected">已断开</string>
+    <string name="wgk_status_connecting">连接中…</string>
+    <string name="wgk_status_handshake">握手中…</string>
+    <string name="wgk_status_connected">已连接</string>
+    <string name="wgk_status_reconnecting">重新连接中…</string>
+    <string name="wgk_status_failed">错误</string>
+
+    <string name="wgk_status_sub_disconnected">准备连接</string>
+    <string name="wgk_status_sub_connecting">正在启动 wg 接口</string>
+    <string name="wgk_status_sub_handshake">正在交换密钥</string>
+    <string name="wgk_status_sub_connected">连接已建立</string>
+    <string name="wgk_status_sub_reconnecting">服务器无响应 — 重试中</string>
+    <string name="wgk_status_sub_failed">服务器不可达，请检查网络后重试</string>
+
+    <string name="wgk_rxtx_label">RX / TX</string>
+    <string name="wgk_wireguard_label">WIREGUARD</string>
+    <string name="wgk_rxtx_value">%.1f↓ / %.1f↑ MB</string>
+
+    <string name="wgk_stage_tunnel">Tunnel up</string>
+    <string name="wgk_stage_handshake">Handshake</string>
+    <string name="wgk_stage_routing">Routing</string>
+
+    <string name="wgk_action_split_tunneling">分流隧道</string>
+    <string name="wgk_split_search_hint">搜索应用</string>
+    <string name="wgk_split_show_system">系统应用</string>
+    <string name="wgk_split_exclude_hint">所选应用将绕过 VPN，其余应用走隧道。</string>
+    <string name="wgk_split_include_hint">仅所选应用走 VPN，其余应用直连。</string>
+    <string name="wgk_split_apply">应用</string>
+    <string name="wgk_split_apply_n">应用 · %d</string>
+    <string name="wgk_split_selected_of">已选 %1$d / %2$d</string>
+    <string name="wgk_split_toggle_all">全选/全不选</string>
+    <string name="wgk_split_cancel">取消</string>
+    <string name="wgk_split_only_count">仅：%d 个应用</string>
+    <string name="wgk_split_excluded_count">已排除：%d 个应用</string>
+
+    <string name="wgk_no_key_title">未找到密钥</string>
+    <string name="wgk_no_key_subtitle">从 Telegram 机器人获取配置并打开链接即可连接</string>
+    <string name="wgk_no_key_action">打开 @wg_key_bot</string>
+    <string name="wgk_expired_title">订阅已过期</string>
+    <string name="wgk_expired_subtitle">请联系机器人续订</string>
+    <string name="wgk_check_subscription_action">检查付款</string>
+    <string name="wgk_auto_refresh_cd">配置自动刷新</string>
+    <string name="wgk_theme_toggle_cd">切换主题</string>
+    <string name="wgk_auto_refresh_enabled">每 12 小时自动刷新配置已开启</string>
+    <string name="wgk_auto_refresh_disabled">每 12 小时自动刷新配置已关闭</string>
+    <string name="tv_keyboard_clear">清除</string>
+    <string name="wgk_tv_kb_paste">粘贴</string>
+    <string name="wgk_token_hint">来自机器人的令牌</string>
+    <string name="wgk_token_error_empty">请输入令牌</string>
+    <string name="wgk_paste_cd">从剪贴板粘贴</string>
+    <string name="wgk_pasted_from_clipboard">已从剪贴板粘贴令牌</string>
+    <string name="wgk_clipboard_no_token">剪贴板中没有令牌</string>
+    <string name="wgk_connect_action">连接</string>
+    <string name="wgk_or_divider">或</string>
+    <string name="wgk_upgrade_required_title">版本已过时</string>
+    <string name="wgk_upgrade_required_message">此版本已不再受支持，请更新。</string>
+    <string name="wgk_upgrade_required_action">下载</string>
+    <string name="wgk_config_not_found">未找到 wgkeybot 配置。</string>
+    <string name="wgk_error_format">错误：%s</string>
+    <string name="wgk_no_access_token">无访问令牌，请重新打开机器人链接。</string>
+    <string name="wgk_refresh_error_format">刷新错误：%s</string>
+    <string name="wgk_update_available_title">有可用更新 v%s</string>
+    <string name="wgk_update_available_message">下载新版本？</string>
+    <string name="wgk_update_now">更新</string>
+    <string name="wgk_update_later">稍后</string>
+    <string name="wgk_config_updated">配置已更新</string>
+    <string name="wgk_deeplink_missing_token">Deeplink：缺少 token 参数</string>
+    <string name="wgk_server_bad_config">服务器返回了无效配置</string>
+    <string name="wgk_auth_error_format">授权错误：%s</string>
+
+    <plurals name="wgk_log_taps_remaining">
+        <item quantity="other">还需点击 %d 次查看日志</item>
+    </plurals>
+
+    <string name="turn_proxy_mode_standard">标准</string>
+    <string name="turn_proxy_mode_reserve">备用</string>
+    <string name="turn_reserve_mode_warning">速度较慢，仅在标准模式不可用时使用。</string>
+    <string name="turn_start_failed">Failed to establish TURN connection</string>
+    <string name="turn_call_requires_auth">需要 VKontakte 授权</string>
 </resources>

@@ -9,6 +9,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.util.Log
+import com.wireguard.android.R
 import com.wireguard.android.backend.TurnBackend
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -146,7 +147,16 @@ class TurnProxyManager(private val context: Context) {
             return true
         }
 
-        val success = startForTunnelInternal(tunnelName, turnSettings)
+        val success = try {
+            startForTunnelInternal(tunnelName, turnSettings)
+        } catch (e: Exception) {
+            Log.w(TAG, "TURN start threw exception — clearing session state")
+            activeTunnelName = null
+            activeSettings = null
+            lastKnownNetwork = null
+            userInitiatedStop = true
+            throw e
+        }
 
         if (!success) {
             // Start failed: clear session state so PhysicalNetworkMonitor does not
@@ -259,6 +269,13 @@ class TurnProxyManager(private val context: Context) {
                         effectiveWrapKey,
                         networkHandle
                     )
+
+                    if (ret == -2) {
+                        val msg = context.getString(R.string.turn_call_requires_auth)
+                        Log.e(TAG, "TURN: $msg")
+                        appendLogLine(tunnelName, msg)
+                        throw Exception(msg)
+                    }
 
                     if (ret == 0) {
                         instance.running = true

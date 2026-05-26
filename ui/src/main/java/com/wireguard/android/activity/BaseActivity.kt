@@ -4,9 +4,11 @@
  */
 package com.wireguard.android.activity
 
+import android.content.Context
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import androidx.databinding.CallbackRegistry
+import com.wireguard.android.util.localeWrapped
 import androidx.databinding.CallbackRegistry.NotifierCallback
 import androidx.lifecycle.lifecycleScope
 import com.wireguard.android.Application
@@ -17,6 +19,14 @@ import kotlinx.coroutines.launch
  * Base class for activities that need to remember the currently-selected tunnel.
  */
 abstract class BaseActivity : AppCompatActivity() {
+
+    override fun attachBaseContext(newBase: Context) {
+        // Pre-wrap with the correct locale before AppCompat processes it.
+        // Protects against cases where the applicationContext locale was corrupted
+        // by a deprecated updateConfiguration() call, which would otherwise cause
+        // Activity recreation (e.g., on theme toggle) to inherit the wrong locale.
+        super.attachBaseContext(newBase.localeWrapped())
+    }
     private val selectionChangeRegistry = SelectionChangeRegistry()
     private var created = false
     var selectedTunnel: ObservableTunnel? = null

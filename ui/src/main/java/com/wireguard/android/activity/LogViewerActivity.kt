@@ -6,6 +6,7 @@
 package com.wireguard.android.activity
 
 import android.content.ClipData
+import android.content.Context
 import android.content.ClipDescription.compareMimeTypes
 import android.content.ContentProvider
 import android.content.ContentValues
@@ -38,6 +39,7 @@ import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.textview.MaterialTextView
 import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
+import com.wireguard.android.util.localeWrapped
 import com.wireguard.android.databinding.LogViewerActivityBinding
 import com.wireguard.android.util.DownloadsFileSaver
 import com.wireguard.android.util.ErrorMessages
@@ -61,6 +63,8 @@ import java.util.regex.Matcher
 import java.util.regex.Pattern
 
 class LogViewerActivity : AppCompatActivity() {
+
+    override fun attachBaseContext(newBase: Context) = super.attachBaseContext(newBase.localeWrapped())
     private lateinit var binding: LogViewerActivityBinding
     private lateinit var logAdapter: LogEntryAdapter
     private var logLines = CircularArray<LogLine>()

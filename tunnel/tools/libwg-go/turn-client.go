@@ -832,6 +832,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	// streams immediately without waiting for another VK round-trip.
 	turnLog("[PROXY] Pre-fetching credentials for %d group(s)...", len(links))
 	var prefetchWg sync.WaitGroup
+	var callRequiresAuth int32 // set to 1 if any group gets error_code 9005
 	for i, lk := range links {
 		prefetchWg.Add(1)
 		go func(groupID int, link string) {
@@ -845,7 +846,12 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 			<-vkSemaphore
 			if prefetchErr != nil {
 				if ctx.Err() == nil {
-					turnLog("[PROXY] Pre-fetch group %d failed: %v (WorkerGroup will retry)", groupID, prefetchErr)
+					if strings.Contains(prefetchErr.Error(), "CALL_REQUIRES_AUTH") {
+						atomic.StoreInt32(&callRequiresAuth, 1)
+						turnLog("[PROXY] Pre-fetch group %d: CALL_REQUIRES_AUTH — aborting", groupID)
+					} else {
+						turnLog("[PROXY] Pre-fetch group %d failed: %v (WorkerGroup will retry)", groupID, prefetchErr)
+					}
 				}
 			} else {
 				turnLog("[PROXY] Pre-fetch group %d OK", groupID)
@@ -853,6 +859,10 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		}(i, lk)
 	}
 	prefetchWg.Wait()
+	if atomic.LoadInt32(&callRequiresAuth) == 1 {
+		cancel()
+		return -2
+	}
 
 	// ── Launch groups ─────────────────────────────────────────────────────────
 	_, okChan, done, err := StartTunnelGroups(ctx, packetLc, TunnelGroupsConfig{

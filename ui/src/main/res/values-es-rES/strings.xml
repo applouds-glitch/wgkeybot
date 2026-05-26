@@ -252,4 +252,101 @@
     <string name="biometric_prompt_private_key_title">Autenticar para ver la clave privada</string>
     <string name="biometric_auth_error">Error de autenticación</string>
     <string name="biometric_auth_error_reason">Error de autenticación: %s</string>
+
+    <!-- WGKeyBot -->
+    <string name="wgk_headline_disconnected">Toca para conectar</string>
+    <string name="wgk_headline_connecting">Estableciendo túnel</string>
+    <string name="wgk_headline_handshake">Handshake en progreso</string>
+    <string name="wgk_headline_connected">Túnel activo</string>
+    <string name="wgk_headline_reconnecting">Conexión perdida</string>
+    <string name="wgk_headline_failed">No se pudo conectar</string>
+
+    <string name="wgk_profile_name">Config</string>
+    <string name="wgk_profile_loaded_at">Cargado a las %1$s</string>
+    <string name="wgk_profile_loaded_on">Cargado el %1$s</string>
+    <string name="wgk_profile_never_loaded">—</string>
+    <string name="wgk_profile_refresh_cd">Actualizar config</string>
+    <string name="wgk_menu_cd">Menú</string>
+
+    <string name="wgk_status_label">ESTADO</string>
+    <string name="wgk_status_disconnected">Desconectado</string>
+    <string name="wgk_status_connecting">Conectando…</string>
+    <string name="wgk_status_handshake">Handshake…</string>
+    <string name="wgk_status_connected">Conectado</string>
+    <string name="wgk_status_reconnecting">Reconectando…</string>
+    <string name="wgk_status_failed">Error</string>
+
+    <string name="wgk_status_sub_disconnected">Listo para conectar</string>
+    <string name="wgk_status_sub_connecting">Levantando interfaz wg</string>
+    <string name="wgk_status_sub_handshake">Intercambiando claves</string>
+    <string name="wgk_status_sub_connected">Conexión establecida</string>
+    <string name="wgk_status_sub_reconnecting">El servidor no responde — reintentando</string>
+    <string name="wgk_status_sub_failed">Servidor inaccesible. Comprueba tu red e inténtalo de nuevo</string>
+
+    <string name="wgk_rxtx_label">RX / TX</string>
+    <string name="wgk_wireguard_label">WIREGUARD</string>
+    <string name="wgk_rxtx_value">%.1f↓ / %.1f↑ MB</string>
+
+    <string name="wgk_stage_tunnel">Tunnel up</string>
+    <string name="wgk_stage_handshake">Handshake</string>
+    <string name="wgk_stage_routing">Routing</string>
+
+    <string name="wgk_action_split_tunneling">Túnel dividido</string>
+    <string name="wgk_split_search_hint">Buscar aplicaciones</string>
+    <string name="wgk_split_show_system">Aplicaciones del sistema</string>
+    <string name="wgk_split_exclude_hint">Las apps seleccionadas evitarán la VPN. El resto irá por el túnel.</string>
+    <string name="wgk_split_include_hint">Solo las apps seleccionadas usarán la VPN. El resto irá directamente.</string>
+    <string name="wgk_split_apply">Aplicar</string>
+    <string name="wgk_split_apply_n">Aplicar · %d</string>
+    <string name="wgk_split_selected_of">%1$d de %2$d seleccionadas</string>
+    <string name="wgk_split_toggle_all">Alternar todas</string>
+    <string name="wgk_split_cancel">Cancelar</string>
+    <string name="wgk_split_only_count">Solo: %d apps</string>
+    <string name="wgk_split_excluded_count">Excluidas: %d apps</string>
+
+    <string name="wgk_no_key_title">Clave no encontrada</string>
+    <string name="wgk_no_key_subtitle">Obtén una config del bot de Telegram y abre el enlace para conectar</string>
+    <string name="wgk_no_key_action">Abrir @wg_key_bot</string>
+    <string name="wgk_expired_title">Suscripción expirada</string>
+    <string name="wgk_expired_subtitle">Contacta el bot para renovar tu suscripción</string>
+    <string name="wgk_check_subscription_action">Verificar pago</string>
+    <string name="wgk_auto_refresh_cd">Actualización automática de config</string>
+    <string name="wgk_theme_toggle_cd">Cambiar tema</string>
+    <string name="wgk_auto_refresh_enabled">Actualización automática de config cada 12 horas habilitada</string>
+    <string name="wgk_auto_refresh_disabled">Actualización automática de config cada 12 horas deshabilitada</string>
+    <string name="tv_keyboard_clear">Borrar</string>
+    <string name="wgk_tv_kb_paste">Pegar</string>
+    <string name="wgk_token_hint">Token del bot</string>
+    <string name="wgk_token_error_empty">Introduce un token</string>
+    <string name="wgk_paste_cd">Pegar del portapapeles</string>
+    <string name="wgk_pasted_from_clipboard">Token pegado del portapapeles</string>
+    <string name="wgk_clipboard_no_token">No hay token en el portapapeles</string>
+    <string name="wgk_connect_action">Conectar</string>
+    <string name="wgk_or_divider">o</string>
+    <string name="wgk_upgrade_required_title">Versión desactualizada</string>
+    <string name="wgk_upgrade_required_message">Esta versión ya no es compatible. Por favor, actualiza.</string>
+    <string name="wgk_upgrade_required_action">Descargar</string>
+    <string name="wgk_config_not_found">Config de wgkeybot no encontrada.</string>
+    <string name="wgk_error_format">Error: %s</string>
+    <string name="wgk_no_access_token">Sin token de acceso. Vuelve a abrir el enlace del bot.</string>
+    <string name="wgk_refresh_error_format">Error de actualización: %s</string>
+    <string name="wgk_update_available_title">Actualización disponible v%s</string>
+    <string name="wgk_update_available_message">¿Descargar la nueva versión?</string>
+    <string name="wgk_update_now">Actualizar</string>
+    <string name="wgk_update_later">Después</string>
+    <string name="wgk_config_updated">Config actualizada</string>
+    <string name="wgk_deeplink_missing_token">Deeplink: falta el parámetro token</string>
+    <string name="wgk_server_bad_config">El servidor devolvió una config inválida</string>
+    <string name="wgk_auth_error_format">Error de autorización: %s</string>
+
+    <plurals name="wgk_log_taps_remaining">
+        <item quantity="one">%d toque más para los logs</item>
+        <item quantity="other">%d toques más para los logs</item>
+    </plurals>
+
+    <string name="turn_proxy_mode_standard">Estándar</string>
+    <string name="turn_proxy_mode_reserve">Reserva</string>
+    <string name="turn_reserve_mode_warning">Velocidad lenta. Úsalo solo si el modo estándar falla.</string>
+    <string name="turn_start_failed">Failed to establish TURN connection</string>
+    <string name="turn_call_requires_auth">Se requiere autorización de VKontakte</string>
 </resources>
