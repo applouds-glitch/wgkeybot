@@ -772,9 +772,10 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		return getCredsCached(ctx, lk, streamID, fetchVkCreds)
 	}
 
-	// ── Apply StreamNum cap ────────────────────────────────────────────────────
-	// StreamNum (n) is the user-facing total stream count. If it is smaller than
-	// len(links)*streamsPerCred, reduce streamsPerCred so the total matches n.
+	// ── Apply StreamNum cap / expand ─────────────────────────────────────────
+	// StreamNum (n) constrains total streams.
+	//   • n < defaultTotal: reduce streamsPerCred so total matches n.
+	//   • n > defaultTotal: add extra groups by cycling links, so total = n.
 	// streamsPerCred must stay in sync because credential cache slots are keyed
 	// by streamID/streamsPerCred (credentials.go:getCacheID).
 	if maxTotal := int(n); maxTotal > 0 {
@@ -785,6 +786,13 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 				perGroup = 1
 			}
 			streamsPerCred = perGroup
+		} else if maxTotal > defaultTotal {
+			numGroups := (maxTotal + streamsPerCred - 1) / streamsPerCred
+			origLinks := links
+			links = make([]string, numGroups)
+			for i := range links {
+				links[i] = origLinks[i%len(origLinks)]
+			}
 		}
 	}
 
