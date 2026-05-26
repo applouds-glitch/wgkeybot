@@ -4,6 +4,7 @@
  */
 package com.wireguard.android.activity
 
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -13,6 +14,7 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.commit
+import com.wireguard.android.util.localeWrapped
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
@@ -27,6 +29,9 @@ import kotlinx.coroutines.launch
  * Interface for changing application-global persistent settings.
  */
 class SettingsActivity : AppCompatActivity() {
+
+    override fun attachBaseContext(newBase: Context) = super.attachBaseContext(newBase.localeWrapped())
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (supportFragmentManager.findFragmentById(android.R.id.content) == null) {

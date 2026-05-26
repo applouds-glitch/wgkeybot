@@ -867,8 +867,8 @@ class TunnelListFragment : BaseFragment() {
     private fun showReserveModeWarning() {
         val b = binding ?: return
         val snackbar = Snackbar.make(b.mainContainer, getString(R.string.turn_reserve_mode_warning), Snackbar.LENGTH_LONG)
-        snackbar.setBackgroundTint(ContextCompat.getColor(requireContext(), R.color.wgk_warning))
-        snackbar.setTextColor(android.graphics.Color.WHITE)
+        snackbar.setBackgroundTint(ContextCompat.getColor(requireContext(), R.color.wgk_surface_container_high))
+        snackbar.setTextColor(ContextCompat.getColor(requireContext(), R.color.wgk_on_surface))
         snackbar.show()
     }
 
@@ -887,16 +887,9 @@ class TunnelListFragment : BaseFragment() {
 
     private fun updateReserveButtonAppearance(isReserve: Boolean) {
         val btn = binding?.wgkFooterRow?.wgkModeReserveBtn ?: return
-        val warningColor = ContextCompat.getColor(requireContext(), R.color.wgk_warning)
+        val activeColor = ContextCompat.getColor(requireContext(), R.color.wgk_warning)
         val normalColor = ContextCompat.getColor(requireContext(), R.color.wgk_on_surface_variant)
-        val outlineColor = ContextCompat.getColor(requireContext(), R.color.wgk_outline)
-        if (isReserve) {
-            btn.setTextColor(warningColor)
-            btn.strokeColor = ColorStateList.valueOf(warningColor)
-        } else {
-            btn.setTextColor(normalColor)
-            btn.strokeColor = ColorStateList.valueOf(outlineColor)
-        }
+        btn.setTextColor(if (isReserve) activeColor else normalColor)
     }
 
     companion object {

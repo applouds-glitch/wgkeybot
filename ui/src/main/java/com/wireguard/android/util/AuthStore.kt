@@ -51,7 +51,7 @@ class AuthStore private constructor(context: Context) {
     fun saveLastRefreshTime() = prefs.edit().putLong(KEY_LAST_REFRESH, System.currentTimeMillis()).apply()
 
     /** "system" | "light" | "dark" */
-    fun getThemeMode(): String = prefs.getString(KEY_THEME, "system") ?: "system"
+    fun getThemeMode(): String = prefs.getString(KEY_THEME, "dark") ?: "dark"
     fun setThemeMode(mode: String) = prefs.edit().putString(KEY_THEME, mode).apply()
 
     fun clear() = prefs.edit().clear().apply()

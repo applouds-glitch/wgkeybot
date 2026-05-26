@@ -344,6 +344,22 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 
 		if errObj, hasErr := resp["error"].(map[string]interface{}); hasErr {
 			captchaErr := ParseVkCaptchaError(errObj)
+			if captchaErr != nil {
+				turnLog("[STREAM %d] [Captcha] VK error parsed: code=%d redirect_uri=%q session_token=%q captcha_sid=%q",
+					streamID, captchaErr.ErrorCode,
+					func() string {
+						if len(captchaErr.RedirectURI) > 60 {
+							return captchaErr.RedirectURI[:60] + "..."
+						}
+						return captchaErr.RedirectURI
+					}(),
+					captchaErr.SessionToken, captchaErr.CaptchaSid)
+			} else if errCode, ok := errObj["error_code"].(float64); ok {
+				turnLog("[STREAM %d] VK API error %d (not a parseable captcha): %v", streamID, int(errCode), errObj)
+			}
+			if errCode, ok := errObj["error_code"].(float64); ok && int(errCode) == 9005 {
+				return "", "", "", 0, fmt.Errorf("CALL_REQUIRES_AUTH")
+			}
 			if captchaErr != nil && captchaErr.IsCaptchaError() {
 				// Cached token was rejected — invalidate and retry from base data.
 				if cachedSuccessToken != "" {

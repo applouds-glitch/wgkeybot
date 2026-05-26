@@ -293,4 +293,144 @@
     <string name="vpn_alert_channel_name">Уведомления VPN</string>
     <string name="tunnel_connection_lost_title">VPN отключён</string>
     <string name="tunnel_connection_lost_text">Соединение потеряно, восстановить не удалось.</string>
+
+    <!-- Captcha -->
+    <string name="captcha_error">Не удалось решить капчу. Попробуйте снова.</string>
+    <string name="captcha_instructions">Пройдите проверку для продолжения</string>
+    <string name="captcha_loading">Загрузка капчи…</string>
+    <string name="captcha_title">Подтвердите, что вы не робот</string>
+
+    <!-- TURN settings -->
+    <string name="turn_title">TURN</string>
+    <string name="turn_enable">Включить TURN прокси</string>
+    <string name="turn_ip">IP TURN</string>
+    <string name="turn_ip_hint">(авто)</string>
+    <string name="turn_port">Порт TURN</string>
+    <string name="turn_port_hint">(авто)</string>
+    <string name="turn_local_port">Локальный порт</string>
+    <string name="turn_local_port_hint">1024-65535 (по умолчанию 9000)</string>
+    <string name="turn_mode">Режим</string>
+    <string name="turn_mode_vk_link">VK Link</string>
+    <string name="turn_mode_wb">WB</string>
+    <string-array name="turn_mode_options">
+        <item>@string/turn_mode_vk_link</item>
+        <item>@string/turn_mode_wb</item>
+    </string-array>
+    <string name="turn_vk_link">Ссылка(и) VK Calls</string>
+    <string name="turn_vk_link_hint">https://vk.ru/call/join/… (через запятую)</string>
+    <string name="turn_peer">Пир</string>
+    <string name="turn_peer_address">Адрес пира</string>
+    <string name="turn_peer_hint">IP:Port</string>
+    <string name="turn_peer_type">Тип пира</string>
+    <string name="turn_peer_type_proxy_v1">Proxy v1</string>
+    <string name="turn_peer_type_proxy_v2">Proxy v2</string>
+    <string name="turn_peer_type_wireguard">WireGuard</string>
+    <string-array name="turn_peer_type_options">
+        <item>@string/turn_peer_type_proxy_v2</item>
+        <item>@string/turn_peer_type_proxy_v1</item>
+        <item>@string/turn_peer_type_wireguard</item>
+    </string-array>
+    <string name="turn_server_mode">TURN сервер</string>
+    <string name="turn_streams">Потоков (-n)</string>
+    <string name="turn_streams_hint">1-16 (по умолчанию 4)</string>
+    <string name="turn_streams_per_cred">Потоков на учётные данные</string>
+    <string name="turn_streams_per_cred_hint">1-16 (по умолчанию 4)</string>
+    <string name="turn_use_udp">Использовать UDP</string>
+    <string name="turn_watchdog_timeout">Таймаут watchdog</string>
+    <string name="turn_watchdog_timeout_hint">0=отключено, ≥5 с</string>
+    <string name="turn_advanced">Расширенные настройки</string>
+    <string name="turn_proxy_mode_standard">Стандартный</string>
+    <string name="turn_proxy_mode_reserve">Резервный</string>
+    <string name="turn_reserve_mode_warning">Низкая скорость. Только если стандартный не работает.</string>
+
+    <!-- TV keyboard -->
+    <string name="tv_keyboard_clear">Очистить</string>
+
+    <!-- WGKeyBot UI strings -->
+    <string name="wgk_connect_action">Подключиться</string>
+    <string name="wgk_no_key_title">Ключ не найден</string>
+    <string name="wgk_no_key_subtitle">Получите конфиг в Telegram-боте и откройте его по ссылке для быстрого подключения</string>
+    <string name="wgk_no_key_action">Открыть @wg_key_bot</string>
+    <string name="wgk_or_divider">или</string>
+    <string name="wgk_token_hint">Токен из бота</string>
+    <string name="wgk_paste_cd">Вставить из буфера</string>
+    <string name="wgk_pasted_from_clipboard">Токен вставлен из буфера обмена</string>
+    <string name="wgk_token_error_empty">Введите токен</string>
+    <string name="wgk_clipboard_no_token">В буфере обмена нет токена</string>
+    <string name="wgk_menu_cd">Меню</string>
+    <string name="wgk_theme_toggle_cd">Сменить тему</string>
+    <string name="wgk_profile_name">Config</string>
+    <string name="wgk_profile_loaded_at">Загружено в %1$s</string>
+    <string name="wgk_profile_loaded_on">Загружено %1$s</string>
+    <string name="wgk_profile_never_loaded">—</string>
+    <string name="wgk_profile_refresh_cd">Обновить конфиг</string>
+    <string name="wgk_auto_refresh_cd">Авто-обновление конфига</string>
+    <string name="wgk_auto_refresh_enabled">Автообновление конфига раз в 12 часов включено</string>
+    <string name="wgk_auto_refresh_disabled">Автообновление конфига раз в 12 часов отключено</string>
+    <string name="wgk_check_subscription_action">Проверить оплату</string>
+    <string name="wgk_config_updated">Конфиг обновлён</string>
+    <string name="wgk_config_not_found">Конфиг wgkeybot не найден.</string>
+    <string name="wgk_server_bad_config">Сервер вернул некорректный конфиг</string>
+    <string name="wgk_refresh_error_format">Ошибка обновления: %s</string>
+    <string name="wgk_error_format">Ошибка: %s</string>
+    <string name="wgk_auth_error_format">Ошибка авторизации: %s</string>
+    <string name="wgk_no_access_token">Нет токена доступа. Переоткройте ссылку из бота.</string>
+    <string name="wgk_deeplink_missing_token">Deeplink: отсутствует параметр token</string>
+    <string name="wgk_expired_title">Подписка истекла</string>
+    <string name="wgk_expired_subtitle">Обратитесь в бот для продления подписки</string>
+    <string name="wgk_headline_disconnected">Нажмите для подключения</string>
+    <string name="wgk_headline_connecting">Поднимаем туннель</string>
+    <string name="wgk_headline_handshake">Идёт handshake</string>
+    <string name="wgk_headline_connected">Туннель активен</string>
+    <string name="wgk_headline_reconnecting">Соединение потеряно</string>
+    <string name="wgk_headline_failed">Не удалось подключиться</string>
+    <string name="wgk_status_label">СТАТУС</string>
+    <string name="wgk_status_disconnected">Отключено</string>
+    <string name="wgk_status_connecting">Подключение…</string>
+    <string name="wgk_status_handshake">Handshake…</string>
+    <string name="wgk_status_connected">Подключено</string>
+    <string name="wgk_status_reconnecting">Переподключение…</string>
+    <string name="wgk_status_failed">Ошибка</string>
+    <string name="wgk_status_sub_disconnected">Готов к подключению</string>
+    <string name="wgk_status_sub_connecting">Поднимаем wg-интерфейс</string>
+    <string name="wgk_status_sub_handshake">Обмен ключами</string>
+    <string name="wgk_status_sub_connected">Соединение установлено</string>
+    <string name="wgk_status_sub_reconnecting">Сервер не отвечает — повторная попытка</string>
+    <string name="wgk_status_sub_failed">Сервер недоступен. Проверьте сеть и попробуйте снова</string>
+    <string name="wgk_stage_tunnel">Tunnel up</string>
+    <string name="wgk_stage_handshake">Handshake</string>
+    <string name="wgk_stage_routing">Routing</string>
+    <string name="wgk_rxtx_label">RX / TX</string>
+    <string name="wgk_rxtx_value">%.1f↓ / %.1f↑ MB</string>
+    <string name="wgk_wireguard_label">WIREGUARD</string>
+    <string name="wgk_state_idle">IDLE</string>
+    <string name="wgk_state_connecting">CONNECTING</string>
+    <string name="wgk_state_handshake">HANDSHAKE</string>
+    <string name="wgk_state_tunnel_up">TUNNEL UP · %1$s</string>
+    <string name="wgk_action_split_tunneling">Раздельное туннелирование</string>
+    <string name="wgk_split_only_count">Только: %d прил.</string>
+    <string name="wgk_split_excluded_count">Исключено: %d прил.</string>
+    <string name="wgk_split_search_hint">Поиск приложений</string>
+    <string name="wgk_split_show_system">Системные приложения</string>
+    <string name="wgk_split_toggle_all">Переключить все</string>
+    <string name="wgk_split_selected_of">%1$d из %2$d выбрано</string>
+    <string name="wgk_split_include_hint">Только выбранные приложения пойдут через VPN. Остальные — напрямую.</string>
+    <string name="wgk_split_exclude_hint">Выбранные приложения пойдут в обход VPN. Остальные — через туннель.</string>
+    <string name="wgk_split_apply">Применить</string>
+    <string name="wgk_split_apply_n">Применить · %d</string>
+    <string name="wgk_split_cancel">Отмена</string>
+    <plurals name="wgk_log_taps_remaining">
+        <item quantity="one">Ещё %d тап до логов</item>
+        <item quantity="few">Ещё %d тапа до логов</item>
+        <item quantity="many">Ещё %d тапов до логов</item>
+        <item quantity="other">Ещё %d тапа до логов</item>
+    </plurals>
+    <string name="wgk_update_available_title">Доступно обновление v%s</string>
+    <string name="wgk_update_available_message">Хотите скачать новую версию?</string>
+    <string name="wgk_update_now">Обновить</string>
+    <string name="wgk_update_later">Позже</string>
+    <string name="wgk_upgrade_required_title">Версия устарела</string>
+    <string name="wgk_upgrade_required_message">Версия приложения устарела и больше не поддерживается. Необходимо обновиться.</string>
+    <string name="wgk_upgrade_required_action">Скачать</string>
+    <string name="wgk_tv_kb_paste">Вставить</string>
 </resources>

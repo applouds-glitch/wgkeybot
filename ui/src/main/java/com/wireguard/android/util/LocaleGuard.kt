@@ -5,43 +5,47 @@
 package com.wireguard.android.util
 
 import android.content.Context
-import android.content.res.Configuration
 import android.content.res.Resources
+import androidx.appcompat.app.AppCompatDelegate
 import java.util.Locale
 
 /**
- * Repairs the process-wide locale after WebView clobbers it.
+ * Repairs Locale.getDefault() after WebView clobbers it.
  *
  * WebView initialisation (and, on some OEM builds, page loads / renderer
- * startup) has a long-standing Android bug where it resets the JVM default
- * [Locale] and the applicationContext [Configuration] locales to the system
- * default — which silently reverts the app's language until the next process
- * start. Snapshotting around the WebView constructor isn't enough because the
- * clobber can also happen later, during page load.
+ * startup) has a long-standing Android bug where it calls Locale.setDefault()
+ * with the system locale, silently reverting String.format() and similar JVM
+ * calls to the system language.
  *
- * The app selects its language purely from the system locale (no per-app
- * locale override), and WebView never mutates [Resources.getSystem], so the
- * system configuration is a stable source of truth we can re-apply at any
- * point — call [restore] after the WebView constructor AND after it is
- * destroyed.
+ * We deliberately do NOT call the deprecated Resources.updateConfiguration()
+ * here. That API mutates the shared AssetManager configuration for the whole
+ * process, which corrupts AppCompat's applyDayNight() logic: when the user
+ * switches theme, AppCompat reads the applicationContext configuration to build
+ * the new night-mode config — if updateConfiguration() wrote the wrong locale
+ * there, the recreated Activity inherits the wrong locale.
+ *
+ * AppCompat's attachBaseContext2() already wraps every Activity with the
+ * correct per-app locale via createConfigurationContext(), so Activity-level
+ * strings are unaffected by the WebView clobber. Only Locale.getDefault()
+ * needs explicit repair.
  */
 object LocaleGuard {
 
     fun restore(context: Context) {
-        val systemLocales = Resources.getSystem().configuration.locales
-        if (systemLocales.isEmpty) return
-        val target = systemLocales[0]
+        // Per-app locale (Android 13+ system pref or AppCompat shim on older
+        // versions) survives WebView's clobber because it is stored in the OS /
+        // SharedPreferences, not in the mutable Resources configuration.
+        val target: Locale = if (!AppCompatDelegate.getApplicationLocales().isEmpty) {
+            AppCompatDelegate.getApplicationLocales()[0] ?: return
+        } else {
+            val sys = Resources.getSystem().configuration.locales
+            if (sys.isEmpty) return
+            sys[0]
+        }
 
         if (Locale.getDefault() != target) {
             Locale.setDefault(target)
         }
-
-        val appRes = context.applicationContext.resources
-        val appConfig = appRes.configuration
-        if (appConfig.locales != systemLocales) {
-            val restored = Configuration(appConfig).apply { setLocales(systemLocales) }
-            @Suppress("DEPRECATION")
-            appRes.updateConfiguration(restored, appRes.displayMetrics)
-        }
+        // No updateConfiguration() — see class-level doc.
     }
 }
