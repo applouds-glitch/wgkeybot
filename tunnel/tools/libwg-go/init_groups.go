@@ -32,8 +32,9 @@ type TunnelGroupsConfig struct {
 }
 
 // StartTunnelGroups launches N WorkerGroups concurrently.
-// Credential fetches are still serialised by groupFetchMu inside WorkerGroup,
-// but TURN/DTLS connections are established in parallel across groups.
+// Credential fetches are serialised per cache slot by the slot's cache.mutex
+// (single-flight) and globally throttled by vkSemaphore, but TURN/DTLS
+// connections are established in parallel across groups.
 // Returns cancel, okChan (first ready stream signal), done (closed once every
 // WorkerGroup has fully exited), error.
 func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsConfig) (context.CancelFunc, <-chan struct{}, <-chan struct{}, error) {
@@ -85,10 +86,11 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	var groupsWg sync.WaitGroup
 	for gi, link := range cfg.Links {
 		if gi > 0 {
-			// Jittered gap between group launches so multi-stream setups from
-			// a single IP don't hit the TURN server at exactly the same time.
-			baseDelay := 150 * time.Millisecond
-			jitter := time.Duration(rand.Intn(100)) * time.Millisecond
+			// Cascading group launch: each group starts ~2s after the
+			// previous one so TURN allocations and VK credential fetches
+			// are staggered across groups instead of fanning out at once.
+			baseDelay := 2 * time.Second
+			jitter := time.Duration(rand.Intn(500)) * time.Millisecond
 			time.Sleep(baseDelay + jitter)
 		}
 
@@ -113,8 +115,8 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 		turnLog("[INIT] Group %d started (link=%.12s, streams %d-%d)", gi, link, gi*n, gi*n+n-1)
 	}
 
-	// done closes once every WorkerGroup has fully exited. Each WorkerGroup's
-	// deferred killBatch waits for its workers, whose runWithCreds defers run
+	// done closes once every WorkerGroup has fully exited. Each WorkerGroup waits
+	// (via its WaitGroup) for its workers, whose runWithCreds defers
 	// relayConn.Close() → TURN Refresh(lifetime=0). Waiting on done therefore
 	// means every server-side allocation has been told to release.
 	done := make(chan struct{})
