@@ -17,18 +17,22 @@ import (
 )
 
 const (
-	defaultCycleSecs    = 36000
-	workerStagger       = 500 * time.Millisecond
-	staleCredsThreshold = 8
-	quotaThreshold      = 5
-	maxRetriesPerCycle  = 5
-	minRotationInterval = 120 * time.Second
+	defaultCycleSecs = 36000 // cap for the credential cache TTL (see credentials.go)
+	workerStagger    = 500 * time.Millisecond
 )
 
 // vkSemaphore limits concurrent VK API credential fetches across all groups.
 // A limit of 2 lets pairs of groups fetch in parallel while avoiding
 // hammering VK with unbounded concurrent authentication requests.
 var vkSemaphore = make(chan struct{}, 2)
+
+// allocSemaphore bounds concurrent TURN Allocate() handshakes. Without it,
+// streams spaced by stagger still pile up because Allocate retransmits for
+// ~7.8s (RTO=200ms, 7 attempts) — the first alloc hasn't failed before the 6th
+// stream starts, so the server's per-IP path sees a burst and silently drops a
+// share of them. Cap 3 keeps the first stream unblocked while smoothing the
+// fan-out behind it.
+var allocSemaphore = make(chan struct{}, 3)
 
 // WorkerGroupConfig — parameters for one stream group (one VK link).
 type WorkerGroupConfig struct {
@@ -42,90 +46,93 @@ type WorkerGroupConfig struct {
 	PauseFlag *int32 // non-nil → check Doze-mode pause
 }
 
-// WorkerGroup manages seamless credential rotation for one VK link.
+// WorkerGroup runs the streams for one VK link using an error-driven, per-worker
+// model — no group-level rotation timer, no batch kill/restart.
 //
-// Lifecycle per cycle:
-//  1. Fetch fresh credentials (serialised via groupFetchMu).
-//  2. Kill old batch (credentials ready — minimal gap).
-//  3. Start new batch with jittered per-stream stagger (500ms base + 0-200ms jitter).
-//  4. Wait for TTL expiry or early-rotation trigger, then repeat.
+// Credentials are fetched lazily through the shared cache (fetchCreds →
+// getCredsCached, single-flight per slot) and kept warm by the cache's own TTL.
+// pion/turn refreshes each live TURN allocation internally (Refresh at
+// lifetime/2, see internal/client/allocation.go), so a healthy stream never
+// needs new credentials — our STUN keepalive is only a NAT keepalive. A worker
+// re-fetches (throttled, via refreshGroupCreds) ONLY when its own session fails
+// with an auth/quota error, then reconnects itself; healthy sibling streams are
+// never torn down.
+//
+// WorkerGroup blocks until every worker has exited (ctx cancellation) so the
+// caller's done-channel / graceful TURN release (deferred relayConn.Close →
+// Refresh(lifetime=0) in runWithCreds) semantics are preserved.
 func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) {
+	var wg sync.WaitGroup
 
-	var prevCancel context.CancelFunc
-	var prevDoneChs []chan struct{}
-	var prevRefreshCh chan struct{}
+	// cumStagger accumulates each stream's start delay so consecutive streams are
+	// spaced at least workerStagger (500ms) apart — the jitter is added on top,
+	// never subtracted, so the gap never dips below the floor. Stream 0 starts
+	// immediately (cumStagger == 0) to keep tunnel-up fast.
+	var cumStagger time.Duration
+	for _, s := range streams {
+		stagger := cumStagger
+		cumStagger += workerStagger + time.Duration(rand.Intn(200))*time.Millisecond
 
-	var lastUser, lastPass, lastAddr string
-	var lastRotationTime time.Time
+		wg.Add(1)
+		go func(s *stream, stagger time.Duration) {
+			defer wg.Done()
+			runWorker(ctx, cfg, s, stagger)
+		}(s, stagger)
+	}
+	wg.Wait()
+}
 
-	killBatch := func() {
-		if prevCancel != nil {
-			prevCancel()
-			for _, ch := range prevDoneChs {
-				select {
-				case <-ch:
-				case <-time.After(3 * time.Second):
-				}
-			}
-			prevCancel = nil
-			prevDoneChs = nil
+// runWorker drives a single persistent stream: fetch creds → connect → on exit,
+// re-fetch creds (only for auth/quota errors) and reconnect. It returns only
+// when ctx is cancelled.
+//
+// failStreak counts consecutive connect failures: it selects the TURN server
+// (0 → primary addrs[0], higher → fail over to the next) and drives the retry
+// backoff. A session that stayed up for a while (or was closed cleanly by the
+// server) resets the streak so the next reconnect goes back to the primary
+// server with a fast retry.
+func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger time.Duration) {
+	if stagger > 0 {
+		select {
+		case <-time.After(stagger):
+		case <-ctx.Done():
+			return
 		}
 	}
-	defer killBatch()
 
-	// prevBatchAlive reports whether at least one worker from the previous batch
-	// is still running (its done channel not yet closed). The unchanged-creds
-	// optimisation must not be taken when the whole batch has already died — e.g.
-	// DPI blocked every stream and all workers hit their retry cap. Skipping the
-	// restart then would leave the group idle for the full TTL (up to 10 h) with
-	// no live streams instead of retrying at the throttled cooldown rate.
-	prevBatchAlive := func() bool {
-		for _, ch := range prevDoneChs {
-			select {
-			case <-ch:
-			default:
-				return true
-			}
-		}
-		return false
-	}
-
-	cycleNumber := 0
-
+	failStreak := 0
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
-		// Doze-mode pause
+		// Doze-mode pause: suspend reconnects while the device is dozing.
 		if cfg.PauseFlag != nil && atomic.LoadInt32(cfg.PauseFlag) != 0 {
-			killBatch()
-			turnLog("[GROUP %d] Paused (Doze)", cfg.GroupID)
+			turnLog("[WORKER %d] Paused (Doze)", s.id)
 			for atomic.LoadInt32(cfg.PauseFlag) != 0 {
 				if ctx.Err() != nil {
 					return
 				}
 				time.Sleep(1 * time.Second)
 			}
-			turnLog("[GROUP %d] Resumed", cfg.GroupID)
+			turnLog("[WORKER %d] Resumed", s.id)
 		}
 
-		// ── Step 1: Fetch credentials ─────────────────────────────────────────
-		turnLog("[GROUP %d] Cycle %d: fetching credentials...", cfg.GroupID, cycleNumber)
-
+		// Fetch credentials via the shared cache. A cache hit is cheap (no VK
+		// call); on a miss the per-slot lock single-flights the fetch so the
+		// group's workers don't stampede VK.
 		select {
 		case vkSemaphore <- struct{}{}:
 		case <-ctx.Done():
 			return
 		}
-		user, pass, addr, lifetime, err := fetchCredsWithLifetime(ctx, cfg.Link, cfg.GroupID)
+		user, pass, addrs, err := fetchCreds(ctx, cfg.Link, cfg.GroupID)
 		<-vkSemaphore
-
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			turnLog("[GROUP %d] Credential error: %v — retry in 30s", cfg.GroupID, err)
+			turnLog("[WORKER %d] Credential error: %v — retry in 30s", s.id, err)
 			select {
 			case <-time.After(30 * time.Second):
 			case <-ctx.Done():
@@ -134,230 +141,125 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 			continue
 		}
 
-		// Only use VK's lifetime when it is meaningfully above the 2-minute safety
-		// margin (2×cacheSafetyMargin = 120s). When lifetime ≤ 120 (includes the
-		// common VK lifetime=0 case), fall back to defaultCycleSecs and let the
-		// stale-creds early-rotation mechanism trigger the next cycle naturally.
-		sleepSecs := defaultCycleSecs
-		if lifetime > 120 {
-			sleepSecs = lifetime - 120
-		}
-		cycleDur := time.Duration(sleepSecs) * time.Second
+		// Apply optional manual TurnIP/TurnPort override to the fetched list.
+		addrs = applyTurnOverride(addrs, cfg)
 
-		// Override TURN address if configured
-		if cfg.TurnIP != "" {
-			_, origPort, _ := net.SplitHostPort(addr)
-			if cfg.TurnPort != 0 {
-				addr = net.JoinHostPort(cfg.TurnIP, fmt.Sprintf("%d", cfg.TurnPort))
-			} else {
-				addr = net.JoinHostPort(cfg.TurnIP, origPort)
-			}
-		} else if cfg.TurnPort != 0 {
-			origHost, _, _ := net.SplitHostPort(addr)
-			addr = net.JoinHostPort(origHost, fmt.Sprintf("%d", cfg.TurnPort))
+		// Every stream targets the primary server (addrs[0]) while healthy; only
+		// consecutive failures step to the next server, so a stream whose primary
+		// path is blocked fails over instead of hammering the same one.
+		addr := addrs[failStreak%len(addrs)]
+
+		start := time.Now()
+		runErr := s.runWithCreds(ctx, user, pass, addr, cfg)
+		sessionDur := time.Since(start)
+
+		if ctx.Err() != nil {
+			return
 		}
 
-		turnLog("[GROUP %d] Credentials OK, TURN=%s, TTL=%ds", cfg.GroupID, addr, sleepSecs)
-
-		// ── Unchanged-creds optimisation ──────────────────────────────────────
-		// If creds are identical to the previous cycle and at least one stream
-		// from that batch is still alive, skip kill+restart and just wait. If the
-		// whole batch has died (prevBatchAlive == false) fall through to a real
-		// restart so the group recovers instead of idling for the full TTL.
-		if prevCancel != nil && prevBatchAlive() && user == lastUser && pass == lastPass && addr == lastAddr {
-			waitSecs := lifetime - int((2 * cacheSafetyMargin).Seconds())
-			if waitSecs < 60 {
-				// lifetime too close to the safety margin — same fallback as the
-				// main sleep path; stale-creds detection will trigger early rotation.
-				waitSecs = defaultCycleSecs
-			}
-			turnLog("[GROUP %d] Credentials unchanged — skipping rotation, waiting %ds",
-				cfg.GroupID, waitSecs)
+		if runErr == nil {
+			// runWithCreds returned nil while the tunnel is still up: the TURN
+			// server closed this stream. Reconnect just this worker to the
+			// primary server after a brief delay (avoids a hot loop if the server
+			// keeps closing immediately).
+			turnLog("[WORKER %d] Stream closed by server → reconnecting", s.id)
+			failStreak = 0
 			select {
-			case <-time.After(time.Duration(waitSecs) * time.Second):
-				turnLog("[GROUP %d] TTL window expired → planned rotation", cfg.GroupID)
-			case <-prevRefreshCh:
-				turnLog("[GROUP %d] Early rotation signal — restarting despite unchanged creds", cfg.GroupID)
+			case <-time.After(time.Duration(500+rand.Intn(500)) * time.Millisecond):
 			case <-ctx.Done():
 				return
 			}
-			cycleNumber++
 			continue
 		}
-		lastUser, lastPass, lastAddr = user, pass, addr
 
-		// ── Step 2: Kill old batch ─────────────────────────────────────────────
-		killBatch()
-
-		// ── Step 3: Start new batch with jittered per-stream stagger ─────────
-		batchCtx, batchCancel := context.WithCancel(ctx)
-		refreshCh := make(chan struct{}, 1)
-		doneChs := make([]chan struct{}, len(streams))
-
-		var quotaWorkers sync.Map
-		var staleWorkers sync.Map
-
-		for i, s := range streams {
-			doneCh := make(chan struct{})
-			doneChs[i] = doneCh
-			stagger := time.Duration(i)*workerStagger + time.Duration(rand.Intn(200))*time.Millisecond
-
-			go func(s *stream, stagger time.Duration, doneCh chan struct{}) {
-				defer close(doneCh)
-
-				if stagger > 0 {
-					select {
-					case <-time.After(stagger):
-					case <-batchCtx.Done():
-						return
-					}
-				}
-
-				attempt := 0
-				for {
-					if batchCtx.Err() != nil {
-						return
-					}
-
-					err := s.runWithCreds(batchCtx, user, pass, addr, cfg)
-
-					if err == nil {
-						if batchCtx.Err() == nil {
-							// runWithCreds returned nil but context is still active:
-							// the TURN server closed the stream. Rotate immediately.
-							select {
-							case refreshCh <- struct{}{}:
-								turnLog("[WORKER %d] Stream closed by server → rotation", s.id)
-							default:
-							}
-						}
-						return
-					}
-
-					if batchCtx.Err() != nil {
-						return
-					}
-
-					errLow := strings.ToLower(err.Error())
-
-					// TURN allocation quota (486): rotate only once quotaThreshold
-					// workers report it — a couple of 486s just means the
-					// per-credential quota is tight, so stay stable on the streams
-					// that did allocate instead of churning. When we do rotate,
-					// invalidate the cached credential first so the next cycle
-					// fetches a fresh one — a stale cache hit would otherwise hand
-					// back the same exhausted credential and quota would recur.
-					if strings.Contains(errLow, "quota") ||
-						strings.Contains(errLow, "486") ||
-						strings.Contains(errLow, "allocation quota reached") {
-						quotaWorkers.Store(s.id, true)
-						cnt := 0
-						quotaWorkers.Range(func(k, v any) bool { cnt++; return true })
-						if cnt >= quotaThreshold {
-							invalidateGroupCreds(cfg.GroupID)
-							select {
-							case refreshCh <- struct{}{}:
-								turnLog("[GROUP %d] TURN quota on %d workers → invalidate creds + rotation", cfg.GroupID, cnt)
-							default:
-							}
-						}
-						return
-					}
-
-					// Stale credentials: half the group stale → early rotation.
-					// (staleCredsThreshold is a global fallback; we use the
-					// smaller of the two so small groups still trigger.)
-					if strings.Contains(errLow, "401") ||
-						strings.Contains(errLow, "unauthorized") ||
-						strings.Contains(errLow, "stale nonce") ||
-						strings.Contains(errLow, "allocation mismatch") ||
-						strings.Contains(errLow, "attribute not found") ||
-						strings.Contains(errLow, "508") ||
-						strings.Contains(errLow, "error 29") {
-						staleWorkers.Store(s.id, true)
-						cnt := 0
-						staleWorkers.Range(func(k, v any) bool { cnt++; return true })
-						threshold := staleCredsThreshold
-						if half := len(streams)/2 + 1; half < threshold {
-							threshold = half
-						}
-						if cnt >= threshold {
-							select {
-							case refreshCh <- struct{}{}:
-								turnLog("[GROUP %d] Stale creds on %d/%d workers → rotation", cfg.GroupID, cnt, len(streams))
-							default:
-							}
-						}
-					}
-
-					attempt++
-					if attempt > maxRetriesPerCycle {
-						turnLog("[WORKER %d] Max retries (%d) exceeded — giving up", s.id, maxRetriesPerCycle)
-						return
-					}
-					exp := uint(attempt - 1)
-					if exp > 4 {
-						exp = 4
-					}
-					base := time.Duration(1<<exp) * time.Second // 1,2,4,8,16s
-					if base > 30*time.Second {
-						base = 30 * time.Second
-					}
-					retryDelay := base + time.Duration(5+rand.Intn(11))*time.Second
-					turnLog("[WORKER %d] Error #%d: %v → retry in %v", s.id, attempt, err, retryDelay)
-					select {
-					case <-time.After(retryDelay):
-					case <-batchCtx.Done():
-						return
-					}
-				}
-			}(s, stagger, doneCh)
+		// Auth/quota error → throttled, single-flight credential re-fetch so the
+		// next iteration picks up a fresh credential. Healthy siblings untouched.
+		// Every other error is transient from this worker's point of view: it
+		// reconnects (with backoff) rather than giving up, so a stream always
+		// recovers on its own — WireGuard and the sibling streams keep running
+		// while just this stream is recreated.
+		if classifyCredError(runErr) {
+			refreshGroupCreds(cfg.GroupID)
 		}
 
-		prevCancel = batchCancel
-		prevDoneChs = doneChs
-		prevRefreshCh = refreshCh
+		// A session that stayed up for a while was healthy; treat its drop as a
+		// fresh failure (retry the primary server, reset backoff) rather than as
+		// part of a failover streak.
+		if sessionDur > 60*time.Second {
+			failStreak = 0
+		} else {
+			failStreak++
+		}
 
-		// allWorkersDone watches for the case where every worker in the batch
-		// exits (after max retries, persistent errors, etc.). Without this,
-		// the group could sit idle until TTL expiry (default 10 h) with no
-		// active streams. We signal refreshCh so the group rotates and gets
-		// fresh credentials — if the network problem has cleared, streams
-		// will recover; if not, the rotation cooldown throttles the rate.
-		go func() {
-			for _, ch := range doneChs {
-				select {
-				case <-ch:
-				case <-batchCtx.Done():
-					return
-				}
-			}
-			select {
-			case refreshCh <- struct{}{}:
-			default:
-			}
-		}()
-
-		// ── Step 4: Wait for TTL or early-rotation signal ─────────────────────
+		retryDelay := reconnectDelay(failStreak)
+		turnLog("[WORKER %d] Error (streak %d): %v → retry in %v", s.id, failStreak, runErr, retryDelay)
 		select {
-		case <-time.After(cycleDur):
-			turnLog("[GROUP %d] TTL expired (%v) → planned rotation", cfg.GroupID, cycleDur)
-		case <-refreshCh:
-			elapsed := time.Since(lastRotationTime)
-			if elapsed < minRotationInterval {
-				remaining := minRotationInterval - elapsed
-				turnLog("[GROUP %d] Early rotation deferred — cooldown %v remaining", cfg.GroupID, remaining)
-				select {
-				case <-time.After(remaining):
-				case <-ctx.Done():
-					return
-				}
-			}
-			turnLog("[GROUP %d] Early rotation", cfg.GroupID)
+		case <-time.After(retryDelay):
 		case <-ctx.Done():
 			return
 		}
-		lastRotationTime = time.Now()
-		cycleNumber++
 	}
+}
+
+// reconnectDelay returns the backoff before a worker's next connect attempt.
+// Transient TURN allocate failures (a lost UDP packet, a brief server-side
+// race) usually clear on a fresh attempt — often on the other server via the
+// per-streak failover — so the first couple of retries are fast (~0.5-1s)
+// before falling back to jittered exponential backoff for a genuinely dead path.
+func reconnectDelay(failStreak int) time.Duration {
+	if failStreak <= 1 {
+		return time.Duration(500+rand.Intn(500)) * time.Millisecond
+	}
+	exp := uint(failStreak - 1)
+	if exp > 4 {
+		exp = 4
+	}
+	base := time.Duration(1<<exp) * time.Second // 2,4,8,16,16s
+	if base > 30*time.Second {
+		base = 30 * time.Second
+	}
+	return base + time.Duration(5+rand.Intn(11))*time.Second
+}
+
+// classifyCredError reports whether err from a TURN session indicates the
+// credential should be re-fetched: TURN allocation quota (486) or stale/invalid
+// credentials (401/stale nonce/etc.). Other errors (dial failures, watchdog,
+// transient drops) are handled by a plain reconnect that keeps the credential.
+func classifyCredError(err error) bool {
+	e := strings.ToLower(err.Error())
+	return strings.Contains(e, "quota") ||
+		strings.Contains(e, "486") ||
+		strings.Contains(e, "allocation quota reached") ||
+		strings.Contains(e, "401") ||
+		strings.Contains(e, "unauthorized") ||
+		strings.Contains(e, "stale nonce") ||
+		strings.Contains(e, "allocation mismatch") ||
+		strings.Contains(e, "attribute not found") ||
+		strings.Contains(e, "508") ||
+		strings.Contains(e, "error 29")
+}
+
+// applyTurnOverride applies the optional manual TurnIP/TurnPort pin to the
+// fetched TURN server list. A TurnIP pin replaces the whole list with the single
+// pinned server; a bare TurnPort rewrites the port on every server. Returns a
+// fresh slice when rewriting — addrs may alias the cached ServerAddrs slice
+// (returned by reference on a cache hit), so it must not be mutated in place.
+func applyTurnOverride(addrs []string, cfg WorkerGroupConfig) []string {
+	if cfg.TurnIP != "" {
+		_, origPort, _ := net.SplitHostPort(addrs[0])
+		port := origPort
+		if cfg.TurnPort != 0 {
+			port = fmt.Sprintf("%d", cfg.TurnPort)
+		}
+		return []string{net.JoinHostPort(cfg.TurnIP, port)}
+	}
+	if cfg.TurnPort != 0 {
+		rewritten := make([]string, len(addrs))
+		for i, a := range addrs {
+			origHost, _, _ := net.SplitHostPort(a)
+			rewritten[i] = net.JoinHostPort(origHost, fmt.Sprintf("%d", cfg.TurnPort))
+		}
+		return rewritten
+	}
+	return addrs
 }

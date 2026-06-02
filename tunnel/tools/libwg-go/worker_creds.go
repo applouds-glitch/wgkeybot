@@ -9,45 +9,33 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"time"
 )
 
-// fetchCredsWithLifetime fetches TURN credentials for a specific group and returns the remaining TTL.
-// groupID selects the correct credential cache slot (groupID * streamsPerCred).
-// Uses globalGetCreds (initialised by wgTurnProxyStart).
-func fetchCredsWithLifetime(ctx context.Context, link string, groupID int) (user, pass, addr string, lifetimeSecs int, err error) {
+// fetchCreds fetches TURN credentials for a specific group via the shared cache.
+// groupID selects the correct credential cache slot (groupID * streamsPerCred),
+// so all streams in a group share one credential. getCredsCached handles cache
+// freshness, single-flight on a miss, and the VK re-fetch when the slot is
+// expired or force-expired by refreshGroupCreds. Uses globalGetCreds
+// (initialised by wgTurnProxyStart).
+func fetchCreds(ctx context.Context, link string, groupID int) (user, pass string, addrs []string, err error) {
 	streamID := groupID * streamsPerCred
 	u, p, a, e := globalGetCreds(ctx, link, streamID)
 	if e != nil {
-		err = fmt.Errorf("fetchCredsWithLifetime: %w", e)
+		err = fmt.Errorf("fetchCreds: %w", e)
 		return
 	}
 
-	host, _, splitErr := net.SplitHostPort(a)
-	if splitErr != nil || host == "" {
-		err = fmt.Errorf("fetchCredsWithLifetime: invalid addr %q", a)
+	if len(a) == 0 {
+		err = fmt.Errorf("fetchCreds: no TURN servers returned")
+		return
+	}
+	if host, _, splitErr := net.SplitHostPort(a[0]); splitErr != nil || host == "" {
+		err = fmt.Errorf("fetchCreds: invalid addr %q", a[0])
 		return
 	}
 
 	user = u
 	pass = p
-	addr = a
-
-	// Read the real remaining TTL from the cache slot that getCredsCached just populated.
-	// ExpiresAt reflects the actual VK API lifetime (capped at defaultCycleSecs).
-	cache := getStreamCache(streamID)
-	cache.mutex.RLock()
-	remaining := time.Until(cache.creds.ExpiresAt)
-	cache.mutex.RUnlock()
-
-	if remaining > cacheSafetyMargin {
-		secs := int(remaining.Seconds())
-		if secs > defaultCycleSecs {
-			secs = defaultCycleSecs
-		}
-		lifetimeSecs = secs
-	} else {
-		lifetimeSecs = int((credentialLifetime - cacheSafetyMargin).Seconds())
-	}
+	addrs = a
 	return
 }

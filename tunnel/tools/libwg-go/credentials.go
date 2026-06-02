@@ -13,22 +13,32 @@ import (
 
 // TurnCredentials stores cached TURN credentials.
 type TurnCredentials struct {
-	Username   string
-	Password   string
-	ServerAddr string
-	ExpiresAt  time.Time
-	Link       string
+	Username    string
+	Password    string
+	ServerAddrs []string
+	ExpiresAt   time.Time
+	Link        string
 }
 
 // StreamCredentialsCache holds credentials for a group of streams sharing one cache slot.
 type StreamCredentialsCache struct {
 	creds TurnCredentials
 	mutex sync.RWMutex
+
+	// refreshMu guards lastRefresh and serialises the throttle decision in
+	// refreshGroupCreds independently of the creds lock above.
+	refreshMu   sync.Mutex
+	lastRefresh time.Time // guarded by refreshMu
 }
 
 const (
 	credentialLifetime = 10 * time.Minute
 	cacheSafetyMargin  = 60 * time.Second
+	// credRefreshThrottle is the minimum gap between error-driven credential
+	// re-fetches for one cache slot. The first worker in a slot that hits an
+	// auth/quota error force-expires the slot; siblings that fail within this
+	// window reuse the freshly fetched credential instead of stampeding VK.
+	credRefreshThrottle = 15 * time.Second
 )
 
 // streamsPerCred — number of streams sharing one credential cache slot.
@@ -75,51 +85,77 @@ func invalidateAllCaches() {
 	turnLog("[Auth] All credential caches cleared (streamsPerCred=%d)", streamsPerCred)
 }
 
-// invalidateGroupCreds drops the cached credential for a single group so the
-// next fetch goes back to the VK API for a fresh one. Called when the TURN
-// server rejects allocations for this credential with a quota error (486).
+// invalidateGroupCreds force-expires the cached credential for a single group so
+// the next getCredsCached goes back to the VK API for a fresh one. Unlike
+// invalidateAllCaches it does NOT delete the slot: keeping the same
+// *StreamCredentialsCache pointer means the per-slot cache.mutex in
+// getCredsCached still single-flights the re-fetch across the group's workers
+// (the first re-fetches, the rest get a cache hit). Called when the TURN server
+// rejects allocations for this credential (stale/401/486).
 func invalidateGroupCreds(groupID int) {
-	cacheID := getCacheID(groupID * streamsPerCred)
-	credentialsStore.mu.Lock()
-	defer credentialsStore.mu.Unlock()
-	if _, ok := credentialsStore.caches[cacheID]; ok {
-		delete(credentialsStore.caches, cacheID)
-		turnLog("[Auth] Credential cache for group %d (slot %d) invalidated", groupID, cacheID)
+	cache := getStreamCache(groupID * streamsPerCred)
+	cache.mutex.Lock()
+	cache.creds.ExpiresAt = time.Now().Add(-time.Second)
+	cache.mutex.Unlock()
+	turnLog("[Auth] Credential cache for group %d force-expired", groupID)
+}
+
+// refreshGroupCreds is the throttled, error-driven re-fetch entry point used by
+// workers. The first worker in a slot to hit an auth/quota error force-expires
+// the slot; siblings that fail within credRefreshThrottle become no-ops and
+// reuse the credential the first worker's next getCredsCached fetches. Throttle
+// state lives behind refreshMu so the decision is independent of the creds lock.
+func refreshGroupCreds(groupID int) {
+	cache := getStreamCache(groupID * streamsPerCred)
+
+	cache.refreshMu.Lock()
+	if !cache.lastRefresh.IsZero() && time.Since(cache.lastRefresh) < credRefreshThrottle {
+		ago := time.Since(cache.lastRefresh).Round(time.Second)
+		cache.refreshMu.Unlock()
+		turnLog("[Auth] Group %d creds refreshed %v ago — skipping re-fetch", groupID, ago)
+		return
 	}
+	cache.lastRefresh = time.Now()
+	cache.refreshMu.Unlock()
+
+	invalidateGroupCreds(groupID)
 }
 
 // fetchFunc is the raw credential retrieval function (no cache logic).
 // Returns (username, password, serverAddr, lifetimeSecs, error).
-type fetchFunc func(ctx context.Context, link string) (string, string, string, int, error)
+type fetchFunc func(ctx context.Context, link string) (string, string, []string, int, error)
 
 // getCredsFunc is the credential function type used by WorkerGroup via globalGetCreds.
-type getCredsFunc func(context.Context, string, int) (string, string, string, error)
+type getCredsFunc func(context.Context, string, int) (string, string, []string, error)
 
-// getCredsCached checks cache, then calls fn directly (serialisation is handled by groupFetchMu in WorkerGroup).
-// Uses the TTL returned by the fetch function to set ExpiresAt, capped at defaultCycleSecs.
-func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc) (string, string, string, error) {
+// getCredsCached checks cache, then calls fn directly. The per-slot cache.mutex
+// serialises concurrent misses for the same slot (single-flight: the first
+// caller fetches, the rest get a cache hit), and vkSemaphore bounds VK API
+// concurrency across slots. Uses the TTL returned by the fetch function to set
+// ExpiresAt, capped at defaultCycleSecs.
+func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc) (string, string, []string, error) {
 	cache := getStreamCache(streamID)
 	cacheID := getCacheID(streamID)
 
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
-	if cache.creds.Link == link && time.Until(cache.creds.ExpiresAt) > 2*cacheSafetyMargin {
+	if cache.creds.Link == link && time.Now().Before(cache.creds.ExpiresAt) {
 		ttl := time.Until(cache.creds.ExpiresAt).Round(time.Second)
 		turnLog("[STREAM %d] Cache hit (cache=%d, ttl=%v)", streamID, cacheID, ttl)
-		return cache.creds.Username, cache.creds.Password, cache.creds.ServerAddr, nil
+		return cache.creds.Username, cache.creds.Password, cache.creds.ServerAddrs, nil
 	}
 
 	turnLog("[STREAM %d] Cache miss (cache=%d), fetching...", streamID, cacheID)
 	select {
 	case <-ctx.Done():
-		return "", "", "", ctx.Err()
+		return "", "", nil, ctx.Err()
 	default:
 	}
 
-	user, pass, addr, lifetimeSecs, err := fn(ctx, link)
+	user, pass, addrs, lifetimeSecs, err := fn(ctx, link)
 	if err != nil {
-		return "", "", "", err
+		return "", "", nil, err
 	}
 
 	// Compute ExpiresAt from the real API lifetime; fall back to credentialLifetime.
@@ -133,13 +169,13 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 	}
 
 	cache.creds = TurnCredentials{
-		Username:   user,
-		Password:   pass,
-		ServerAddr: addr,
-		ExpiresAt:  expiry,
-		Link:       link,
+		Username:    user,
+		Password:    pass,
+		ServerAddrs: addrs,
+		ExpiresAt:   expiry,
+		Link:        link,
 	}
 	turnLog("[STREAM %d] Credentials cached until %v (cache=%d, api_ttl=%ds)",
 		streamID, cache.creds.ExpiresAt.Format("15:04:05"), cacheID, lifetimeSecs)
-	return user, pass, addr, nil
+	return user, pass, addrs, nil
 }

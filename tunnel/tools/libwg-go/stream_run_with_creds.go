@@ -60,7 +60,13 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass, addr string, cfg 
 		return fmt.Errorf("TURN listen: %w", err)
 	}
 
+	select {
+	case allocSemaphore <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	relayConn, err := client.Allocate()
+	<-allocSemaphore
 	if err != nil {
 		return fmt.Errorf("TURN allocate: %w", err)
 	}
@@ -68,10 +74,12 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass, addr string, cfg 
 
 	turnLog("[STREAM %d] Relay: %s", s.id, relayConn.LocalAddr())
 
+	sendBinding := client.SendBindingRequest
+
 	switch cfg.PeerType {
 	case "wireguard":
-		return s.runNoDTLS(ctx, relayConn, cfg.PeerAddr)
+		return s.runNoDTLS(ctx, relayConn, cfg.PeerAddr, sendBinding)
 	default:
-		return s.runDTLS(ctx, relayConn, cfg.PeerAddr, true)
+		return s.runDTLS(ctx, relayConn, cfg.PeerAddr, true, sendBinding)
 	}
 }
