@@ -54,6 +54,10 @@ class AuthStore private constructor(context: Context) {
     fun getThemeMode(): String = prefs.getString(KEY_THEME, "dark") ?: "dark"
     fun setThemeMode(mode: String) = prefs.edit().putString(KEY_THEME, mode).apply()
 
+    /** One-time first-launch split-tunneling wizard. */
+    fun isSplitWizardShown(): Boolean = prefs.getBoolean(KEY_SPLIT_WIZARD_SHOWN, false)
+    fun setSplitWizardShown() = prefs.edit().putBoolean(KEY_SPLIT_WIZARD_SHOWN, true).apply()
+
     fun clear() = prefs.edit().clear().apply()
 
     companion object {
@@ -63,6 +67,7 @@ class AuthStore private constructor(context: Context) {
         private const val KEY_AUTO_REFRESH = "auto_refresh_enabled"
         private const val KEY_LAST_REFRESH = "last_refresh_time"
         private const val KEY_THEME = "theme_mode"
+        private const val KEY_SPLIT_WIZARD_SHOWN = "split_wizard_shown"
 
         @Volatile private var instance: AuthStore? = null
 
