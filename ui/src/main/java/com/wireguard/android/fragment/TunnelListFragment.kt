@@ -69,6 +69,7 @@ class TunnelListFragment : BaseFragment() {
 
     private var currentSplitProxy: ConfigProxy? = null
     private var updateShownThisSession = false
+    private var wizardLaunchedThisSession = false
 
     private var logTapCount = 0
     private var logTapLastMs = 0L
@@ -130,6 +131,18 @@ class TunnelListFragment : BaseFragment() {
                 ?: return@setFragmentResultListener
             val excluded = bundle.getBoolean(AppListDialogFragment.KEY_IS_EXCLUDED)
             saveSplitTunnelApps(proxy, newSelections.toList(), excluded)
+        }
+
+        // First-launch split-tunneling wizard result.
+        childFragmentManager.setFragmentResultListener(
+            SplitTunnelWizardFragment.REQUEST_WIZARD, viewLifecycleOwner
+        ) { _, bundle ->
+            when (bundle.getString(SplitTunnelWizardFragment.KEY_MODE)) {
+                SplitTunnelWizardFragment.MODE_INCLUDE -> openSplitTunnelDialog(forceExcluded = false)
+                SplitTunnelWizardFragment.MODE_EXCLUDE -> openSplitTunnelDialog(forceExcluded = true)
+                SplitTunnelWizardFragment.MODE_LATER ->
+                    showSnackbar(getString(R.string.wgk_split_wizard_later_hint))
+            }
         }
 
         syncConfigLoadedAt()
@@ -293,7 +306,25 @@ class TunnelListFragment : BaseFragment() {
             b.wgkFooterRow.wgkSplitBtn.setTextColor(splitColor)
             b.wgkFooterRow.wgkSplitBtn.iconTint =
                 android.content.res.ColorStateList.valueOf(splitColor)
+
+            maybeShowSplitWizard(auth, appsActive)
         }
+    }
+
+    /**
+     * Show the one-time split-tunneling wizard on first launch with an active subscription and a
+     * loaded config. Marks itself shown the moment it appears so it survives a process restart and
+     * never nags users who already have split tunneling configured.
+     */
+    private fun maybeShowSplitWizard(auth: AuthStore, appsActive: Boolean) {
+        if (wizardLaunchedThisSession || auth.isSplitWizardShown()) return
+        // Can't commit a fragment transaction once state is saved — retry on the next refresh.
+        if (childFragmentManager.isStateSaved) return
+        if (appsActive) { auth.setSplitWizardShown(); return }
+        if (childFragmentManager.findFragmentByTag(TAG_SPLIT_WIZARD) != null) return
+        wizardLaunchedThisSession = true
+        auth.setSplitWizardShown()
+        SplitTunnelWizardFragment().show(childFragmentManager, TAG_SPLIT_WIZARD)
     }
 
     private fun isTv(): Boolean {
@@ -728,7 +759,7 @@ class TunnelListFragment : BaseFragment() {
 
     // ── Split tunneling ────────────────────────────────────────────────────────
 
-    private fun openSplitTunnelDialog() {
+    private fun openSplitTunnelDialog(forceExcluded: Boolean? = null) {
         lifecycleScope.launch {
             try {
                 val tunnel = Application.getTunnelManager().getTunnels()
@@ -742,6 +773,11 @@ class TunnelListFragment : BaseFragment() {
                 if (selectedApps.isEmpty()) {
                     selectedApps = ArrayList(proxy.`interface`.excludedApplications)
                     if (selectedApps.isNotEmpty()) isExcluded = true
+                }
+                // Wizard entry: force the requested tab and start from an empty selection.
+                if (forceExcluded != null) {
+                    isExcluded = forceExcluded
+                    selectedApps = ArrayList()
                 }
 
                 currentSplitProxy = proxy
@@ -894,6 +930,7 @@ class TunnelListFragment : BaseFragment() {
 
     companion object {
         private const val TAG = "WireGuard/TunnelListFragment"
+        private const val TAG_SPLIT_WIZARD = "split_wizard"
         private val TOKEN_REGEX = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
     }
 }

@@ -410,6 +410,14 @@
     <string name="wgk_action_split_tunneling">Раздельное туннелирование</string>
     <string name="wgk_split_only_count">Только: %d прил.</string>
     <string name="wgk_split_excluded_count">Исключено: %d прил.</string>
+    <string name="wgk_split_wizard_title">Настройте раздельный туннель</string>
+    <string name="wgk_split_wizard_body">Выберите, какие приложения пускать через VPN. Рекомендуем настроить: из-за частых переподключений сервисы могут вводить ограничения по IP — это не с нашей стороны, и если пускать через VPN только нужные приложения, этого проще избежать.</string>
+    <string name="wgk_split_wizard_mode_include_title">Только выбранные приложения через VPN</string>
+    <string name="wgk_split_wizard_mode_include_desc">Остальные подключаются напрямую</string>
+    <string name="wgk_split_wizard_mode_exclude_title">Выбранные приложения мимо VPN</string>
+    <string name="wgk_split_wizard_mode_exclude_desc">Остальные идут через туннель</string>
+    <string name="wgk_split_wizard_later">Настроить позже</string>
+    <string name="wgk_split_wizard_later_hint">Можно настроить позже на главном экране.</string>
     <string name="wgk_split_search_hint">Поиск приложений</string>
     <string name="wgk_split_show_system">Системные приложения</string>
     <string name="wgk_split_toggle_all">Переключить все</string>

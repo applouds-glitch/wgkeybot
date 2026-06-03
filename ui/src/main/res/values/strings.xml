@@ -390,6 +390,14 @@
     <string name="wgk_config_not_found">wgkeybot config not found.</string>
     <string name="wgk_split_only_count">Only: %d apps</string>
     <string name="wgk_split_excluded_count">Excluded: %d apps</string>
+    <string name="wgk_split_wizard_title">Set up split tunneling</string>
+    <string name="wgk_split_wizard_body">Choose which apps go through the VPN. We recommend setting this up: frequent reconnects can lead to IP-based restrictions on the services you use — this is not on our side, and routing only the apps you need through the VPN helps avoid it.</string>
+    <string name="wgk_split_wizard_mode_include_title">Only selected apps via VPN</string>
+    <string name="wgk_split_wizard_mode_include_desc">Everything else connects directly</string>
+    <string name="wgk_split_wizard_mode_exclude_title">Selected apps bypass the VPN</string>
+    <string name="wgk_split_wizard_mode_exclude_desc">Everything else goes through the tunnel</string>
+    <string name="wgk_split_wizard_later">Set up later</string>
+    <string name="wgk_split_wizard_later_hint">You can set this up later on the main screen.</string>
     <string name="wgk_error_format">Error: %s</string>
     <string name="wgk_no_access_token">No access token. Reopen the link from the bot.</string>
     <string name="wgk_refresh_error_format">Refresh error: %s</string>
