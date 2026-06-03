@@ -303,6 +303,14 @@
     <string name="wgk_split_cancel">Cancelar</string>
     <string name="wgk_split_only_count">Solo: %d apps</string>
     <string name="wgk_split_excluded_count">Excluidas: %d apps</string>
+    <string name="wgk_split_wizard_title">Configura el túnel dividido</string>
+    <string name="wgk_split_wizard_body">Elige qué apps pasan por la VPN. Te recomendamos configurarlo: las reconexiones frecuentes pueden provocar restricciones por IP en los servicios que usas, y esto no depende de nosotros. Enviar por la VPN solo las apps que necesitas ayuda a evitarlo.</string>
+    <string name="wgk_split_wizard_mode_include_title">Solo las apps seleccionadas por la VPN</string>
+    <string name="wgk_split_wizard_mode_include_desc">El resto se conecta directamente</string>
+    <string name="wgk_split_wizard_mode_exclude_title">Las apps seleccionadas evitan la VPN</string>
+    <string name="wgk_split_wizard_mode_exclude_desc">El resto va por el túnel</string>
+    <string name="wgk_split_wizard_later">Configurar más tarde</string>
+    <string name="wgk_split_wizard_later_hint">Puedes configurarlo más tarde en la pantalla principal.</string>
 
     <string name="wgk_no_key_title">Clave no encontrada</string>
     <string name="wgk_no_key_subtitle">Obtén una config del bot de Telegram y abre el enlace para conectar</string>
