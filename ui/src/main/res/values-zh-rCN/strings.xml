@@ -290,6 +290,14 @@
     <string name="wgk_split_cancel">取消</string>
     <string name="wgk_split_only_count">仅：%d 个应用</string>
     <string name="wgk_split_excluded_count">已排除：%d 个应用</string>
+    <string name="wgk_split_wizard_title">设置分流隧道</string>
+    <string name="wgk_split_wizard_body">选择哪些应用走 VPN。建议进行设置：频繁重连可能导致你使用的服务按 IP 限制——这并非我们这边的原因，仅让需要的应用走 VPN 有助于避免此问题。</string>
+    <string name="wgk_split_wizard_mode_include_title">仅所选应用走 VPN</string>
+    <string name="wgk_split_wizard_mode_include_desc">其余应用直连</string>
+    <string name="wgk_split_wizard_mode_exclude_title">所选应用绕过 VPN</string>
+    <string name="wgk_split_wizard_mode_exclude_desc">其余应用走隧道</string>
+    <string name="wgk_split_wizard_later">稍后设置</string>
+    <string name="wgk_split_wizard_later_hint">你可以稍后在主屏幕进行设置。</string>
 
     <string name="wgk_no_key_title">未找到密钥</string>
     <string name="wgk_no_key_subtitle">从 Telegram 机器人获取配置并打开链接即可连接</string>

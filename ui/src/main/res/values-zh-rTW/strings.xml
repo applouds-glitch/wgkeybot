@@ -290,6 +290,14 @@
     <string name="wgk_split_cancel">取消</string>
     <string name="wgk_split_only_count">僅：%d 個應用程式</string>
     <string name="wgk_split_excluded_count">已排除：%d 個應用程式</string>
+    <string name="wgk_split_wizard_title">設定分流隧道</string>
+    <string name="wgk_split_wizard_body">選擇哪些應用程式走 VPN。建議進行設定：頻繁重新連線可能導致你使用的服務依 IP 限制——這並非我們這邊的原因，僅讓需要的應用程式走 VPN 有助於避免此問題。</string>
+    <string name="wgk_split_wizard_mode_include_title">僅所選應用程式走 VPN</string>
+    <string name="wgk_split_wizard_mode_include_desc">其餘應用程式直連</string>
+    <string name="wgk_split_wizard_mode_exclude_title">所選應用程式繞過 VPN</string>
+    <string name="wgk_split_wizard_mode_exclude_desc">其餘應用程式走隧道</string>
+    <string name="wgk_split_wizard_later">稍後設定</string>
+    <string name="wgk_split_wizard_later_hint">你可以稍後在主畫面進行設定。</string>
 
     <string name="wgk_no_key_title">找不到金鑰</string>
     <string name="wgk_no_key_subtitle">從 Telegram 機器人取得設定檔並開啟連結即可連線</string>
