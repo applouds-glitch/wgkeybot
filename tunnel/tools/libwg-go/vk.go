@@ -381,6 +381,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	}
 
 	var token2 string
+	var retryErr10 int
 	for attempt := 0; ; attempt++ {
 		resp, err = doRequest(data, urlAddr)
 		if err != nil {
@@ -544,6 +545,24 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 					data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&captcha_key=&captcha_sid=%s&is_sound_captcha=0&success_token=%s&captcha_ts=%s&captcha_attempt=%s&access_token=%s",
 						link, escapedName, captchaErr.CaptchaSid, neturl.QueryEscape(successToken), captchaErr.CaptchaTs, captchaErr.CaptchaAttempt, token1)
 				}
+				continue
+			}
+			// When VK returns error_code:10 after a captcha solve the submitted
+			// success_token is stale — don't retry with the same token.
+			// Instead reset to baseData so the next iteration gets a fresh
+			// captcha challenge that the auto-solver can handle without user input.
+			if errCode, ok2 := errObj["error_code"].(float64); ok2 && int(errCode) == 10 && retryErr10 < 3 {
+				retryErr10++
+				waitSec := retryErr10 * 3
+				turnLog("[STREAM %d] VK error 10 — fresh captcha retry %d/3, wait %ds", streamID, retryErr10, waitSec)
+				select {
+				case <-ctx.Done():
+					return "", "", nil, 0, ctx.Err()
+				case <-time.After(time.Duration(waitSec) * time.Second):
+				}
+				// Reset to base data so VK issues a new captcha that auto-solver can handle.
+				data = baseData
+				attempt = -1 // loop header will increment to 0
 				continue
 			}
 			return "", "", nil, 0, fmt.Errorf("VK API error: %v", errObj)
