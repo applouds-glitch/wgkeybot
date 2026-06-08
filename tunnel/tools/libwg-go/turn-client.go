@@ -843,6 +843,7 @@ func parseLinks(raw string, maxLinks int) []string {
 func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char, networkHandleC C.longlong) int32 {
 	clearTransientState()                  // flush DNS + HTTP without clearing credential caches
 	atomic.StoreInt32(&globalPauseFlag, 0) // reset on each new tunnel start
+	globalCaptchaLockout.Store(0)          // reset captcha lockout on fresh start
 
 	if networkHandleC != 0 {
 		if dnsStr := C.getNetworkDnsServers(C.longlong(networkHandleC)); dnsStr != nil {
@@ -958,7 +959,9 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	// streams immediately without waiting for another VK round-trip.
 	turnLog("[PROXY] Pre-fetching credentials for %d group(s)...", len(links))
 	var prefetchWg sync.WaitGroup
-	var callRequiresAuth int32 // set to 1 if any group gets error_code 9005
+	var callRequiresAuth int32  // set to 1 if any group gets error_code 9005
+	var prefetchOk int32        // set to 1 if any group succeeds
+	var prefetchLockout int32   // set to 1 if any group hits the global lockout
 	for i, lk := range links {
 		prefetchWg.Add(1)
 		go func(groupID int, link string) {
@@ -977,9 +980,13 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 						turnLog("[PROXY] Pre-fetch group %d: CALL_REQUIRES_AUTH — aborting", groupID)
 					} else {
 						turnLog("[PROXY] Pre-fetch group %d failed: %v (WorkerGroup will retry)", groupID, prefetchErr)
+						if strings.Contains(prefetchErr.Error(), "CAPTCHA_WAIT_REQUIRED") {
+							atomic.StoreInt32(&prefetchLockout, 1)
+						}
 					}
 				}
 			} else {
+				atomic.StoreInt32(&prefetchOk, 1)
 				turnLog("[PROXY] Pre-fetch group %d OK", groupID)
 			}
 		}(i, lk)
@@ -988,6 +995,11 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	if atomic.LoadInt32(&callRequiresAuth) == 1 {
 		cancel()
 		return -2
+	}
+	if atomic.LoadInt32(&prefetchOk) == 0 && atomic.LoadInt32(&prefetchLockout) == 1 {
+		turnLog("[PROXY] All pre-fetches failed due to CAPTCHA_WAIT_REQUIRED — aborting startup")
+		cancel()
+		return -1
 	}
 
 	// ── Launch groups ─────────────────────────────────────────────────────────

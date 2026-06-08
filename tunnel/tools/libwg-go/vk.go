@@ -313,6 +313,36 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 		return resp, nil
 	}
 
+	// refreshAnonymToken fetches a fresh token1. Used during error 10 retries
+	// when the original token may have expired during captcha solving.
+	refreshAnonymToken := func() (string, error) {
+		data := fmt.Sprintf("client_id=%s&token_type=messages&client_secret=%s&version=1&app_id=%s", creds.ClientID, creds.ClientSecret, creds.ClientID)
+		resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
+		if err != nil {
+			return "", err
+		}
+		if errMsg, ok := resp["error"].(map[string]interface{}); ok {
+			return "", fmt.Errorf("VK API error: %v", errMsg)
+		}
+		dataRaw, ok := resp["data"]
+		if !ok {
+			return "", fmt.Errorf("'data' not found in response")
+		}
+		dataMap, ok := dataRaw.(map[string]interface{})
+		if !ok || dataMap == nil {
+			return "", fmt.Errorf("invalid response structure: %v", resp)
+		}
+		token, ok := dataMap["access_token"]
+		if !ok {
+			return "", fmt.Errorf("access_token not found")
+		}
+		tokenStr, ok := token.(string)
+		if !ok {
+			return "", fmt.Errorf("access_token is not a string: %v", token)
+		}
+		return tokenStr, nil
+	}
+
 	name := generateName()
 	escapedName := neturl.QueryEscape(name)
 
@@ -382,6 +412,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 
 	var token2 string
 	var retryErr10 int
+	captchaSolveAttempt := 0 // tracks solve attempts for the current captcha (resets after success)
 	for attempt := 0; ; attempt++ {
 		resp, err = doRequest(data, urlAddr)
 		if err != nil {
@@ -413,17 +444,17 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 					cachedSuccessToken = ""
 					data = baseData
 				}
-				solveMode, hasSolveMode := captchaSolveModeForAttempt(attempt, manualCaptcha, autoCaptchaSliderPOC)
+				solveMode, hasSolveMode := captchaSolveModeForAttempt(captchaSolveAttempt, manualCaptcha, autoCaptchaSliderPOC)
 				// If slider POC already failed on a slider-confirmed captcha, the
 				// invisible WebView can't solve it either — skip straight to the
 				// visible dialog.
 				if sliderEscalationFailed && solveMode == captchaSolveModeManual {
 					turnLog("[STREAM %d] [Captcha] Skipping invisible WebView (slider unsolved) — jumping to visible dialog", streamID)
-					attempt++
-					solveMode, hasSolveMode = captchaSolveModeForAttempt(attempt, manualCaptcha, autoCaptchaSliderPOC)
+					captchaSolveAttempt++
+					solveMode, hasSolveMode = captchaSolveModeForAttempt(captchaSolveAttempt, manualCaptcha, autoCaptchaSliderPOC)
 				}
 				if !hasSolveMode {
-					turnLog("[STREAM %d] [Captcha] No more solve modes available (attempt %d)", streamID, attempt+1)
+					turnLog("[STREAM %d] [Captcha] No more solve modes available (attempt %d)", streamID, captchaSolveAttempt+1)
 					globalCaptchaLockout.Store(time.Now().Add(60 * time.Second).Unix())
 					return "", "", nil, 0, fmt.Errorf("CAPTCHA_WAIT_REQUIRED")
 				}
@@ -524,8 +555,9 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 				}
 
 				if solveErr != nil {
-					turnLog("[STREAM %d] [Captcha] %s failed (attempt %d): %v", streamID, captchaSolveModeLabel(solveMode), attempt+1, solveErr)
-					nextSolveMode, hasNextSolveMode := captchaSolveModeForAttempt(attempt+1, manualCaptcha, autoCaptchaSliderPOC)
+					turnLog("[STREAM %d] [Captcha] %s failed (attempt %d): %v", streamID, captchaSolveModeLabel(solveMode), captchaSolveAttempt+1, solveErr)
+					captchaSolveAttempt++
+					nextSolveMode, hasNextSolveMode := captchaSolveModeForAttempt(captchaSolveAttempt, manualCaptcha, autoCaptchaSliderPOC)
 					if hasNextSolveMode {
 						turnLog("[STREAM %d] [Captcha] Falling back to %s...", streamID, captchaSolveModeLabel(nextSolveMode))
 						continue
@@ -537,6 +569,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 				if captchaErr.CaptchaAttempt == "0" || captchaErr.CaptchaAttempt == "" {
 					captchaErr.CaptchaAttempt = "1"
 				}
+
+				captchaSolveAttempt = 0 // reset for next captcha (if any)
 
 				if captchaKey != "" {
 					data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&captcha_key=%s&captcha_sid=%s&access_token=%s",
@@ -560,8 +594,17 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 					return "", "", nil, 0, ctx.Err()
 				case <-time.After(time.Duration(waitSec) * time.Second):
 				}
+				// The anonym_token (token1) may have expired during captcha
+				// solving — refresh it so VK doesn't reject the retry with
+				// another error 10.
+				newToken1, refreshErr := refreshAnonymToken()
+				if refreshErr == nil && newToken1 != "" {
+					token1 = newToken1
+					turnLog("[STREAM %d] Token1 refreshed for retry %d", streamID, retryErr10)
+				}
 				// Reset to base data so VK issues a new captcha that auto-solver can handle.
-				data = baseData
+				data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
+				baseData = data
 				attempt = -1 // loop header will increment to 0
 				continue
 			}
