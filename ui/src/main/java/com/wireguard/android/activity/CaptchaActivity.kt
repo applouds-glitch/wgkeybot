@@ -31,6 +31,7 @@ class CaptchaActivity : AppCompatActivity() {
 
     private var previousNetwork: Network? = null
     private var didBindNetwork = false
+    private var reloadCount = 0
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -70,14 +71,27 @@ class CaptchaActivity : AppCompatActivity() {
                     view: WebView?,
                     request: WebResourceRequest?
                 ): Boolean {
-                    val url = request?.url?.toString() ?: return false
-                    // Block navigation away from captcha/auth domains.
-                    // The VK captcha page can redirect to vk.com after repeated
-                    // failures; reload the original captcha URL instead so the
-                    // user stays on the captcha and can keep trying.
+                    // Only intervene on top-level navigations. Sub-frame/iframe
+                    // loads (captcha widgets, embedded resources) must be left
+                    // alone — reloading the whole page on an iframe navigation
+                    // would break the captcha and could spin into a loop.
+                    if (request?.isForMainFrame != true) return false
+                    val url = request.url?.toString() ?: return false
+                    // Block navigation away from captcha/auth domains. The VK
+                    // captcha page can redirect to vk.com after repeated failures;
+                    // reload the original captcha URL instead so the user stays on
+                    // the captcha and can keep trying — but cap the reloads so a
+                    // persistent redirect can't spin forever.
                     if (!isCaptchaHost(url)) {
-                        Log.w(TAG, "Blocked navigation to external URL: $url")
-                        view?.loadUrl(redirectUri)
+                        if (reloadCount < MAX_CAPTCHA_RELOADS) {
+                            reloadCount++
+                            Log.w(TAG, "Blocked navigation to external URL ($reloadCount/$MAX_CAPTCHA_RELOADS): $url")
+                            view?.loadUrl(redirectUri)
+                        } else {
+                            Log.w(TAG, "Captcha reload limit reached after redirect to: $url — giving up")
+                            deliverResult("")
+                            finish()
+                        }
                         return true
                     }
                     return false
@@ -189,6 +203,7 @@ class CaptchaActivity : AppCompatActivity() {
         private const val TAG = "WireGuard/CaptchaActivity"
         private const val EXTRA_REDIRECT_URI = "redirect_uri"
         private const val CAPTCHA_TIMEOUT_SECONDS = 120L
+        private const val MAX_CAPTCHA_RELOADS = 5
 
         @Volatile
         private var pendingResult: CompletableFuture<String>? = null

@@ -601,6 +601,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 				if refreshErr == nil && newToken1 != "" {
 					token1 = newToken1
 					turnLog("[STREAM %d] Token1 refreshed for retry %d", streamID, retryErr10)
+				} else {
+					turnLog("[STREAM %d] Token1 refresh failed for retry %d, reusing existing token1: %v", streamID, retryErr10, refreshErr)
 				}
 				// Reset to base data so VK issues a new captcha that auto-solver can handle.
 				data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
