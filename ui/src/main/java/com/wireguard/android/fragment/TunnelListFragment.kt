@@ -149,7 +149,15 @@ class TunnelListFragment : BaseFragment() {
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                vm.uiState.collect { render(it) }
+                vm.uiState.collect {
+                    render(it)
+                    // Deferred auto-refresh: the tunnel is now up, so the config
+                    // server is reachable even if it's DPI-blocked off-VPN.
+                    if (vm.pendingAutoRefresh && it.state == TunnelState.Connected) {
+                        vm.pendingAutoRefresh = false
+                        refreshConfig(manual = false)
+                    }
+                }
             }
         }
 
@@ -534,21 +542,33 @@ class TunnelListFragment : BaseFragment() {
 
     // ── Refresh config ─────────────────────────────────────────────────────────
 
-    private fun refreshConfig() {
+    private fun refreshConfig(manual: Boolean = true) {
+        if (vm.refreshInProgress) return
         val auth = AuthStore.getInstance(requireContext())
         val accessToken = auth.getAccessToken() ?: run {
             showSnackbar(getString(R.string.wgk_no_access_token))
             return
         }
+        vm.refreshInProgress = true
         startRefreshAnim()
         lifecycleScope.launch {
             try {
                 val resp = withContext(Dispatchers.IO) { ApiClient.getConfig(accessToken) }
                 auth.saveSubscriptionExpiresAt(resp.subscriptionExpiresAt)
-
                 auth.saveLastRefreshTime()
-                val config = com.wireguard.config.Config.parse(resp.config.byteInputStream())
-                applyConfig(config)
+
+                // Manual refresh applies immediately (reconnects if up) and confirms
+                // with a snackbar. Auto-refresh only persists the new config — it never
+                // reconnects an active tunnel; the change takes effect on the next connect.
+                val newHash = sha256(resp.config)
+                if (newHash != auth.getLastConfigHash()) {
+                    val config = com.wireguard.config.Config.parse(resp.config.byteInputStream())
+                    applyConfig(config, reconnect = manual, showFeedback = manual)
+                    auth.saveLastConfigHash(newHash)
+                } else {
+                    refreshButtonState()
+                    if (manual) showConfigUpdatedSnackbar(R.string.wgk_config_up_to_date)
+                }
 
                 checkForUpdate(resp.latestVersion, resp.downloadUrl)
             } catch (e: ApiClient.UnauthorizedException) {
@@ -562,22 +582,32 @@ class TunnelListFragment : BaseFragment() {
                 showSnackbar(getString(R.string.wgk_refresh_error_format, e.message ?: ""))
             } finally {
                 stopRefreshAnim()
+                vm.refreshInProgress = false
             }
         }
     }
 
+    private fun sha256(s: String): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(s.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
     private fun checkAutoRefresh(auth: AuthStore) {
-        if (vm.autoRefreshCheckedThisSession) return
-        vm.autoRefreshCheckedThisSession = true
         if (!auth.isAutoRefreshEnabled()) return
         val elapsed = System.currentTimeMillis() - auth.getLastRefreshTime()
-        if (elapsed >= 12 * 60 * 60 * 1000L) refreshConfig()
+        if (elapsed < 12 * 60 * 60 * 1000L) return
+        // The config server may be unreachable while disconnected (DPI block), so
+        // fetch through the tunnel: refresh now if a handshake is already up,
+        // otherwise defer until we reach Connected (see uiState collector).
+        if (vm.uiState.value.state == TunnelState.Connected) refreshConfig(manual = false)
+        else vm.pendingAutoRefresh = true
     }
 
     private fun toggleAutoRefresh() {
         val auth = AuthStore.getInstance(requireContext())
         val enabled = !auth.isAutoRefreshEnabled()
         auth.setAutoRefreshEnabled(enabled)
+        if (!enabled) vm.pendingAutoRefresh = false
         val b = binding ?: return
         renderAutoRefreshIcon(b)
         showSnackbar(getString(
@@ -595,7 +625,11 @@ class TunnelListFragment : BaseFragment() {
     }
 
     // Shared entry point used by both the refresh button and deeplink import.
-    suspend fun applyConfig(config: com.wireguard.config.Config) {
+    suspend fun applyConfig(
+        config: com.wireguard.config.Config,
+        reconnect: Boolean = true,
+        showFeedback: Boolean = true,
+    ) {
         val tunnelManager = Application.getTunnelManager()
         val existing = tunnelManager.getTunnels().firstOrNull { it.name == TUNNEL_NAME }
         if (existing != null) {
@@ -604,16 +638,18 @@ class TunnelListFragment : BaseFragment() {
             val configWithApps = withSplitTunnelApps(config, existing.getConfigAsync())
             // setTunnelConfig does DOWN→save→UP when the tunnel was UP. Bridge the
             // gap in the UI so polling doesn't flip to Failed during the reconnect.
-            val wasUp = existing.state == Tunnel.State.UP
+            // With reconnect=false the running tunnel is left as-is (new config takes
+            // effect on the next connect), so no UI bridging is needed.
+            val wasUp = reconnect && existing.state == Tunnel.State.UP
             if (wasUp) vm.notifyConnecting()
-            tunnelManager.setTunnelConfig(existing, configWithApps, turnSettings)
+            tunnelManager.setTunnelConfig(existing, configWithApps, turnSettings, reconnect = reconnect)
             if (wasUp) vm.notifyTunnelUp()
         } else {
             tunnelManager.create(TUNNEL_NAME, config)
         }
         recordConfigLoaded()
         refreshButtonState()
-        showConfigUpdatedSnackbar()
+        if (showFeedback) showConfigUpdatedSnackbar()
     }
 
     private fun withSplitTunnelApps(
@@ -877,9 +913,9 @@ class TunnelListFragment : BaseFragment() {
         }
     }
 
-    private fun showConfigUpdatedSnackbar() {
+    private fun showConfigUpdatedSnackbar(msgRes: Int = R.string.wgk_config_updated) {
         val b = binding ?: return
-        val snackbar = Snackbar.make(b.mainContainer, getString(R.string.wgk_config_updated), Snackbar.LENGTH_SHORT)
+        val snackbar = Snackbar.make(b.mainContainer, getString(msgRes), Snackbar.LENGTH_SHORT)
         snackbar.setBackgroundTint(ContextCompat.getColor(requireContext(), R.color.wgk_surface_container_high))
         snackbar.setTextColor(ContextCompat.getColor(requireContext(), R.color.wgk_on_surface))
         val tv = snackbar.view.findViewById<android.widget.TextView>(

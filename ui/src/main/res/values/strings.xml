@@ -286,7 +286,7 @@
     <string name="turn_server_mode">TURN server</string>
     <string name="turn_mode_vk_link">VK Link</string>
     <string name="turn_mode_wb">WB</string>
-    <string name="turn_proxy_mode_standard">Стандартный</string>
+    <string name="turn_proxy_mode_standard">Основной</string>
     <string name="turn_proxy_mode_reserve">Резервный</string>
     <string name="turn_peer">Peer</string>
     <string name="turn_peer_hint">IP:Port</string>
@@ -406,6 +406,7 @@
     <string name="wgk_update_now">Update</string>
     <string name="wgk_update_later">Later</string>
     <string name="wgk_config_updated">Config updated</string>
+    <string name="wgk_config_up_to_date">Config is up to date</string>
     <string name="wgk_deeplink_missing_token">Deeplink: token parameter missing</string>
     <string name="wgk_server_bad_config">Server returned an invalid config</string>
     <string name="wgk_auth_error_format">Authorization error: %s</string>

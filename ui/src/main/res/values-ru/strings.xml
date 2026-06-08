@@ -339,7 +339,7 @@
     <string name="turn_watchdog_timeout">Таймаут watchdog</string>
     <string name="turn_watchdog_timeout_hint">0=отключено, ≥5 с</string>
     <string name="turn_advanced">Расширенные настройки</string>
-    <string name="turn_proxy_mode_standard">Стандартный</string>
+    <string name="turn_proxy_mode_standard">Основной</string>
     <string name="turn_proxy_mode_reserve">Резервный</string>
     <string name="turn_reserve_mode_warning">Низкая скорость. Только если стандартный не работает.</string>
 
@@ -369,6 +369,7 @@
     <string name="wgk_auto_refresh_disabled">Автообновление конфига раз в 12 часов отключено</string>
     <string name="wgk_check_subscription_action">Проверить оплату</string>
     <string name="wgk_config_updated">Конфиг обновлён</string>
+    <string name="wgk_config_up_to_date">Конфиг актуален</string>
     <string name="wgk_config_not_found">Конфиг wgkeybot не найден.</string>
     <string name="wgk_server_bad_config">Сервер вернул некорректный конфиг</string>
     <string name="wgk_refresh_error_format">Ошибка обновления: %s</string>

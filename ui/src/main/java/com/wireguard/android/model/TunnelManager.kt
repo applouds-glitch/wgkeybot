@@ -213,12 +213,15 @@ class TunnelManager(
         tunnel: ObservableTunnel,
         config: Config,
         turnSettings: TurnSettings? = null,
+        reconnect: Boolean = true,
     ): Config = withContext(Dispatchers.Main.immediate) {
-        val originalState = tunnel.state
-        if (originalState == Tunnel.State.UP) {
+        // When reconnect is false, persist the new config (disk + in-memory) but leave
+        // a running tunnel untouched — it applies on the next connect via getConfigAsync.
+        val bounce = reconnect && tunnel.state == Tunnel.State.UP
+        if (bounce) {
             setTunnelState(tunnel, Tunnel.State.DOWN)
         }
-        
+
         val configWithTurn = TurnConfigProcessor.injectTurnSettings(config, turnSettings)
         val result = tunnel.onConfigChanged(
             withContext(Dispatchers.IO) {
@@ -233,10 +236,10 @@ class TunnelManager(
                 }
             }
         
-        if (originalState == Tunnel.State.UP) {
+        if (bounce) {
             setTunnelState(tunnel, Tunnel.State.UP)
         }
-        
+
         result
     }
 

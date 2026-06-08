@@ -133,6 +133,9 @@ class AppListDialogFragment : DialogFragment() {
                     val packageInfos = getPackagesHoldingPermissions(pm, arrayOf(Manifest.permission.INTERNET))
                     packageInfos.forEach {
                         val packageName = it.packageName
+                        // Our own app must always route through the tunnel (config
+                        // refresh); don't let the user exclude it via split tunneling.
+                        if (packageName == activity.packageName) return@forEach
                         val appInfo = it.applicationInfo ?: return@forEach
                         val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0 &&
                                 (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0

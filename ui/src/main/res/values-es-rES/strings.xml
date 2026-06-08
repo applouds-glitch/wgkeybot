@@ -343,6 +343,7 @@
     <string name="wgk_update_now">Actualizar</string>
     <string name="wgk_update_later">Después</string>
     <string name="wgk_config_updated">Config actualizada</string>
+    <string name="wgk_config_up_to_date">La configuración ya está al día</string>
     <string name="wgk_deeplink_missing_token">Deeplink: falta el parámetro token</string>
     <string name="wgk_server_bad_config">El servidor devolvió una config inválida</string>
     <string name="wgk_auth_error_format">Error de autorización: %s</string>
@@ -352,8 +353,8 @@
         <item quantity="other">%d toques más para los logs</item>
     </plurals>
 
-    <string name="turn_proxy_mode_standard">Estándar</string>
-    <string name="turn_proxy_mode_reserve">Reserva</string>
+    <string name="turn_proxy_mode_standard">Principal</string>
+    <string name="turn_proxy_mode_reserve">Respaldo</string>
     <string name="turn_reserve_mode_warning">Velocidad lenta. Úsalo solo si el modo estándar falla.</string>
     <string name="turn_start_failed">Failed to establish TURN connection</string>
     <string name="turn_call_requires_auth">Se requiere autorización de VKontakte</string>

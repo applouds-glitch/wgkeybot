@@ -50,6 +50,10 @@ class AuthStore private constructor(context: Context) {
     fun getLastRefreshTime(): Long = prefs.getLong(KEY_LAST_REFRESH, 0L)
     fun saveLastRefreshTime() = prefs.edit().putLong(KEY_LAST_REFRESH, System.currentTimeMillis()).apply()
 
+    /** SHA-256 of the last applied server config; used to skip needless reconnects. */
+    fun getLastConfigHash(): String? = prefs.getString(KEY_LAST_CONFIG_HASH, null)
+    fun saveLastConfigHash(hash: String) = prefs.edit().putString(KEY_LAST_CONFIG_HASH, hash).apply()
+
     /** "system" | "light" | "dark" */
     fun getThemeMode(): String = prefs.getString(KEY_THEME, "dark") ?: "dark"
     fun setThemeMode(mode: String) = prefs.edit().putString(KEY_THEME, mode).apply()
@@ -66,6 +70,7 @@ class AuthStore private constructor(context: Context) {
         private const val KEY_EXPIRES_AT = "subscription_expires_at"
         private const val KEY_AUTO_REFRESH = "auto_refresh_enabled"
         private const val KEY_LAST_REFRESH = "last_refresh_time"
+        private const val KEY_LAST_CONFIG_HASH = "last_config_hash"
         private const val KEY_THEME = "theme_mode"
         private const val KEY_SPLIT_WIZARD_SHOWN = "split_wizard_shown"
 

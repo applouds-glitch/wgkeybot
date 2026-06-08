@@ -228,12 +228,15 @@ public final class GoBackend implements Backend {
             final VpnService.Builder builder = service.getBuilder();
             builder.setSession(tunnel.getName());
 
+            // Keep our own app on the tunnel regardless of split-tunnel settings, so
+            // config refresh reaches the server even when it's DPI-blocked off-VPN.
+            final String selfPackage = context.getPackageName();
             if (!config.getInterface().getIncludedApplications().isEmpty()) {
                 // Inverted exclude: keep netd/system in VPN to prevent DNS leaks.
                 final Set<String> included = new HashSet<>(config.getInterface().getIncludedApplications());
                 final List<ApplicationInfo> allApps = context.getPackageManager().getInstalledApplications(0);
                 for (final ApplicationInfo app : allApps) {
-                    if (!included.contains(app.packageName)) {
+                    if (!included.contains(app.packageName) && !app.packageName.equals(selfPackage)) {
                         try {
                             builder.addDisallowedApplication(app.packageName);
                         } catch (final Exception e) {
@@ -243,7 +246,8 @@ public final class GoBackend implements Backend {
                 }
             } else {
                 for (final String excludedApplication : config.getInterface().getExcludedApplications())
-                    builder.addDisallowedApplication(excludedApplication);
+                    if (!excludedApplication.equals(selfPackage))
+                        builder.addDisallowedApplication(excludedApplication);
             }
             for (final InetNetwork addr : config.getInterface().getAddresses())
                 builder.addAddress(addr.getAddress(), addr.getMask());
