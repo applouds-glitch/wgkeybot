@@ -341,7 +341,7 @@
 
     <string name="turn_proxy_mode_standard">主用</string>
     <string name="turn_proxy_mode_reserve">备用</string>
-    <string name="turn_reserve_mode_warning">速度较慢，仅在标准模式不可用时使用。</string>
+    <string name="turn_reserve_mode_warning">速度较慢，仅在主用模式不可用时使用。</string>
     <string name="turn_start_failed">Failed to establish TURN connection</string>
     <string name="turn_call_requires_auth">需要 VKontakte 授权</string>
 </resources>

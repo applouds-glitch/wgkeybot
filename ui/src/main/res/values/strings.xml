@@ -415,7 +415,7 @@
         <item quantity="one">%d more tap to logs</item>
         <item quantity="other">%d more taps to logs</item>
     </plurals>
-    <string name="turn_reserve_mode_warning">Slow speed. Use only if standard mode fails.</string>
+    <string name="turn_reserve_mode_warning">Slow speed. Use only if primary mode fails.</string>
     <string name="turn_start_failed">Failed to establish TURN connection</string>
     <string name="turn_call_requires_auth">VKontakte authorization required</string>
     <string name="vpn_alert_channel_name">VPN alerts</string>

@@ -109,5 +109,5 @@
         <item quantity="one">%d more tap to logs</item>
         <item quantity="other">%d more taps to logs</item>
     </plurals>
-    <string name="turn_reserve_mode_warning">Slow speed. Use only if standard mode fails.</string>
+    <string name="turn_reserve_mode_warning">Slow speed. Use only if primary mode fails.</string>
 </resources>
