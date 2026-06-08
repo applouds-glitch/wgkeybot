@@ -12,7 +12,12 @@ class TunnelListViewModel : ViewModel() {
 
     @Volatile var isConnecting = false
     @Volatile var cancelledByUser = false
-    var autoRefreshCheckedThisSession = false
+
+    /** Auto-refresh is due but the tunnel isn't connected yet; fetch once we reach Connected. */
+    @Volatile var pendingAutoRefresh = false
+
+    /** A config refresh (manual or auto) is in flight — prevents overlapping fetches. */
+    @Volatile var refreshInProgress = false
 
     // ── External notifications from Fragment ──────────────────────────────────
 

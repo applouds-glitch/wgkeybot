@@ -76,8 +76,8 @@
     <string name="wgk_or_divider">or</string>
 
     <!-- ── Proxy mode toggle ────────────────────────────────────────────── -->
-    <string name="turn_proxy_mode_standard">Standard</string>
-    <string name="turn_proxy_mode_reserve">Reserve</string>
+    <string name="turn_proxy_mode_standard">Primary</string>
+    <string name="turn_proxy_mode_reserve">Fallback</string>
 
     <!-- ── Auto-refresh / theme toggle ─────────────────────────────────── -->
     <string name="wgk_auto_refresh_cd">Config auto-refresh</string>
@@ -100,6 +100,7 @@
     <string name="wgk_no_access_token">No access token. Reopen the link from the bot.</string>
     <string name="wgk_refresh_error_format">Refresh error: %s</string>
     <string name="wgk_config_updated">Config updated</string>
+    <string name="wgk_config_up_to_date">Config is up to date</string>
     <string name="wgk_deeplink_missing_token">Deeplink: token parameter missing</string>
     <string name="wgk_server_bad_config">Server returned an invalid config</string>
     <string name="wgk_auth_error_format">Authorization error: %s</string>

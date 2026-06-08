@@ -330,6 +330,7 @@
     <string name="wgk_update_now">更新</string>
     <string name="wgk_update_later">稍后</string>
     <string name="wgk_config_updated">配置已更新</string>
+    <string name="wgk_config_up_to_date">配置已是最新</string>
     <string name="wgk_deeplink_missing_token">Deeplink：缺少 token 参数</string>
     <string name="wgk_server_bad_config">服务器返回了无效配置</string>
     <string name="wgk_auth_error_format">授权错误：%s</string>
@@ -338,7 +339,7 @@
         <item quantity="other">还需点击 %d 次查看日志</item>
     </plurals>
 
-    <string name="turn_proxy_mode_standard">标准</string>
+    <string name="turn_proxy_mode_standard">主用</string>
     <string name="turn_proxy_mode_reserve">备用</string>
     <string name="turn_reserve_mode_warning">速度较慢，仅在标准模式不可用时使用。</string>
     <string name="turn_start_failed">Failed to establish TURN connection</string>
