@@ -49,7 +49,7 @@ import kotlin.random.Random
 object CaptchaWebViewManager {
 
     private const val TAG = "CaptchaWV"
-    private const val CAPTCHA_TIMEOUT_MS = 45_000L
+    private const val CAPTCHA_TIMEOUT_MS = 20_000L
     private const val WV_CREATE_TIMEOUT_MS = 3000L
     const val ERROR_SLIDER_DETECTED = "slider_detected"
 
@@ -475,6 +475,13 @@ object CaptchaWebViewManager {
                 webView.evaluateJavascript(jsClick) { clickResult ->
                     if ((clickResult ?: "").replace("\"", "") == "clicked") {
                         startPostClickSliderWatcher(webView)
+                    } else {
+                        // Кликать нечего — невидимый WebView бессилен. Эскалируем
+                        // сразу, чтобы не висеть до withTimeout.
+                        Log.i(TAG, "Чекбокс не найден — fallback на видимый диалог")
+                        notifyResult(Result.failure(
+                            IllegalStateException("checkbox not found")
+                        ))
                     }
                 }
                 return@evaluateJavascript
@@ -544,7 +551,16 @@ object CaptchaWebViewManager {
                             if (attemptsLeft > 0) {
                                 mainHandler.postDelayed(this, 650L)
                             } else {
+                                // Попытки кончились, а ни success_token (через
+                                // перехватчик), ни слайдер не появились — VK требует
+                                // интерактивную капчу, которую невидимый WebView решить
+                                // не может. Эскалируем сразу, чтобы не висеть до
+                                // withTimeout(45s) и дать видимому диалогу открыться.
+                                Log.i(TAG, "Авто-клик не прошёл — fallback на видимый диалог")
                                 postClickSliderWatcher.set(null)
+                                notifyResult(Result.failure(
+                                    IllegalStateException("auto-click did not pass")
+                                ))
                             }
                         }
                     }
