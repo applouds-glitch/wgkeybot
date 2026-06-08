@@ -277,6 +277,17 @@ class TurnProxyManager(private val context: Context) {
                         throw Exception(msg)
                     }
 
+                    if (ret == -3) {
+                        // Captcha lockout: every credential pre-fetch failed because the
+                        // captcha could not be solved. Stream count is irrelevant to a
+                        // captcha challenge, so trying the next count would only reset the
+                        // native lockout and re-trigger the captcha flow. Abort the start.
+                        val msg = "TURN start aborted: captcha unsolved, not retrying other stream counts"
+                        Log.e(TAG, msg)
+                        appendLogLine(tunnelName, msg)
+                        break
+                    }
+
                     if (ret == 0) {
                         instance.running = true
                         lastSuccessfulStreams[tunnelName] = streamsToTry

@@ -959,9 +959,9 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	// streams immediately without waiting for another VK round-trip.
 	turnLog("[PROXY] Pre-fetching credentials for %d group(s)...", len(links))
 	var prefetchWg sync.WaitGroup
-	var callRequiresAuth int32  // set to 1 if any group gets error_code 9005
-	var prefetchOk int32        // set to 1 if any group succeeds
-	var prefetchLockout int32   // set to 1 if any group hits the global lockout
+	var callRequiresAuth int32 // set to 1 if any group gets error_code 9005
+	var prefetchOk int32       // set to 1 if any group succeeds
+	var prefetchLockout int32  // set to 1 if any group hits the global lockout
 	for i, lk := range links {
 		prefetchWg.Add(1)
 		go func(groupID int, link string) {
@@ -999,7 +999,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	if atomic.LoadInt32(&prefetchOk) == 0 && atomic.LoadInt32(&prefetchLockout) == 1 {
 		turnLog("[PROXY] All pre-fetches failed due to CAPTCHA_WAIT_REQUIRED — aborting startup")
 		cancel()
-		return -1
+		return -3 // distinct code: captcha lockout — caller must not retry other stream counts
 	}
 
 	// ── Launch groups ─────────────────────────────────────────────────────────
