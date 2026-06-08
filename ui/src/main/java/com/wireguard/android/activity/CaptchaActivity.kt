@@ -70,7 +70,16 @@ class CaptchaActivity : AppCompatActivity() {
                     view: WebView?,
                     request: WebResourceRequest?
                 ): Boolean {
-                    // Keep all navigation inside the WebView
+                    val url = request?.url?.toString() ?: return false
+                    // Block navigation away from captcha/auth domains.
+                    // The VK captcha page can redirect to vk.com after repeated
+                    // failures; reload the original captcha URL instead so the
+                    // user stays on the captcha and can keep trying.
+                    if (!isCaptchaHost(url)) {
+                        Log.w(TAG, "Blocked navigation to external URL: $url")
+                        view?.loadUrl(redirectUri)
+                        return true
+                    }
                     return false
                 }
             }
@@ -98,6 +107,26 @@ class CaptchaActivity : AppCompatActivity() {
                 finish()
             }
         }
+    }
+
+    /**
+     * Returns true if the URL is allowed for captcha navigation.
+     * Blocks redirects to vk.com and other non-captcha domains that
+     * would take the user away from the captcha page.
+     */
+    private fun isCaptchaHost(url: String?): Boolean {
+        if (url == null) return false
+        val host = try {
+            android.net.Uri.parse(url).host ?: return false
+        } catch (e: Exception) {
+            return false
+        }
+        return host == "id.vk.ru" ||
+            host == "login.vk.ru" ||
+            host == "oauth.vk.com" ||
+            host == "api.vk.ru" ||
+            host.endsWith(".id.vk.ru") ||
+            host.endsWith(".login.vk.ru")
     }
 
     /**
