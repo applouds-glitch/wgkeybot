@@ -355,7 +355,7 @@
 
     <string name="turn_proxy_mode_standard">Principal</string>
     <string name="turn_proxy_mode_reserve">Respaldo</string>
-    <string name="turn_reserve_mode_warning">Velocidad lenta. Úsalo solo si el modo estándar falla.</string>
+    <string name="turn_reserve_mode_warning">Velocidad lenta. Úsalo solo si el modo principal falla.</string>
     <string name="turn_start_failed">Failed to establish TURN connection</string>
     <string name="turn_call_requires_auth">Se requiere autorización de VKontakte</string>
 </resources>

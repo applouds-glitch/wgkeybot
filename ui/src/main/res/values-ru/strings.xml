@@ -341,7 +341,7 @@
     <string name="turn_advanced">Расширенные настройки</string>
     <string name="turn_proxy_mode_standard">Основной</string>
     <string name="turn_proxy_mode_reserve">Резервный</string>
-    <string name="turn_reserve_mode_warning">Низкая скорость. Только если стандартный не работает.</string>
+    <string name="turn_reserve_mode_warning">Низкая скорость. Только если основной режим не работает.</string>
 
     <!-- TV keyboard -->
     <string name="tv_keyboard_clear">Очистить</string>
