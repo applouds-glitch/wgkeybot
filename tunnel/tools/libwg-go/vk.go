@@ -216,11 +216,16 @@ func fetchVkCreds(ctx context.Context, link string) (string, string, []string, i
 	}
 	defer client.CloseIdleConnections()
 
+	// Mobile Android Chrome profile. Kept consistent end-to-end (UA, client
+	// hints, captcha device fingerprint and sensor data all mobile) so VK's
+	// bot detector doesn't see a desktop UA paired with accelerometer/gyroscope
+	// readings — a combination no real desktop browser produces.
 	profile := Profile{
-		UserAgent:       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+		UserAgent:       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36",
 		SecChUa:         `"Not(A:Brand";v="99", "Google Chrome";v="146", "Chromium";v="146"`,
-		SecChUaMobile:   "?0",
-		SecChUaPlatform: `"Windows"`,
+		SecChUaMobile:   "?1",
+		SecChUaPlatform: `"Android"`,
+		Platform:        "Linux armv8l",
 	}
 
 	var lastErr error
