@@ -118,8 +118,8 @@ func (s *captchaNotRobotSession) request(method string, values neturl.Values) (m
 	applyBrowserProfileFhttp(req, s.profile)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Origin", "https://id.vk.com")
-	req.Header.Set("Referer", "https://id.vk.com/")
+	req.Header.Set("Origin", "https://id.vk.ru")
+	req.Header.Set("Referer", "https://id.vk.ru/")
 	req.Header.Set("Sec-Fetch-Site", "same-site")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
@@ -202,14 +202,17 @@ func (s *captchaNotRobotSession) requestSliderCheck(activeSteps []int, candidate
 }
 
 func (s *captchaNotRobotSession) requestCheck(cursor string, answer string) (*captchaCheckResult, error) {
+	// Mobile profile: a real Android device exposes accelerometer/gyroscope and
+	// reports network metrics, so populate them (matching callCaptchaNotRobot).
+	connRtt, connDownlink := generateConnectionMetrics()
 	values := s.baseValues()
-	values.Set("accelerometer", "[]")
-	values.Set("gyroscope", "[]")
+	values.Set("accelerometer", generateSensorNoise())
+	values.Set("gyroscope", generateGyroNoise())
 	values.Set("motion", "[]")
 	values.Set("cursor", cursor)
 	values.Set("taps", "[]")
-	values.Set("connectionRtt", "[]")
-	values.Set("connectionDownlink", "[]")
+	values.Set("connectionRtt", connRtt)
+	values.Set("connectionDownlink", connDownlink)
 	values.Set("browser_fp", s.browserFp)
 	values.Set("hash", s.hash)
 	values.Set("answer", answer)
@@ -1067,16 +1070,19 @@ func buildSliderCursor(candidateIndex int, candidateCount int) string {
 		Y int `json:"y"`
 	}
 
-	startX := 570 + mathrand.Intn(40)
-	startY := 875 + mathrand.Intn(30)
+	// Mobile (Android) coordinates: the slider control sits in the lower third
+	// of a ~360-412px-wide phone viewport. The thumb is dragged left→right, so
+	// the target X is spread across the track by candidate index.
+	startX := 40 + mathrand.Intn(30)  // 40-70
+	startY := 640 + mathrand.Intn(30) // 640-670
 
 	denom := candidateCount - 1
 	if denom < 1 {
 		denom = 1
 	}
-	baseTargetX := 734 + (937-734)*(candidateIndex-1)/denom
+	baseTargetX := 70 + (330-70)*(candidateIndex-1)/denom
 	targetX := baseTargetX + mathrand.Intn(10) - 5
-	targetY := 655 + mathrand.Intn(14)
+	targetY := 648 + mathrand.Intn(14)
 
 	points := make([]cursorPoint, 0, 28)
 
@@ -1122,6 +1128,13 @@ func buildSliderCursor(candidateIndex int, candidateCount int) string {
 			X: targetX + mathrand.Intn(7) - 3,
 			Y: targetY + mathrand.Intn(7) - 3,
 		})
+	}
+
+	// Keep every point inside a phone viewport so Bézier/jitter overshoot can't
+	// emit off-screen touch coordinates.
+	for i := range points {
+		points[i].X = clampInt(points[i].X, 8, 404)
+		points[i].Y = clampInt(points[i].Y, 60, 850)
 	}
 
 	data, err := json.Marshal(points)
@@ -1172,6 +1185,16 @@ func minInt(left int, right int) int {
 		return left
 	}
 	return right
+}
+
+func clampInt(value int, low int, high int) int {
+	if value < low {
+		return low
+	}
+	if value > high {
+		return high
+	}
+	return value
 }
 
 func describeCaptchaTypes(settingsByType map[string]string) string {

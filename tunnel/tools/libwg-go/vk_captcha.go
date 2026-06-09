@@ -260,11 +260,13 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID in
 	}
 
 	const maxAttempts = 2
+	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		token, err := solveVkCaptchaOnce(ctx, captchaErr, streamID, client, profile, useSliderPOC)
 		if err == nil {
 			return token, nil
 		}
+		lastErr = err
 		turnLog("[STREAM %d] [Captcha] attempt %d/%d failed: %v", streamID, attempt, maxAttempts, err)
 		if attempt < maxAttempts {
 			backoff := time.Duration(attempt) * 500 * time.Millisecond
@@ -274,7 +276,9 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID in
 			case <-time.After(backoff):
 			}
 		}
-		return "", err
+	}
+	if lastErr != nil {
+		return "", lastErr
 	}
 	return "", fmt.Errorf("captcha attempts exhausted")
 }
@@ -349,16 +353,23 @@ func applyBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
 }
 
 type captchaViewport struct {
-	Width  int
-	Height int
+	Width            int
+	Height           int
+	DevicePixelRatio float64
 }
 
-// randomViewport returns a randomized viewport matching real desktop Chrome variability.
+// randomViewport returns a randomized viewport matching real Android Chrome
+// phones (CSS-pixel layout size paired with its devicePixelRatio).
 func randomViewport() captchaViewport {
-	widths := []int{1920, 1920, 1920, 1366, 1440, 1536, 1680, 2560} // 1920 weighted 3×
-	heights := []int{1080, 1080, 1080, 768, 900, 864, 1050, 1440}
-	idx := rand.Intn(len(widths))
-	return captchaViewport{Width: widths[idx], Height: heights[idx]}
+	devices := []captchaViewport{
+		{Width: 412, Height: 915, DevicePixelRatio: 2.625},  // Pixel 7/8
+		{Width: 360, Height: 800, DevicePixelRatio: 3.0},    // Galaxy A-series
+		{Width: 393, Height: 873, DevicePixelRatio: 2.75},   // Pixel 6
+		{Width: 412, Height: 892, DevicePixelRatio: 3.5},    // Galaxy S2x
+		{Width: 384, Height: 854, DevicePixelRatio: 2.8125}, // common mid-range
+		{Width: 360, Height: 780, DevicePixelRatio: 3.0},    // compact
+	}
+	return devices[rand.Intn(len(devices))]
 }
 
 func generateBrowserFp(_ Profile, _ captchaViewport) string {
@@ -371,8 +382,8 @@ func generateBrowserFp(_ Profile, _ captchaViewport) string {
 
 // generateHumanCursor produces a realistic mouse trajectory with returns, pauses, and micro-jitter.
 func generateHumanCursor() string {
-	startX := 400 + rand.Intn(800) // wider range: 400-1200
-	startY := 200 + rand.Intn(500) // 200-700
+	startX := 40 + rand.Intn(300)  // within a ~360-412px mobile viewport: 40-340
+	startY := 200 + rand.Intn(450) // 200-650
 	startTime := time.Now().UnixMilli() - int64(rand.Intn(3000)+1500)
 	numPoints := 20 + rand.Intn(15)
 	points := make([]string, 0, numPoints)
@@ -393,10 +404,14 @@ func generateHumanCursor() string {
 			startX -= rand.Intn(8) + 2
 			startY -= rand.Intn(5) + 1
 		} else {
-			startX += rand.Intn(20) - 5  // -5..+14
-			startY += rand.Intn(18) - 3  // -3..+14 — not always downward
+			startX += rand.Intn(20) - 5 // -5..+14
+			startY += rand.Intn(18) - 3 // -3..+14 — not always downward
 		}
 		startTime += int64(rand.Intn(50) + 15) // 15-65ms between points
+		// Keep the trajectory inside a phone viewport so accumulated drift can't
+		// place touch points off-screen.
+		startX = clampInt(startX, 8, 404)
+		startY = clampInt(startY, 60, 850)
 		points = append(points, fmt.Sprintf(`{"x":%d,"y":%d,"t":%d}`, startX, startY, startTime))
 	}
 	return "[" + strings.Join(points, ",") + "]"
@@ -408,7 +423,7 @@ func generateSensorNoise() string {
 	accelPoints := make([]string, 8+rand.Intn(6))
 	for i := range accelPoints {
 		accelPoints[i] = fmt.Sprintf(`{"x":%.4f,"y":%.4f,"z":%.4f}`,
-			(rand.Float64()-0.5)*0.04,   // ±0.02g
+			(rand.Float64()-0.5)*0.04, // ±0.02g
 			(rand.Float64()-0.5)*0.04,
 			1.0+(rand.Float64()-0.5)*0.03) // ~1g gravity ± noise
 	}
@@ -484,20 +499,25 @@ func fetchCaptchaBootstrap(ctx context.Context, redirectURI string, client tlscl
 }
 
 func buildCaptchaDeviceJSON(profile Profile, vp captchaViewport) string {
-	availHeight := vp.Height - 40 - rand.Intn(21) // taskbar: 40-60px
-	innerHeight := vp.Height - 111 - rand.Intn(31) // browser chrome: 111-141px
-	devicePixelRatio := 1
-	if vp.Width >= 2560 {
-		devicePixelRatio = 2
+	// Android Chrome: the visual viewport is the screen height minus the system
+	// status bar (availHeight) and additionally the URL/navigation chrome
+	// (innerHeight). screen.width == layout viewport width on mobile.
+	availHeight := vp.Height - 24 - rand.Intn(8)   // status bar: 24-31px
+	innerHeight := vp.Height - 112 - rand.Intn(40) // URL bar + nav: 112-151px
+	platform := profile.Platform
+	if platform == "" {
+		platform = "Linux armv8l"
 	}
+	memChoices := []int{4, 6, 8}
 
 	return fmt.Sprintf(
-		`{"screenWidth":%d,"screenHeight":%d,"screenAvailWidth":%d,"screenAvailHeight":%d,"innerWidth":%d,"innerHeight":%d,"devicePixelRatio":%d,"language":"en-US","languages":["en-US"],"webdriver":false,"hardwareConcurrency":%d,"deviceMemory":%d,"connectionEffectiveType":"4g","notificationsPermission":"default","userAgent":"%s","platform":"Win32"}`,
+		`{"screenWidth":%d,"screenHeight":%d,"screenAvailWidth":%d,"screenAvailHeight":%d,"innerWidth":%d,"innerHeight":%d,"devicePixelRatio":%s,"language":"en-US","languages":["en-US"],"webdriver":false,"hardwareConcurrency":%d,"deviceMemory":%d,"maxTouchPoints":5,"connectionEffectiveType":"4g","notificationsPermission":"default","userAgent":"%s","platform":"%s"}`,
 		vp.Width, vp.Height, vp.Width, availHeight, vp.Width, innerHeight,
-		devicePixelRatio,
-		8+rand.Intn(9),  // 8-16 cores
-		8+rand.Intn(25),  // 8-32 GB
+		strconv.FormatFloat(vp.DevicePixelRatio, 'f', -1, 64),
+		6+rand.Intn(3), // 6-8 cores
+		memChoices[rand.Intn(len(memChoices))],
 		profile.UserAgent,
+		platform,
 	)
 }
 
@@ -581,8 +601,8 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 		applyBrowserProfileFhttp(req, profile)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "*/*")
-		req.Header.Set("Origin", "https://id.vk.com")
-		req.Header.Set("Referer", "https://id.vk.com/")
+		req.Header.Set("Origin", "https://id.vk.ru")
+		req.Header.Set("Referer", "https://id.vk.ru/")
 		req.Header.Set("Sec-Fetch-Site", "same-site")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
