@@ -24,8 +24,10 @@ const (
 	// gets to win the Allocate race alone before runWithCreds fans out to the
 	// other servers. Long enough that a healthy preferred usually wins by itself
 	// on typical mobile RTT (keeping steady-state at ~1 Allocate/stream), short
-	// enough that a dead preferred fails over quickly. Tunable.
-	preferredHeadStart = 300 * time.Millisecond
+	// enough that a dead preferred fails over quickly. Set to 400ms after field
+	// logs showed mobile-hotspot RTT spiking to ~315ms, which made a healthy
+	// preferred occasionally exceed a 300ms window and fan out unnecessarily.
+	preferredHeadStart = 400 * time.Millisecond
 )
 
 // vkSemaphore limits concurrent VK API credential fetches across all groups.
