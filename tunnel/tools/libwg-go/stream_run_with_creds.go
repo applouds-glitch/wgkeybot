@@ -64,8 +64,10 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 				winCh <- winner{client: client, raw: raw, relay: relay, addr: addr, rtt: rtt}
 			})
 			if !claimed {
-				// Another server won first: release this surplus allocation
+				// Another server won first: log this server's RTT for the
+				// A-vs-B comparison, then release the surplus allocation
 				// (relayConn.Close → Refresh(lifetime=0) deallocates server-side).
+				turnLog("[STREAM %d] Race lost by %s rtt=%v (group %d)", s.id, addr, rtt, cfg.GroupID)
 				relay.Close()
 				client.Close()
 				raw.Close()
