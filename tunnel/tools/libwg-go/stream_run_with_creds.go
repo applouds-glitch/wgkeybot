@@ -28,12 +28,14 @@ type winner struct {
 }
 
 // runWithCreds establishes one TURN session with pre-fetched credentials,
-// racing the candidate servers ICE-style: the preferred server (addrs[0]) gets
-// a head-start, and the rest are only raced if it does not win within
-// preferredHeadStart. The first server to complete Allocate wins; the losers
-// are cancelled/closed. Retry and credential rotation are managed by the
-// calling WorkerGroup.
-func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []string, cfg WorkerGroupConfig) error {
+// racing the candidate servers ICE-style. With raceAll every server is dialed
+// at once to elect the genuinely fastest — a one-off probe done by the first
+// connection in a group. Otherwise the preferred server (addrs[0]) gets a
+// head-start and the rest are raced only if it does not win within
+// preferredHeadStart (failover, not a probe). The first server to complete
+// Allocate wins; the losers are cancelled/closed. Retry and credential rotation
+// are managed by the calling WorkerGroup.
+func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []string, cfg WorkerGroupConfig, raceAll bool) error {
 	s.ready.Store(false)
 
 	// raceCtx is cancelled the moment a winner is chosen (or ctx dies) so the
@@ -71,18 +73,11 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 		}(addr)
 	}
 
-	// Head-start: try the preferred server (addrs[0]) alone first.
 	launch(addrs[0])
 	launchedCount := 1
 	fannedOut := len(addrs) == 1
 
 	var grace <-chan time.Time
-	if !fannedOut {
-		t := time.NewTimer(preferredHeadStart)
-		defer t.Stop()
-		grace = t.C
-	}
-
 	fanOut := func() {
 		if fannedOut {
 			return
@@ -93,6 +88,17 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 		}
 		fannedOut = true
 		grace = nil
+	}
+
+	if raceAll {
+		// Probe: race every server at once to elect the genuinely fastest.
+		fanOut()
+	} else if !fannedOut {
+		// Head-start: let the preferred server (addrs[0]) try to win alone;
+		// fan out to the rest only if it does not win within the grace window.
+		t := time.NewTimer(preferredHeadStart)
+		defer t.Stop()
+		grace = t.C
 	}
 
 	var lastErr error

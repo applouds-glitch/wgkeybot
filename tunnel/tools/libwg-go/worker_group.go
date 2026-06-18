@@ -157,8 +157,14 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		// the Allocate race; runWithCreds still races the rest if it has died.
 		addrs = orderPreferred(addrs, cfg.GroupID)
 
+		// The first connection in a group (no winner elected yet) probes all
+		// servers at once to pick the fastest; everyone else follows that
+		// election and only head-start-races (preferred first, fan out on
+		// failure) — so A-vs-B is tested once per group, not on every stream.
+		raceAll := !hasPreferred(cfg.GroupID)
+
 		start := time.Now()
-		runErr := s.runWithCreds(ctx, user, pass, addrs, cfg)
+		runErr := s.runWithCreds(ctx, user, pass, addrs, cfg, raceAll)
 		sessionDur := time.Since(start)
 
 		if ctx.Err() != nil {

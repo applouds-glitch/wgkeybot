@@ -58,6 +58,16 @@ func recordPreferred(groupID int, addr string) {
 	preferredMu.Unlock()
 }
 
+// hasPreferred reports whether a fastest server has already been elected for the
+// group. The first connection (none elected yet) probes all servers at once;
+// later connections follow the election and only head-start-race.
+func hasPreferred(groupID int) bool {
+	preferredMu.Lock()
+	_, ok := preferredAddr[groupID]
+	preferredMu.Unlock()
+	return ok
+}
+
 // orderPreferred returns addrs with the group's remembered preferred server
 // moved to index 0 (the head-start slot). If there is no remembered preferred,
 // or it is absent from the current list (e.g. creds were refreshed with a
