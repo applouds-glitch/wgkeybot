@@ -163,8 +163,10 @@ func resolveUDPWithServer(ctx context.Context, domain string, serverIP string) (
 		return "", err
 	}
 
-	// Use DialContext with protectControl (same as old protectedResolver)
-	addr := serverIP + ":53"
+	// Use DialContext with protectControl (same as old protectedResolver).
+	// JoinHostPort brackets IPv6 (incl. link-local with a %zone, e.g. a
+	// hotspot-supplied fe80::…%wlan0), avoiding "too many colons in address".
+	addr := net.JoinHostPort(serverIP, "53")
 	dialer := &net.Dialer{
 		Timeout: dnsTimeout,
 		Control: protectControl,
@@ -209,8 +211,8 @@ func resolveDoHWithServer(ctx context.Context, domain string, serverIP string, s
 	}
 
 	// Build HTTP request with IP directly (no DNS resolution needed)
-	// DoH uses port 443
-	addr := serverIP + ":443"
+	// DoH uses port 443. JoinHostPort brackets IPv6 hosts for the URL.
+	addr := net.JoinHostPort(serverIP, "443")
 	ipURL := "https://" + addr + "/dns-query"
 	req, err := http.NewRequestWithContext(ctx, "POST", ipURL, bytes.NewReader(query))
 	if err != nil {
@@ -225,7 +227,7 @@ func resolveDoHWithServer(ctx context.Context, domain string, serverIP string, s
 		Timeout: dohTimeout,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return protectAndDial(ctx, network, serverIP+":443")
+				return protectAndDial(ctx, network, net.JoinHostPort(serverIP, "443"))
 			},
 			TLSClientConfig: &tls.Config{
 				ServerName: serverName,
@@ -274,7 +276,7 @@ func resolveDoTWithServer(ctx context.Context, domain string, serverIP string, s
 	}
 
 	// DoT uses port 853
-	tcpConn, err := protectAndDial(ctx, "tcp", serverIP+":853")
+	tcpConn, err := protectAndDial(ctx, "tcp", net.JoinHostPort(serverIP, "853"))
 	if err != nil {
 		return "", fmt.Errorf("failed to connect to DoT server: %w", err)
 	}
