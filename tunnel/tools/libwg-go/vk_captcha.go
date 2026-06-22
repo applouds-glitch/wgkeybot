@@ -91,24 +91,20 @@ func ParseVkCaptchaError(errData map[string]interface{}) *VkCaptchaError {
 		return nil
 	}
 
-	// Extract captcha_sid
+	// Extract captcha_sid (legacy image-captcha field). VK's modern
+	// not_robot_captcha flow (error_code:14 + redirect_uri/session_token) no
+	// longer sends it, so its absence must NOT fail the parse — the solve path
+	// keys off redirect_uri/session_token, not the sid.
 	captchaSid, ok := errData["captcha_sid"].(string)
 	if !ok {
-		// try numeric
+		// try numeric, otherwise leave empty (modern flow)
 		if sidNum, ok2 := errData["captcha_sid"].(float64); ok2 {
 			captchaSid = fmt.Sprintf("%.0f", sidNum)
-		} else {
-			turnLog("missing captcha_sid in captcha error data")
-			return nil
 		}
 	}
 
-	// Extract captcha_img
-	captchaImg, ok := errData["captcha_img"].(string)
-	if !ok {
-		turnLog("missing captcha_img in captcha error data")
-		return nil
-	}
+	// Extract captcha_img (legacy image-captcha field; optional, see above).
+	captchaImg, _ := errData["captcha_img"].(string)
 
 	// Extract error_msg
 	errorMsg, ok := errData["error_msg"].(string)
