@@ -18,7 +18,6 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
-import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.os.PowerManager;
@@ -290,7 +289,6 @@ public final class GoBackend implements Backend {
 
             service.protect(wgGetSocketV4(currentTunnelHandle));
             service.protect(wgGetSocketV6(currentTunnelHandle));
-            service.acquireWifiLock();
             service.updateNotification(tunnel.getName());
         } else {
             if (currentTunnelHandle == -1) {
@@ -304,7 +302,6 @@ public final class GoBackend implements Backend {
             wgTurnOff(handleToClose);
             try {
                 final VpnService svc = vpnServiceRef.get().get(0, TimeUnit.NANOSECONDS);
-                svc.releaseWifiLock();
                 svc.stopSelf();
             } catch (final TimeoutException ignored) { }
         }
@@ -320,7 +317,6 @@ public final class GoBackend implements Backend {
 
         @Nullable private GoBackend owner;
         @Nullable private PowerManager.WakeLock wakeLock;
-        @Nullable private WifiManager.WifiLock wifiLock;
         @Nullable private BroadcastReceiver dozeModeReceiver;
         @Nullable private ConnectivityManager connectivityManager;
         @Nullable private ConnectivityManager.NetworkCallback networkCallback;
@@ -407,28 +403,6 @@ public final class GoBackend implements Backend {
                 Log.d(TAG, "WakeLock released");
             }
             wakeLock = null;
-        }
-
-        @SuppressWarnings("deprecation")
-        void acquireWifiLock() {
-            if (wifiLock != null && wifiLock.isHeld()) return;
-            final WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
-            if (wm == null) return;
-            final int mode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                    ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                    : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
-            wifiLock = wm.createWifiLock(mode, "wgkeybot:vpn_wifi");
-            wifiLock.setReferenceCounted(false);
-            wifiLock.acquire();
-            Log.d(TAG, "WifiLock acquired");
-        }
-
-        void releaseWifiLock() {
-            if (wifiLock != null && wifiLock.isHeld()) {
-                wifiLock.release();
-                Log.d(TAG, "WifiLock released");
-            }
-            wifiLock = null;
         }
 
         private void setupNetworkCallback() {
@@ -525,7 +499,6 @@ public final class GoBackend implements Backend {
             Log.d(TAG, "VpnService.onDestroy()");
             stopForeground(STOP_FOREGROUND_REMOVE);
             releaseWakeLock();
-            releaseWifiLock();
             teardownNetworkCallback();
             if (dozeModeReceiver != null) {
                 unregisterReceiver(dozeModeReceiver);

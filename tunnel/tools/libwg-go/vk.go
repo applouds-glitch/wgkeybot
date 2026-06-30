@@ -39,10 +39,15 @@ type VKCredentials struct {
 	ClientSecret string
 }
 
-// Predefined list of VK credentials (tried in order until success)
+// Predefined list of VK credentials, rotated round-robin so one app's
+// rate-limit/rejection doesn't poison every fetch (fallback still tries the rest).
 var vkCredentialsList = []VKCredentials{
 	{ClientID: "6287487", ClientSecret: "QbYic1K3lEV5kTGiqlq2"}, // VK_WEB_APP_ID
+	{ClientID: "8202606", ClientSecret: "lMRsTiMCyPnp5vfoldmn"}, // VK app rotation fallback
 }
+
+// vkCredRotation round-robins the starting credential across fetchVkCreds calls.
+var vkCredRotation atomic.Uint64
 
 // vkRequestMu serializes VK API requests and enforces inter-request spacing to
 // avoid flood control. vkSemaphore (worker_group.go) bounds concurrency; the
@@ -194,14 +199,6 @@ func getCustomDialContext(ctx context.Context, network, addr string) (net.Conn, 
 // fetchVkCreds performs the actual VK/OK API calls to fetch credentials.
 // Returns (username, password, serverAddrs, lifetimeSecs, error).
 func fetchVkCreds(ctx context.Context, link string) (string, string, []string, int, error) {
-	// Global captcha lockout: if repeated captcha attempts failed recently, bail
-	// out immediately instead of going through the full token chain just to hit
-	// captcha again. The lockout is advisory (60s) — it self-clears, so the
-	// worker's next retry after the delay gets a fresh attempt.
-	if ts := globalCaptchaLockout.Load(); ts > 0 && time.Now().Unix() < ts {
-		return "", "", nil, 0, fmt.Errorf("CAPTCHA_WAIT_REQUIRED: global lockout active")
-	}
-
 	client, err := tlsclient.NewHttpClient(
 		tlsclient.NewNoopLogger(),
 		tlsclient.WithTimeoutSeconds(20),
@@ -226,10 +223,30 @@ func fetchVkCreds(ctx context.Context, link string) (string, string, []string, i
 		SecChUaMobile:   "?1",
 		SecChUaPlatform: `"Android"`,
 		Platform:        "Linux armv8l",
+		AcceptLanguage:  "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+	}
+
+	// Primary path: VK Calls anonymous flow — no captcha. The legacy captcha
+	// chain below stays as insurance for when this flow breaks (VK changes the
+	// messages.* endpoints, or a captcha gate appears even here).
+	if user, pass, addr, lifetime, vkErr := getVKCredsViaVKCalls(ctx, link, client, profile); vkErr == nil {
+		turnLog("[VK Auth] Success via VK Calls anonymous flow (no captcha)")
+		return user, pass, addr, lifetime, nil
+	} else {
+		turnLog("[VK Auth] VK Calls flow failed (%v) — falling back to legacy captcha path", vkErr)
+	}
+
+	// Global captcha lockout guards only the legacy path: if repeated captcha
+	// attempts failed recently, bail instead of running the full token chain
+	// just to hit captcha again. Advisory (60s), self-clearing.
+	if ts := globalCaptchaLockout.Load(); ts > 0 && time.Now().Unix() < ts {
+		return "", "", nil, 0, fmt.Errorf("CAPTCHA_WAIT_REQUIRED: global lockout active")
 	}
 
 	var lastErr error
-	for _, creds := range vkCredentialsList {
+	start := int(vkCredRotation.Add(1) - 1)
+	for i := 0; i < len(vkCredentialsList); i++ {
+		creds := vkCredentialsList[(start+i)%len(vkCredentialsList)]
 		// Inter-request gap (3-6s): enforces a minimum spacing between the
 		// END of one getTokenChain and the START of the next, even when
 		// different credential slots race via vkSemaphore(2). The mutex is
@@ -289,8 +306,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 		applyBrowserProfileFhttp(req, profile)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "*/*")
-		req.Header.Set("Origin", "https://vk.ru")
-		req.Header.Set("Referer", "https://vk.ru/")
+		req.Header.Set("Origin", "https://vk.com")
+		req.Header.Set("Referer", "https://vk.com/")
 		req.Header.Set("Sec-Fetch-Site", "same-site")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
@@ -322,7 +339,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	// when the original token may have expired during captcha solving.
 	refreshAnonymToken := func() (string, error) {
 		data := fmt.Sprintf("client_id=%s&token_type=messages&client_secret=%s&version=1&app_id=%s", creds.ClientID, creds.ClientSecret, creds.ClientID)
-		resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
+		resp, err := doRequest(data, "https://login.vk.com/?act=get_anonym_token")
 		if err != nil {
 			return "", err
 		}
@@ -352,8 +369,11 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	escapedName := neturl.QueryEscape(name)
 
 	// Token 1
+	// Keep token_type=messages: VK's scopes variant of get_anonym_token mints an
+	// OAuth-only token that getAnonymousToken rejects with anonym_token.not_found.
+	// Only the host moved to vk.com, not the params.
 	data := fmt.Sprintf("client_id=%s&token_type=messages&client_secret=%s&version=1&app_id=%s", creds.ClientID, creds.ClientSecret, creds.ClientID)
-	resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
+	resp, err := doRequest(data, "https://login.vk.com/?act=get_anonym_token")
 	if err != nil {
 		turnLog("[VK Auth] Token 1 request failed: %v", err)
 		return "", "", nil, 0, err
@@ -384,7 +404,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 
 	// getCallPreview — имитация поведения VK-клиента перед запросом токена звонка
 	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&fields=photo_200&access_token=%s", link, token1)
-	_, err = doRequest(data, fmt.Sprintf("https://api.vk.ru/method/calls.getCallPreview?v=5.275&client_id=%s", creds.ClientID))
+	_, err = doRequest(data, fmt.Sprintf("https://api.vk.com/method/calls.getCallPreview?v=5.282&client_id=%s", creds.ClientID))
 	if err != nil {
 		turnLog("[VK Auth] getCallPreview warning: %v", err)
 	}
@@ -393,7 +413,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 
 	// Token 2
 	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
-	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.275&client_id=%s", creds.ClientID)
+	urlAddr := fmt.Sprintf("https://api.vk.com/method/calls.getAnonymousToken?v=5.282&client_id=%s", creds.ClientID)
 
 	manualCaptcha := true
 	autoCaptchaSliderPOC := true

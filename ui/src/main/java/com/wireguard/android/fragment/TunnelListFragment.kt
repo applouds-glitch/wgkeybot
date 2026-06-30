@@ -44,7 +44,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.wireguard.android.backend.GoBackend
-import com.wireguard.android.backend.TurnBackend
 import com.wireguard.android.turn.TurnConfigProcessor
 import com.wireguard.android.widget.TvHexKeyboard
 import java.text.SimpleDateFormat
@@ -217,7 +216,14 @@ class TunnelListFragment : BaseFragment() {
                     // so the user sees the tap landed immediately and doesn't tap again.
                     vm.cancelledByUser = true
                     vm.notifyTunnelDown()
-                    withContext(Dispatchers.IO) { TurnBackend.wgTurnProxyStop() }
+                    // Stop TURN through the manager, not just the native proxy. When
+                    // cancelling a still-connecting tunnel, setStateAsync(DOWN) below
+                    // early-returns (tunnel.state is already DOWN) and never reaches
+                    // stopForTunnel — so userInitiatedStop would stay false and
+                    // performRestartSequence would keep reconnecting after the stop.
+                    withContext(Dispatchers.IO) {
+                        Application.getTurnProxyManager().stopForTunnel(TUNNEL_NAME)
+                    }
                 }
 
                 // Judge by the real resulting state, not the requested one: an atomic

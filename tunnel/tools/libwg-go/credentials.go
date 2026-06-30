@@ -17,6 +17,7 @@ type TurnCredentials struct {
 	Password    string
 	ServerAddrs []string
 	ExpiresAt   time.Time
+	FetchedAt   time.Time
 	Link        string
 }
 
@@ -95,9 +96,13 @@ func invalidateAllCaches() {
 func invalidateGroupCreds(groupID int) {
 	cache := getStreamCache(groupID * streamsPerCred)
 	cache.mutex.Lock()
+	var lived time.Duration
+	if !cache.creds.FetchedAt.IsZero() {
+		lived = time.Since(cache.creds.FetchedAt).Round(time.Second)
+	}
 	cache.creds.ExpiresAt = time.Now().Add(-time.Second)
 	cache.mutex.Unlock()
-	turnLog("[Auth] Credential cache for group %d force-expired", groupID)
+	turnLog("[Auth] Credential cache for group %d force-expired (lived %v)", groupID, lived)
 }
 
 // refreshGroupCreds is the throttled, error-driven re-fetch entry point used by
@@ -146,7 +151,14 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 		return cache.creds.Username, cache.creds.Password, cache.creds.ServerAddrs, nil
 	}
 
-	turnLog("[STREAM %d] Cache miss (cache=%d), fetching...", streamID, cacheID)
+	if !cache.creds.FetchedAt.IsZero() {
+		lived := time.Since(cache.creds.FetchedAt).Round(time.Second)
+		expired := time.Since(cache.creds.ExpiresAt).Round(time.Second)
+		turnLog("[STREAM %d] Cache miss (cache=%d) — previous creds lived %v (expired %v ago), fetching...",
+			streamID, cacheID, lived, expired)
+	} else {
+		turnLog("[STREAM %d] Cache miss (cache=%d), fetching...", streamID, cacheID)
+	}
 	select {
 	case <-ctx.Done():
 		return "", "", nil, ctx.Err()
@@ -173,6 +185,7 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 		Password:    pass,
 		ServerAddrs: addrs,
 		ExpiresAt:   expiry,
+		FetchedAt:   time.Now(),
 		Link:        link,
 	}
 	turnLog("[STREAM %d] Credentials cached until %v (cache=%d, api_ttl=%ds)",

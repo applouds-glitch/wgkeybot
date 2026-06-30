@@ -1,0 +1,286 @@
+/* SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright © 2026 WireGuard LLC. All Rights Reserved.
+ */
+
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	neturl "net/url"
+	"strings"
+
+	fhttp "github.com/bogdanfinn/fhttp"
+	"github.com/google/uuid"
+	tlsclient "github.com/kiper292/tls-client"
+)
+
+// VK Calls anonymous flow — the captcha-free path to TURN credentials.
+//
+// Unlike the legacy chain (login.vk.com get_anonym_token → calls.getAnonymousToken
+// on api.vk.com v5.282, which is captcha-gated with error_code 14), this flow
+// uses the VK Connect app id on api.vk.me with the messages.* endpoints, which
+// mint an OK anonym call token WITHOUT a captcha. The final OK CDN join
+// (auth.anonymLogin + vchat.joinConversationByLink on calls.okcdn.ru) is the
+// same handshake the legacy path already performs.
+//
+// Ported from amurcanov/proxy-turn-vk-android#218 (itself ported from the iOS
+// client), adapted to reuse our protected-socket TLS client, DNS resolver and
+// turn_server lifetime parsing.
+const (
+	vkConnectClientID     = "8093730"
+	vkCallsAPIHost        = "api.vk.me"
+	vkCallsAnonAPIVersion = "5.276"
+	vkCallsOKHost         = "https://calls.okcdn.ru/fb.do"
+	vkCallsOKAppKey       = "CGMMEJLGDIHBABABA"
+)
+
+// getVKCredsViaVKCalls runs the 5-step VK Calls anonymous flow and returns
+// (username, password, resolvedTurnAddrs, lifetimeSecs, error). It reuses the
+// caller's TLS client so requests still go over wgProtectSocket-bound sockets.
+func getVKCredsViaVKCalls(ctx context.Context, link string, client tlsclient.HttpClient, profile Profile) (string, string, []string, int, error) {
+	deviceID := uuid.New().String()
+	name := generateName()
+	nameEnc := neturl.QueryEscape(name)
+	linkURL := neturl.QueryEscape("https://vk.com/call/join/" + link)
+
+	doRequest := func(step, url string) (map[string]interface{}, error) {
+		req, err := fhttp.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(nil))
+		if err != nil {
+			return nil, fmt.Errorf("%s: create request: %w", step, err)
+		}
+		req.Header.Set("User-Agent", profile.UserAgent)
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Accept-Language", profileAcceptLanguage(profile))
+
+		httpResp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("%s: request failed: %w", step, err)
+		}
+		defer func() { _ = httpResp.Body.Close() }()
+
+		body, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("%s: read response: %w", step, err)
+		}
+		var resp map[string]interface{}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("%s: unmarshal JSON: %w", step, err)
+		}
+		return resp, nil
+	}
+
+	// Step 1: auth.getAnonymToken (VK Connect app id) → anonymous_token.
+	step1URL := fmt.Sprintf(
+		"https://%s/method/auth.getAnonymToken?v=%s&client_id=%s&link=%s&device_id=%s&anonymName=%s&lang=en",
+		vkCallsAPIHost, vkCallsAnonAPIVersion, vkConnectClientID, linkURL, deviceID, nameEnc,
+	)
+	resp1, err := doRequest("step1 auth.getAnonymToken", step1URL)
+	if err != nil {
+		return "", "", nil, 0, err
+	}
+	anonymToken, err := extractVKCallsStr(resp1, "response", "token")
+	if err != nil {
+		return "", "", nil, 0, fmt.Errorf("step1 parse anonymous_token: %w", err)
+	}
+	anonymTokenEnc := neturl.QueryEscape(anonymToken)
+	turnLog("[VKCalls] step1 OK, anonymous_token (%d chars)", len(anonymToken))
+
+	// Step 2: messages.getCallPreview → user_id + secret.
+	step2URL := fmt.Sprintf(
+		"https://%s/method/messages.getCallPreview?v=%s&anonymous_token=%s&device_id=%s&extended=1&fields=first_name,last_name,photo_200&lang=en&link=%s",
+		vkCallsAPIHost, vkCallsAnonAPIVersion, anonymTokenEnc, deviceID, linkURL,
+	)
+	resp2, err := doRequest("step2 messages.getCallPreview", step2URL)
+	if err != nil {
+		return "", "", nil, 0, err
+	}
+	if apiErr := vkCallsAPIError("step2 messages.getCallPreview", resp2); apiErr != nil {
+		return "", "", nil, 0, apiErr
+	}
+	userIDFloat, err := extractVKCallsFloat(resp2, "response", "user_id")
+	if err != nil {
+		return "", "", nil, 0, fmt.Errorf("step2 parse user_id: %w", err)
+	}
+	userIDStr := fmt.Sprintf("%.0f", userIDFloat)
+	secret, err := extractVKCallsStr(resp2, "response", "secret")
+	if err != nil {
+		return "", "", nil, 0, fmt.Errorf("step2 parse secret: %w", err)
+	}
+	turnLog("[VKCalls] step2 OK, user_id=%s, secret (%d chars)", userIDStr, len(secret))
+
+	// Step 3: messages.getAnonymCallToken (user_id, secret) → OK anonym token.
+	step3URL := fmt.Sprintf(
+		"https://%s/method/messages.getAnonymCallToken?v=%s&anonymous_token=%s&device_id=%s&link=%s&name=%s&user_id=%s&secret=%s&lang=en",
+		vkCallsAPIHost, vkCallsAnonAPIVersion, anonymTokenEnc, deviceID, linkURL, nameEnc, userIDStr, neturl.QueryEscape(secret),
+	)
+	resp3, err := doRequest("step3 messages.getAnonymCallToken", step3URL)
+	if err != nil {
+		return "", "", nil, 0, err
+	}
+	if apiErr := vkCallsAPIError("step3 messages.getAnonymCallToken", resp3); apiErr != nil {
+		return "", "", nil, 0, apiErr
+	}
+	okAnonymToken, err := extractVKCallsStr(resp3, "response", "token")
+	if err != nil {
+		return "", "", nil, 0, fmt.Errorf("step3 parse OK anonym token: %w", err)
+	}
+	turnLog("[VKCalls] step3 OK, OK anonymToken (%d chars)", len(okAnonymToken))
+
+	// Step 4: auth.anonymLogin on the OK CDN → session_key.
+	okDeviceID := uuid.New().String()
+	step4URL := vkCallsOKHost + "?session_data=" +
+		neturl.QueryEscape(fmt.Sprintf(`{"version":2,"device_id":"%s","client_version":"1.0.1"}`, okDeviceID)) +
+		"&method=auth.anonymLogin&format=JSON&application_key=" + vkCallsOKAppKey
+	resp4, err := doRequest("step4 auth.anonymLogin", step4URL)
+	if err != nil {
+		return "", "", nil, 0, err
+	}
+	if okErr := vkCallsOKError("step4 auth.anonymLogin", resp4); okErr != nil {
+		return "", "", nil, 0, okErr
+	}
+	sessionKey, err := extractVKCallsStr(resp4, "session_key")
+	if err != nil {
+		return "", "", nil, 0, fmt.Errorf("step4 parse session_key: %w", err)
+	}
+	turnLog("[VKCalls] step4 OK, session_key (%d chars)", len(sessionKey))
+
+	// Step 5: vchat.joinConversationByLink → turn_server creds.
+	step5URL := fmt.Sprintf(
+		"%s?joinLink=%s&isVideo=false&protocolVersion=5&capabilities=2F7F&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=%s&session_key=%s",
+		vkCallsOKHost, neturl.QueryEscape(link), okAnonymToken, vkCallsOKAppKey, sessionKey,
+	)
+	resp5, err := doRequest("step5 vchat.joinConversationByLink", step5URL)
+	if err != nil {
+		return "", "", nil, 0, err
+	}
+	if okErr := vkCallsOKError("step5 vchat.joinConversationByLink", resp5); okErr != nil {
+		return "", "", nil, 0, okErr
+	}
+
+	user, pass, addrs, lifetime, err := parseVKCallsTurnServer(ctx, resp5)
+	if err != nil {
+		return "", "", nil, 0, fmt.Errorf("step5 %w", err)
+	}
+	turnLog("[VKCalls] SUCCESS — TURN urls=%d, lifetime=%ds (no captcha)", len(addrs), lifetime)
+	return user, pass, addrs, lifetime, nil
+}
+
+// parseVKCallsTurnServer extracts username/credential, resolves every TURN URL
+// through our DNS cache and reads the lifetime/ttl — mirroring the legacy chain.
+func parseVKCallsTurnServer(ctx context.Context, resp map[string]interface{}) (string, string, []string, int, error) {
+	ts, ok := resp["turn_server"].(map[string]interface{})
+	if !ok || ts == nil {
+		return "", "", nil, 0, fmt.Errorf("turn_server not found in response")
+	}
+	username, _ := ts["username"].(string)
+	credential, _ := ts["credential"].(string)
+	if username == "" || credential == "" {
+		return "", "", nil, 0, fmt.Errorf("turn_server username/credential missing")
+	}
+	urls, ok := ts["urls"].([]interface{})
+	if !ok || len(urls) == 0 {
+		return "", "", nil, 0, fmt.Errorf("turn_server.urls empty")
+	}
+
+	var addresses []string
+	for _, u := range urls {
+		urlStr, ok := u.(string)
+		if !ok {
+			continue
+		}
+		address := strings.TrimPrefix(strings.TrimPrefix(strings.Split(urlStr, "?")[0], "turn:"), "turns:")
+		if host, port, splitErr := net.SplitHostPort(address); splitErr == nil {
+			if ip := net.ParseIP(host); ip == nil {
+				if resolvedIP, resolveErr := hostCache.Resolve(ctx, host); resolveErr != nil {
+					turnLog("[VKCalls] Warning: failed to resolve TURN server %s: %v", host, resolveErr)
+				} else {
+					address = net.JoinHostPort(resolvedIP, port)
+					turnLog("[VKCalls] Resolved TURN server %s -> %s", host, resolvedIP)
+				}
+			}
+		}
+		addresses = append(addresses, address)
+	}
+	if len(addresses) == 0 {
+		return "", "", nil, 0, fmt.Errorf("turn_server.urls had no usable addresses")
+	}
+
+	var lifetimeSecs int
+	if v, ok := ts["lifetime"].(float64); ok && v > 0 {
+		lifetimeSecs = int(v)
+	} else if v, ok := ts["ttl"].(float64); ok && v > 0 {
+		lifetimeSecs = int(v)
+	}
+	return username, credential, addresses, lifetimeSecs, nil
+}
+
+// vkCallsAPIError reports a VK API ("api.vk.me") error. error_code 14 is the
+// captcha gate — surfaced distinctly so the log makes clear the captcha-free
+// flow hit a captcha and the caller is falling back to the legacy path.
+func vkCallsAPIError(step string, resp map[string]interface{}) error {
+	errObj, ok := resp["error"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	code, _ := errObj["error_code"].(float64)
+	msg, _ := errObj["error_msg"].(string)
+	if code == 0 && msg == "" {
+		return nil
+	}
+	if int(code) == 14 {
+		return fmt.Errorf("%s: VK captcha gate (error_code 14): %s", step, msg)
+	}
+	return fmt.Errorf("%s: VK API error_code=%d: %s", step, int(code), msg)
+}
+
+// vkCallsOKError reports an OK CDN ("calls.okcdn.ru") error, which surfaces as a
+// top-level error_code/error_msg rather than a nested "error" object.
+func vkCallsOKError(step string, resp map[string]interface{}) error {
+	if msg, ok := resp["error"].(string); ok && msg != "" {
+		return fmt.Errorf("%s: OK CDN error: %s", step, msg)
+	}
+	code, ok := resp["error_code"].(float64)
+	if !ok || code == 0 {
+		return nil
+	}
+	msg, _ := resp["error_msg"].(string)
+	return fmt.Errorf("%s: OK CDN error_code=%d: %s", step, int(code), msg)
+}
+
+func extractVKCallsStr(resp map[string]interface{}, keys ...string) (string, error) {
+	var cur interface{} = resp
+	for _, k := range keys {
+		m, ok := cur.(map[string]interface{})
+		if !ok {
+			return "", fmt.Errorf("expected map at key %q, got %T", k, cur)
+		}
+		cur = m[k]
+	}
+	s, ok := cur.(string)
+	if !ok {
+		return "", fmt.Errorf("expected string at path %v, got %T", keys, cur)
+	}
+	return s, nil
+}
+
+func extractVKCallsFloat(resp map[string]interface{}, keys ...string) (float64, error) {
+	var cur interface{} = resp
+	for _, k := range keys {
+		m, ok := cur.(map[string]interface{})
+		if !ok {
+			return 0, fmt.Errorf("expected map at key %q, got %T", k, cur)
+		}
+		cur = m[k]
+	}
+	f, ok := cur.(float64)
+	if !ok {
+		return 0, fmt.Errorf("expected number at path %v, got %T", keys, cur)
+	}
+	return f, nil
+}

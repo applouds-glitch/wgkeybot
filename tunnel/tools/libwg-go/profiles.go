@@ -13,6 +13,10 @@ type Profile struct {
 	// fingerprint. Must stay consistent with UserAgent / SecChUaPlatform
 	// (e.g. "Win32", "MacIntel", "Linux x86_64", "Linux armv8l" for Android).
 	Platform string
+	// AcceptLanguage is the Accept-Language header and navigator.language(s)
+	// reported for this profile. A Russian VK user on an Android device sends
+	// ru-RU; an en-US value paired with a vk.ru session is a bot signal.
+	AcceptLanguage string
 }
 
 // profiles contain paired User-Agent and Client Hints strings to harden bot detection.
