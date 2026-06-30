@@ -103,6 +103,13 @@ class TurnProxyManager(private val context: Context) {
                 return // Exit loop on success
             }
 
+            // A user stop that landed during the attempt makes this failure
+            // expected, not retryable. Bail out now instead of logging a
+            // misleading "retrying" line and sleeping before the loop condition
+            // would catch it — that retry is exactly the post-disconnect
+            // "keeps connecting" the user sees.
+            if (userInitiatedStop || !currentCoroutineContext().isActive) return
+
             // Exponential backoff logic
             val delayMs = when {
                 attempts <= 2 -> 2000L
@@ -246,6 +253,13 @@ class TurnProxyManager(private val context: Context) {
                 val listenAddr = "127.0.0.1:${settings.localPort}"
                 var ret = -1
                 for ((attempt, streamsToTry) in streamCountsToTry.withIndex()) {
+                    // A user-initiated stop (stopForTunnel) may have landed while a
+                    // previous attempt was in flight. Don't start another proxy — that
+                    // would just re-bind the listener the user already asked to tear down.
+                    if (userInitiatedStop) {
+                        Log.d(TAG, "Stop requested — abandoning TURN start")
+                        break
+                    }
                     if (attempt > 0) {
                         val label = when {
                             remembered != null && attempt == 1 && streamsToTry == settings.streams -> "remembered count failed, trying primary $streamsToTry"
@@ -289,6 +303,17 @@ class TurnProxyManager(private val context: Context) {
                     }
 
                     if (ret == 0) {
+                        // The native stop in stopForTunnel runs without operationMutex so
+                        // it can interrupt an in-flight start. If it raced ahead of this
+                        // wgTurnProxyStart — before the proxy registered its cancel hook —
+                        // it missed the listener and left UDP :9000 bound. Now that the
+                        // proxy is up (and cancellable), honor that stop by tearing it down.
+                        if (userInitiatedStop) {
+                            Log.w(TAG, "Stop requested during startup — stopping freshly started proxy")
+                            TurnBackend.wgTurnProxyStop()
+                            instance.running = false
+                            return@withContext false
+                        }
                         instance.running = true
                         lastSuccessfulStreams[tunnelName] = streamsToTry
                         val streamInfo = when {
@@ -315,12 +340,24 @@ class TurnProxyManager(private val context: Context) {
             }
         }
 
+    /**
+     * Signal an imminent user-initiated stop without touching the native proxy.
+     * Setting userInitiatedStop / clearing the active session here lets callers
+     * inhibit the network monitor BEFORE the WireGuard backend is torn down:
+     * bringing the tunnel down re-evaluates the physical network, and otherwise
+     * PhysicalNetworkMonitor would restart the proxy in the gap before
+     * stopForTunnel runs — leaving it reconnecting after the user disconnected.
+     */
+    fun beginUserStop() {
+        userInitiatedStop = true
+        activeTunnelName = null
+        activeSettings = null
+        lastKnownNetwork = null
+    }
+
     suspend fun stopForTunnel(tunnelName: String) =
         withContext(Dispatchers.IO) {
-            userInitiatedStop = true
-            activeTunnelName = null
-            activeSettings = null
-            lastKnownNetwork = null
+            beginUserStop()
 
             // Clear remembered stream count so next manual connect starts fresh
             lastSuccessfulStreams.remove(tunnelName)
@@ -328,13 +365,18 @@ class TurnProxyManager(private val context: Context) {
             // Reset VpnService reference
             TurnBackend.onVpnServiceCreated(null)
 
-            // Stop TURN proxy BEFORE acquiring mutex to avoid deadlock with startup wait
+            // Stop the proxy BEFORE acquiring the mutex so an in-flight start
+            // (which holds the mutex for the whole native call) is interrupted
+            // immediately instead of after its 30s startup window.
             TurnBackend.wgTurnProxyStop()
 
             operationMutex.lock()
             try {
-                val instance = instances[tunnelName] ?: return@withContext
-                instance.running = false
+                // Authoritative stop, serialized strictly after any in-flight
+                // start. If a start raced ahead and armed its cancel only after
+                // the pre-mutex stop ran, that proxy is still torn down here.
+                TurnBackend.wgTurnProxyStop()
+                instances[tunnelName]?.running = false
                 val msg = "TURN stopped for tunnel \"$tunnelName\""
                 Log.d(TAG, msg)
                 appendLogLine(tunnelName, msg)

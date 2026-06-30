@@ -319,6 +319,12 @@ class TunnelManager(
             // Writing {} here (after DataStore edit() commits) eliminates that race window.
             if (shouldStopTurn) {
                 UserKnobs.setRunningTunnels(runningTunnelNamesExcluding(tunnel.name))
+                // Inhibit TURN auto-restart before backend teardown. Bringing
+                // WireGuard down re-evaluates the physical network, which can
+                // otherwise trip PhysicalNetworkMonitor into restarting the
+                // proxy in the window before stopForTunnel runs — leaving it
+                // endlessly reconnecting after the user pressed disconnect.
+                if (turnEnabled) getTurnProxyManager().beginUserStop()
             }
 
             if (turnEnabled && shouldStartTurn) {
