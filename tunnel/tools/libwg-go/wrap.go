@@ -5,6 +5,7 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -64,35 +65,31 @@ func readHeader(buf []byte) (counter uint64, payloadLen int) {
 
 // ── XOR keystream ────────────────────────────────────────────────────────────
 
-func xorKeystream(key []byte, counter uint64, length int) []byte {
-	if length <= 0 {
-		return nil
+// xorInPlace applies the SHA-256 hash-chain keystream (keyed by key+counter) to
+// data in place. Each 32-byte keystream block is generated on the fly and XORed
+// with crypto/subtle (vectorized), so no keystream buffer is allocated per
+// packet. The keystream byte sequence is identical to the previous
+// xorKeystream-based implementation, so the wire format is unchanged.
+func xorInPlace(key []byte, counter uint64, data []byte) {
+	if len(data) == 0 {
+		return
 	}
-	ks := make([]byte, length)
 	var state [32]byte
 	h := sha256.New()
 	h.Write(key)
 	var ctr [8]byte
-	binary.BigEndian.PutUint64(ctr[:], counter)
+	binary.BigEndian.PutUint64(ctr[:], uint64(uint32(counter)))
 	h.Write(ctr[:])
 	h.Sum(state[:0])
-	for off := 0; off < length; off += 32 {
-		n := length - off
+	for off := 0; off < len(data); off += 32 {
+		n := len(data) - off
 		if n > 32 {
 			n = 32
 		}
-		copy(ks[off:], state[:n])
-		if off+32 < length {
+		subtle.XORBytes(data[off:off+n], data[off:off+n], state[:n])
+		if off+32 < len(data) {
 			state = sha256.Sum256(state[:])
 		}
-	}
-	return ks
-}
-
-func xorInPlace(key []byte, counter uint64, data []byte) {
-	ks := xorKeystream(key, uint64(uint32(counter)), len(data))
-	for i := range data {
-		data[i] ^= ks[i]
 	}
 }
 
@@ -141,18 +138,19 @@ func wrapPacket(key, payload []byte) ([]byte, error) {
 	counter := (wrapCounter.Add(1) - 1) % wrapCounterMod
 
 	padLen := randPadLen()
-	plaintext := make([]byte, len(payload)+padLen+wrapPadLen)
+	plainLen := len(payload) + padLen + wrapPadLen
+	// Single allocation: build header + plaintext contiguously in out, then
+	// encrypt the plaintext region in place (no separate plaintext/keystream
+	// buffers). Wire bytes are identical to the previous implementation.
+	out := make([]byte, wrapHdrLen+plainLen)
+	putHeader(out[:wrapHdrLen], counter, plainLen)
+	plaintext := out[wrapHdrLen:]
 	copy(plaintext, payload)
 	if padLen > 0 {
 		rand.Read(plaintext[len(payload) : len(payload)+padLen])
 	}
-	binary.BigEndian.PutUint16(plaintext[len(plaintext)-wrapPadLen:], uint16(padLen))
-
+	binary.BigEndian.PutUint16(plaintext[plainLen-wrapPadLen:], uint16(padLen))
 	xorInPlace(key, counter, plaintext)
-
-	out := make([]byte, wrapHdrLen+len(plaintext))
-	putHeader(out[:wrapHdrLen], counter, len(plaintext))
-	copy(out[wrapHdrLen:], plaintext)
 	return out, nil
 }
 
@@ -168,7 +166,13 @@ func unwrapPacket(key, wire, dst []byte) (int, error) {
 	if len(ciphertext) < wrapPadLen {
 		return 0, errors.New("wrap: encrypted payload too short")
 	}
-	plaintext := make([]byte, len(ciphertext))
+	// Decrypt in place into dst (no scratch allocation): copy the ciphertext
+	// into dst, XOR it there, then the recovered payload is dst[:n]. dst must be
+	// large enough to hold the whole ciphertext temporarily.
+	if len(ciphertext) > len(dst) {
+		return 0, errors.New("wrap: dst buffer too small")
+	}
+	plaintext := dst[:len(ciphertext)]
 	copy(plaintext, ciphertext)
 	xorInPlace(key, counter, plaintext)
 
@@ -180,10 +184,6 @@ func unwrapPacket(key, wire, dst []byte) (int, error) {
 		return 0, errors.New("wrap: invalid padding")
 	}
 	n := len(plaintext) - wrapPadLen - padLen
-	if n > len(dst) {
-		return 0, errors.New("wrap: dst buffer too small")
-	}
-	copy(dst, plaintext[:n])
 	return n, nil
 }
 
@@ -194,15 +194,14 @@ func wrapCoverPacket(key []byte) ([]byte, error) {
 	counter := (wrapCounter.Add(1) - 1) % wrapCounterMod
 
 	bodyLen := 30 + randPadLen()*4
-	plaintext := make([]byte, bodyLen+wrapPadLen)
+	plainLen := bodyLen + wrapPadLen
+	// Single allocation, same as wrapPacket.
+	out := make([]byte, wrapHdrLen+plainLen)
+	putHeader(out[:wrapHdrLen], counter, plainLen)
+	plaintext := out[wrapHdrLen:]
 	rand.Read(plaintext[:bodyLen])
 	binary.BigEndian.PutUint16(plaintext[bodyLen:], wrapCoverMark)
-
 	xorInPlace(key, counter, plaintext)
-
-	out := make([]byte, wrapHdrLen+len(plaintext))
-	putHeader(out[:wrapHdrLen], counter, len(plaintext))
-	copy(out[wrapHdrLen:], plaintext)
 	return out, nil
 }
 

@@ -156,6 +156,14 @@ public final class TurnBackend {
     public static native void wgTurnProxyStop();
     public static native void wgNotifyNetworkChange();
     public static native void wgSetPauseFlag(int flag);
+
+    /**
+     * Signals the native TURN proxy that the device/screen has gone idle (1) or
+     * active (0). While idle, per-stream keepalives relax to the NAT-hold floor
+     * and the dead-stream detector widens, cutting radio wakeups without dropping
+     * the tunnel. Wired to screen on/off + Doze in GoBackend.VpnService.
+     */
+    public static native void wgSetIdleMode(int idle);
     public static native String wgGetNetworkDnsServers(long networkHandle);
 
     private static final String TAG = "WireGuard/TurnBackend";

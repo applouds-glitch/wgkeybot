@@ -317,7 +317,7 @@ public final class GoBackend implements Backend {
 
         @Nullable private GoBackend owner;
         @Nullable private PowerManager.WakeLock wakeLock;
-        @Nullable private BroadcastReceiver dozeModeReceiver;
+        @Nullable private BroadcastReceiver powerStateReceiver;
         @Nullable private ConnectivityManager connectivityManager;
         @Nullable private ConnectivityManager.NetworkCallback networkCallback;
         @Nullable private String lastNotificationText;
@@ -468,25 +468,46 @@ public final class GoBackend implements Backend {
             acquireWakeLock();
             setupNetworkCallback();
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                dozeModeReceiver = new BroadcastReceiver() {
-                    @Override
-                    public void onReceive(final Context context, final Intent intent) {
-                        final PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-                        final boolean idle = pm != null && pm.isDeviceIdleMode();
-                        Log.d(TAG, "Doze idle=" + idle);
-                       // TurnBackend.wgSetPauseFlag(idle ? 1 : 0);
+            // Drive the native keepalive cadence from device power state: screen
+            // off / Doze → idle (relaxed keepalive, fewer radio wakeups), screen
+            // on → active (fast keepalive for snappy recovery). This never pauses
+            // the tunnel — only the keepalive interval and dead-stream detector
+            // adapt (see TurnBackend.wgSetIdleMode / native keepaliveCadence).
+            powerStateReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(final Context context, final Intent intent) {
+                    final String action = intent.getAction();
+                    if (action == null)
+                        return;
+                    switch (action) {
+                        case Intent.ACTION_SCREEN_ON:
+                            Log.d(TAG, "Screen on → keepalive active");
+                            TurnBackend.wgSetIdleMode(0);
+                            break;
+                        case Intent.ACTION_SCREEN_OFF:
+                            Log.d(TAG, "Screen off → keepalive idle");
+                            TurnBackend.wgSetIdleMode(1);
+                            break;
+                        case PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED:
+                            final PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                            if (pm != null && pm.isDeviceIdleMode()) {
+                                Log.d(TAG, "Doze idle → keepalive idle");
+                                TurnBackend.wgSetIdleMode(1);
+                            }
+                            // Doze exit leaves the cadence to the screen state
+                            // (SCREEN_ON restores active); do nothing here.
+                            break;
+                        default:
+                            break;
                     }
-                };
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    registerReceiver(dozeModeReceiver,
-                            new IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED),
-                            Context.RECEIVER_NOT_EXPORTED);
-                } else {
-                    registerReceiver(dozeModeReceiver,
-                            new IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED));
                 }
-            }
+            };
+            final IntentFilter powerFilter = new IntentFilter();
+            powerFilter.addAction(Intent.ACTION_SCREEN_ON);
+            powerFilter.addAction(Intent.ACTION_SCREEN_OFF);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+                powerFilter.addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED);
+            registerReceiver(powerStateReceiver, powerFilter);
 
 
 
@@ -494,15 +515,34 @@ public final class GoBackend implements Backend {
         }
 
         @Override
+        public void onRevoke() {
+            // Another VPN app (or "always-on VPN" / system) revoked our service.
+            // The default onRevoke just stops the service; do it ourselves but
+            // first tear down the userspace TURN proxy so its 127.0.0.1:9000
+            // listener is released immediately — otherwise the proxy goroutine
+            // keeps the loopback port bound (it is not tied to the VPN tunnel),
+            // blocking any reconnect from this or another build of the app.
+            Log.d(TAG, "VpnService.onRevoke() — stopping TURN proxy and service");
+            TurnBackend.wgTurnProxyStop();
+            super.onRevoke();
+        }
+
+        @Override
         public void onDestroy() {
             TurnBackend.onVpnServiceCreated(null);
+            // Release the TURN proxy's 127.0.0.1:9000 bind on every teardown path
+            // (revoke, stopSelf, system kill). onDestroy previously only turned
+            // WireGuard off (wgTurnOff) and left the proxy goroutine holding the
+            // loopback port. Idempotent: a normal in-app disconnect already
+            // stopped it via TurnProxyManager, so this is a no-op there.
+            TurnBackend.wgTurnProxyStop();
             Log.d(TAG, "VpnService.onDestroy()");
             stopForeground(STOP_FOREGROUND_REMOVE);
             releaseWakeLock();
             teardownNetworkCallback();
-            if (dozeModeReceiver != null) {
-                unregisterReceiver(dozeModeReceiver);
-                dozeModeReceiver = null;
+            if (powerStateReceiver != null) {
+                unregisterReceiver(powerStateReceiver);
+                powerStateReceiver = null;
             }
             if (owner != null) {
                 final Tunnel tunnel = owner.currentTunnel;
