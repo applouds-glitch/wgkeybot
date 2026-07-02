@@ -70,6 +70,7 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
             val peerTypeText = when (currentPeerType) {
                 "proxy_v1" -> getString(R.string.turn_peer_type_proxy_v1)
                 "wireguard" -> getString(R.string.turn_peer_type_wireguard)
+                "srtp" -> getString(R.string.turn_peer_type_srtp)
                 else -> getString(R.string.turn_peer_type_proxy_v2)
             }
             if (turnPeerTypeSpinner.text.toString() != peerTypeText) {
@@ -158,6 +159,7 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
             val peerTypeIndex = when (currentPeerType) {
                 "proxy_v1" -> 1
                 "wireguard" -> 2
+                "srtp" -> 3
                 else -> 0
             }
             if (turnPeerTypeSpinner.text.isNotEmpty()) {
@@ -174,6 +176,7 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
                 config?.turn?.peerType = when (position) {
                     1 -> "proxy_v1"
                     2 -> "wireguard"
+                    3 -> "srtp"
                     else -> "proxy_v2"
                 }
             }

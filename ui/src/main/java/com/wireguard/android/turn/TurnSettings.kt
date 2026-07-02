@@ -19,7 +19,7 @@ data class TurnSettings(
     val localPort: Int = 9000,
     val turnIp: String = "",
     val turnPort: Int = 0,
-    val peerType: String = "proxy_v2",  // "proxy_v2", "proxy_v1", "wireguard"
+    val peerType: String = "proxy_v2",  // "proxy_v2", "proxy_v1", "wireguard", "srtp"
     val streamsPerCred: Int = 4,
     val watchdogTimeout: Int = 0,
     val wrapKey: String = "",          // ← новое: 64-hex ChaCha20 ключ, "" = WRAP выключен
@@ -125,7 +125,7 @@ data class TurnSettings(
             }
             require(settings.streams in 1..128) { "Streams must be between 1 and 128" }
             require(settings.localPort in 1..65535) { "Local port must be between 1 and 65535" }
-            require(settings.peerType in listOf("proxy_v2", "proxy_v1", "wireguard")) { "Invalid peer type: ${settings.peerType}" }
+            require(settings.peerType in listOf("proxy_v2", "proxy_v1", "wireguard", "srtp")) { "Invalid peer type: ${settings.peerType}" }
             require(settings.streamsPerCred in 1..16) { "Streams per credentials must be between 1 and 16" }
 
             if (settings.turnPort != 0) {

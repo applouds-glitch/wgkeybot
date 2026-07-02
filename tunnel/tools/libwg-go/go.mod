@@ -6,7 +6,6 @@ require (
 	github.com/bogdanfinn/fhttp v0.6.8
 	github.com/cbeuw/connutil v1.0.1
 	github.com/google/uuid v1.6.0
-	github.com/gorilla/websocket v1.5.3
 	//github.com/bogdanfinn/tls-client v1.14.0
 	github.com/kiper292/tls-client v1.14.1
 	github.com/pion/dtls/v3 v3.0.10
@@ -14,6 +13,11 @@ require (
 	github.com/pion/turn/v5 v5.0.2
 	golang.org/x/sys v0.39.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
+)
+
+require (
+	github.com/pion/rtp v1.10.1
+	github.com/pion/srtp/v3 v3.0.10
 )
 
 require (
@@ -25,6 +29,7 @@ require (
 	github.com/bogdanfinn/websocket v1.5.5-barnius // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
+	github.com/pion/rtcp v1.2.16 // indirect
 	github.com/pion/stun/v3 v3.1.1 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect

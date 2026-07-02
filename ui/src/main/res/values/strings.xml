@@ -279,10 +279,12 @@
         <item>@string/turn_peer_type_proxy_v2</item>
         <item>@string/turn_peer_type_proxy_v1</item>
         <item>@string/turn_peer_type_wireguard</item>
+        <item>@string/turn_peer_type_srtp</item>
     </string-array>
     <string name="turn_peer_type_proxy_v2">Proxy v2</string>
     <string name="turn_peer_type_proxy_v1">Proxy v1</string>
     <string name="turn_peer_type_wireguard">WireGuard</string>
+    <string name="turn_peer_type_srtp">SRTP (VP8)</string>
     <string name="turn_server_mode">TURN server</string>
     <string name="turn_mode_vk_link">VK Link</string>
     <string name="turn_mode_wb">WB</string>

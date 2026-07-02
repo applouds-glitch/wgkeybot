@@ -19,6 +19,7 @@ extern char *wgVersion();
 extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, const char *mode, int n, int udp, const char *listen_addr, const char *turn_ip, int turn_port, const char *peer_type, int streams_per_cred, int watchdog_timeout, const char *wrap_key, long long network_handle);
 extern void wgTurnProxyStop();
 extern void wgNotifyNetworkChange();
+extern void wgSetIdleMode(int idle);
 extern const char* getNetworkDnsServers(long long network_handle);
 
 static JavaVM *java_vm;
@@ -337,6 +338,11 @@ JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProx
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgNotifyNetworkChange(JNIEnv *env, jclass c)
 {
 	wgNotifyNetworkChange();
+}
+
+JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetIdleMode(JNIEnv *env, jclass c, jint idle)
+{
+	wgSetIdleMode(idle);
 }
 
 JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_TurnBackend_wgGetNetworkDnsServers(JNIEnv *env, jclass c, jlong network_handle)

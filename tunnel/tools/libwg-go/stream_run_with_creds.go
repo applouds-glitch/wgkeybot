@@ -211,13 +211,13 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	turnLog("[STREAM %d] Relay: %s", s.id, w.relay.LocalAddr())
 	recordPreferred(cfg.GroupID, w.addr)
 
-	sendBinding := w.client.SendBindingRequest
-
 	switch cfg.PeerType {
 	case "wireguard":
-		return s.runNoDTLS(ctx, w.relay, cfg.PeerAddr, sendBinding)
+		return s.runNoDTLS(ctx, w.relay, cfg.PeerAddr)
+	case "srtp":
+		return s.runSRTP(ctx, w.relay, cfg.PeerAddr)
 	default:
-		return s.runDTLS(ctx, w.relay, cfg.PeerAddr, true, sendBinding)
+		return s.runDTLS(ctx, w.relay, cfg.PeerAddr, true)
 	}
 }
 
