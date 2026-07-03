@@ -75,6 +75,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			watchdogTimeout: wd,
 			okFunc:          okFunc,
 			wrapKey:         cfg.WrapKey, // ← добавить
+			ssrc:            randU32(),   // per-stream RTP SSRC → distinct ChaCha nonce
 		}
 	}
 

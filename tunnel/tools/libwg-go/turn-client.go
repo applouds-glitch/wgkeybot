@@ -123,6 +123,12 @@ type stream struct {
 	// wrapPacket / unwrapPacket before any DTLS processing.
 	// nil = WRAP disabled (plain mode).
 	wrapKey []byte
+
+	// ssrc is this stream's random RTP SSRC. It is written into every outbound
+	// WRAP header and folded into the ChaCha20 nonce, so each stream (and each
+	// device) uses a distinct keystream even at the same counter. Random per
+	// stream; set at creation in StartTunnelGroups.
+	ssrc uint32
 }
 
 // stunBindingIndication is a minimal STUN Binding Indication (RFC 5389, 20 bytes).
@@ -252,7 +258,7 @@ func (s *stream) sendSessionHSBurst(relayConn net.PacketConn, peer net.Addr, ses
 	for i := 0; i < burstCount; i++ {
 		var payload []byte
 		if hasWrap {
-			enc, err := wrapPacket(s.wrapKey, sessionHS)
+			enc, err := wrapPacket(s.wrapKey, sessionHS, s.ssrc)
 			if err != nil {
 				return fmt.Errorf("session handshake wrap #%d: %w", i+1, err)
 			}
@@ -351,7 +357,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				var payload []byte
 				if hasWrap {
 					var err error
-					payload, err = wrapPacket(s.wrapKey, b)
+					payload, err = wrapPacket(s.wrapKey, b, s.ssrc)
 					if err != nil {
 						packetPool.Put(b[:cap(b)])
 						noDtlsTxDropCount.Add(1)
@@ -440,13 +446,13 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		s.runKeepalive(sCtx, &lastRx, reportErr, func(tick int) error {
 			var sendErr error
 			if hasWrap {
-				if enc, err := wrapPacket(s.wrapKey, stunBindingIndication); err == nil {
+				if enc, err := wrapPacket(s.wrapKey, stunBindingIndication, s.ssrc); err == nil {
 					_, sendErr = relayConn.WriteTo(enc, peer)
 				} else {
 					sendErr = err
 				}
 				if tick%3 == 0 {
-					if cover, cErr := wrapCoverPacket(s.wrapKey); cErr == nil {
+					if cover, cErr := wrapCoverPacket(s.wrapKey, s.ssrc); cErr == nil {
 						relayConn.WriteTo(cover, peer)
 					}
 				}
@@ -455,7 +461,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			}
 			if sessionHS != nil {
 				if hasWrap {
-					if enc, wErr := wrapPacket(s.wrapKey, sessionHS); wErr == nil {
+					if enc, wErr := wrapPacket(s.wrapKey, sessionHS, s.ssrc); wErr == nil {
 						relayConn.WriteTo(enc, peer)
 					}
 				} else {
@@ -554,7 +560,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 
 			var payload []byte
 			if s.wrapKey != nil {
-				payload, err = wrapPacket(s.wrapKey, buf[:n])
+				payload, err = wrapPacket(s.wrapKey, buf[:n], s.ssrc)
 				if err != nil {
 					turnLog("[STREAM %d] WRAP TX error: %v", s.id, err)
 					relayTxErrorCount.Add(1)
