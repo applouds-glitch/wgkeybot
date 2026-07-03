@@ -13,6 +13,8 @@ import (
 	"net"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/crypto/chacha20"
 )
 
 const (
@@ -30,17 +32,69 @@ const (
 )
 
 var wrapCounter atomic.Uint64
-var rtpSSRC uint32
 
-func initSSRC(key []byte) {
-	h := sha256.Sum256(key)
-	rtpSSRC = binary.BigEndian.Uint32(h[:4])
+// wrapCipher selects the WRAP keystream, signalled on the wire by the RTP X-bit
+// (byte[0] & 0x10). Kept byte-identical with the server's wrap.go:
+//
+//	cipherSHA    (X-bit clear, byte[0]=0x80) — legacy SHA-256 hash-chain keystream
+//	cipherChaCha (X-bit set,   byte[0]=0x90) — ChaCha20 keystream
+//
+// The server auto-detects the marker to decrypt each client and to reply in the
+// same keystream, so old clients (always 0x80) keep working while new clients
+// move to ChaCha20. IMPORTANT: deploy the server before shipping ChaCha clients
+// — an old server only knows the SHA keystream and cannot decode 0x90 packets.
+type wrapCipher uint8
+
+const (
+	cipherSHA    wrapCipher = 0
+	cipherChaCha wrapCipher = 1
+	wrapXBit                = 0x10 // RTP extension bit, repurposed as the cipher-version marker
+
+	// clientCipher is the keystream this build uses for every outbound WRAP
+	// packet. Flip this one constant to change what a new client emits.
+	// Decryption is always auto-detected from the marker, so a server reply in
+	// either keystream is understood regardless of this value.
+	clientCipher = cipherChaCha
+)
+
+// Direction domain-separation for the ChaCha nonce. The client encrypts uplink
+// with wrapDirClient and decrypts downlink with wrapDirServer; the server
+// mirrors it. Combined with a per-connection random SSRC (also folded into the
+// nonce) this guarantees a given (key, counter) never produces the same
+// keystream in both directions, across two devices sharing a key, or across
+// sessions — closing the nonce-reuse that a counter-only nonce left open. The
+// SHA path ignores these (its keystream is counter-only, unchanged).
+const (
+	wrapDirClient byte = 0
+	wrapDirServer byte = 1
+	wrapTxDir          = wrapDirClient // this build (client) sends uplink
+	wrapRxDir          = wrapDirServer // ...and receives downlink from the server
+)
+
+// cipherFromHeader reports which keystream a wire packet uses, read from the RTP
+// X-bit. buf must be at least 1 byte.
+func cipherFromHeader(buf []byte) wrapCipher {
+	if buf[0]&wrapXBit != 0 {
+		return cipherChaCha
+	}
+	return cipherSHA
+}
+
+// randU32 returns a cryptographically random 32-bit value, used for the
+// per-connection RTP SSRC.
+func randU32() uint32 {
+	var b [4]byte
+	rand.Read(b[:])
+	return binary.BigEndian.Uint32(b[:])
 }
 
 // ── RTP header (12 bytes) ────────────────────────────────────────────────────
 
-func putHeader(buf []byte, counter uint64, payloadLen int) {
+func putHeader(buf []byte, counter uint64, payloadLen int, cipher wrapCipher, ssrc uint32) {
 	buf[0] = 0x80 // V=2, P=0, X=0, CC=0
+	if cipher == cipherChaCha {
+		buf[0] |= wrapXBit // X=1: signal ChaCha20 keystream to the server
+	}
 	marker := byte(0)
 	if counter == 0 {
 		marker = 0x80
@@ -52,7 +106,7 @@ func putHeader(buf []byte, counter uint64, payloadLen int) {
 	}
 	binary.BigEndian.PutUint16(buf[2:4], uint16(counter&0xFFFF)) // seq
 	binary.BigEndian.PutUint32(buf[4:8], uint32(counter*960))    // ts (Opus 48kHz)
-	binary.BigEndian.PutUint32(buf[8:12], rtpSSRC)               // ssrc
+	binary.BigEndian.PutUint32(buf[8:12], ssrc)                  // ssrc (per-conn random)
 	_ = payloadLen
 }
 
@@ -63,13 +117,12 @@ func readHeader(buf []byte) (counter uint64, payloadLen int) {
 	return
 }
 
-// ── XOR keystream ────────────────────────────────────────────────────────────
+// ── Keystreams ───────────────────────────────────────────────────────────────
 
 // xorInPlace applies the SHA-256 hash-chain keystream (keyed by key+counter) to
 // data in place. Each 32-byte keystream block is generated on the fly and XORed
 // with crypto/subtle (vectorized), so no keystream buffer is allocated per
-// packet. The keystream byte sequence is identical to the previous
-// xorKeystream-based implementation, so the wire format is unchanged.
+// packet. Legacy path; wire-identical to the pre-ChaCha implementation.
 func xorInPlace(key []byte, counter uint64, data []byte) {
 	if len(data) == 0 {
 		return
@@ -91,6 +144,44 @@ func xorInPlace(key []byte, counter uint64, data []byte) {
 			state = sha256.Sum256(state[:])
 		}
 	}
+}
+
+// wrapChaChaNonce builds the 12-byte ChaCha20 nonce from the per-conn SSRC, the
+// direction byte, and the WRAP counter. Layout (must stay byte-identical with
+// the server): ssrc[0:4] BE ‖ dir[4] ‖ 0[5:8] ‖ counter[8:12] BE. The counter is
+// < wrapCounterMod so it fits uint32 losslessly; ssrc+dir make the nonce unique
+// per connection and per direction so keystream is never reused across them.
+func wrapChaChaNonce(ssrc uint32, dir byte, counter uint64) [chacha20.NonceSize]byte {
+	var nonce [chacha20.NonceSize]byte
+	binary.BigEndian.PutUint32(nonce[0:4], ssrc)
+	nonce[4] = dir
+	binary.BigEndian.PutUint32(nonce[8:12], uint32(counter))
+	return nonce
+}
+
+// xorChaCha XORs data in place with the ChaCha20 keystream keyed by key, nonce =
+// wrapChaChaNonce(ssrc, dir, counter). Same inputs ⇒ same keystream, so
+// decryption is stateless per packet. Must stay byte-identical with the server.
+func xorChaCha(key []byte, counter uint64, ssrc uint32, dir byte, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	nonce := wrapChaChaNonce(ssrc, dir, counter)
+	c, err := chacha20.NewUnauthenticatedCipher(key, nonce[:])
+	if err != nil {
+		return
+	}
+	c.XORKeyStream(data, data)
+}
+
+// xorKeystream applies the keystream for the given cipher in place. cipherSHA →
+// legacy hash-chain (ssrc/dir ignored); cipherChaCha → xorChaCha(ssrc, dir).
+func xorKeystream(cipher wrapCipher, key []byte, counter uint64, ssrc uint32, dir byte, data []byte) {
+	if cipher == cipherChaCha {
+		xorChaCha(key, counter, ssrc, dir, data)
+		return
+	}
+	xorInPlace(key, counter, data)
 }
 
 // ── Key management ───────────────────────────────────────────────────────────
@@ -117,7 +208,6 @@ func decodeWrapKey(enabled bool, raw string) ([]byte, error) {
 	if len(key) != wrapKeyLen {
 		return nil, fmt.Errorf("wrap-key must decode to %d bytes (got %d)", wrapKeyLen, len(key))
 	}
-	initSSRC(key)
 	return key, nil
 }
 
@@ -131,7 +221,10 @@ func randPadLen() int {
 	return int(b[0]) % (wrapMaxPad + 1)
 }
 
-func wrapPacket(key, payload []byte) ([]byte, error) {
+// wrapPacket encrypts payload for the outbound (uplink) direction using
+// clientCipher and the per-connection ssrc (written into the header and, for
+// ChaCha, folded into the nonce).
+func wrapPacket(key, payload []byte, ssrc uint32) ([]byte, error) {
 	if len(key) != wrapKeyLen {
 		return nil, fmt.Errorf("wrap: key must be %d bytes", wrapKeyLen)
 	}
@@ -140,17 +233,16 @@ func wrapPacket(key, payload []byte) ([]byte, error) {
 	padLen := randPadLen()
 	plainLen := len(payload) + padLen + wrapPadLen
 	// Single allocation: build header + plaintext contiguously in out, then
-	// encrypt the plaintext region in place (no separate plaintext/keystream
-	// buffers). Wire bytes are identical to the previous implementation.
+	// encrypt the plaintext region in place.
 	out := make([]byte, wrapHdrLen+plainLen)
-	putHeader(out[:wrapHdrLen], counter, plainLen)
+	putHeader(out[:wrapHdrLen], counter, plainLen, clientCipher, ssrc)
 	plaintext := out[wrapHdrLen:]
 	copy(plaintext, payload)
 	if padLen > 0 {
 		rand.Read(plaintext[len(payload) : len(payload)+padLen])
 	}
 	binary.BigEndian.PutUint16(plaintext[plainLen-wrapPadLen:], uint16(padLen))
-	xorInPlace(key, counter, plaintext)
+	xorKeystream(clientCipher, key, counter, ssrc, wrapTxDir, plaintext)
 	return out, nil
 }
 
@@ -162,19 +254,19 @@ func unwrapPacket(key, wire, dst []byte) (int, error) {
 		return 0, errors.New("wrap: short packet")
 	}
 	counter, _ := readHeader(wire[:wrapHdrLen])
+	cipher := cipherFromHeader(wire[:wrapHdrLen])
+	ssrc := binary.BigEndian.Uint32(wire[8:12]) // sender's per-conn SSRC → nonce
 	ciphertext := wire[wrapHdrLen:]
 	if len(ciphertext) < wrapPadLen {
 		return 0, errors.New("wrap: encrypted payload too short")
 	}
-	// Decrypt in place into dst (no scratch allocation): copy the ciphertext
-	// into dst, XOR it there, then the recovered payload is dst[:n]. dst must be
-	// large enough to hold the whole ciphertext temporarily.
+	// Decrypt in place into dst (no scratch allocation).
 	if len(ciphertext) > len(dst) {
 		return 0, errors.New("wrap: dst buffer too small")
 	}
 	plaintext := dst[:len(ciphertext)]
 	copy(plaintext, ciphertext)
-	xorInPlace(key, counter, plaintext)
+	xorKeystream(cipher, key, counter, ssrc, wrapRxDir, plaintext)
 
 	padLen := int(binary.BigEndian.Uint16(plaintext[len(plaintext)-wrapPadLen:]))
 	if padLen == wrapCoverMark {
@@ -187,7 +279,7 @@ func unwrapPacket(key, wire, dst []byte) (int, error) {
 	return n, nil
 }
 
-func wrapCoverPacket(key []byte) ([]byte, error) {
+func wrapCoverPacket(key []byte, ssrc uint32) ([]byte, error) {
 	if len(key) != wrapKeyLen {
 		return nil, fmt.Errorf("wrap: key must be %d bytes", wrapKeyLen)
 	}
@@ -195,29 +287,29 @@ func wrapCoverPacket(key []byte) ([]byte, error) {
 
 	bodyLen := 30 + randPadLen()*4
 	plainLen := bodyLen + wrapPadLen
-	// Single allocation, same as wrapPacket.
 	out := make([]byte, wrapHdrLen+plainLen)
-	putHeader(out[:wrapHdrLen], counter, plainLen)
+	putHeader(out[:wrapHdrLen], counter, plainLen, clientCipher, ssrc)
 	plaintext := out[wrapHdrLen:]
 	rand.Read(plaintext[:bodyLen])
 	binary.BigEndian.PutUint16(plaintext[bodyLen:], wrapCoverMark)
-	xorInPlace(key, counter, plaintext)
+	xorKeystream(clientCipher, key, counter, ssrc, wrapTxDir, plaintext)
 	return out, nil
 }
 
-// ── PacketConn wrapper ───────────────────────────────────────────────────────
+// ── PacketConn wrapper (unused legacy helper; kept for API completeness) ──────
 
 type wrapPacketConn struct {
 	inner net.PacketConn
 	key   []byte
+	ssrc  uint32
 }
 
 func wrapConn(inner net.PacketConn, key []byte) net.PacketConn {
-	return &wrapPacketConn{inner: inner, key: key}
+	return &wrapPacketConn{inner: inner, key: key, ssrc: randU32()}
 }
 
 func (w *wrapPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	enc, err := wrapPacket(w.key, p)
+	enc, err := wrapPacket(w.key, p, w.ssrc)
 	if err != nil {
 		return 0, err
 	}
