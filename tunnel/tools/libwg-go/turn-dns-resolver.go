@@ -236,6 +236,10 @@ func resolveDoHWithServer(ctx context.Context, domain string, serverIP string, s
 			ForceAttemptHTTP2: true,
 		},
 	}
+	// The client is per-request; without this the pooled TLS connection (and
+	// its read/write goroutines) would linger until the server hangs up —
+	// there is no IdleConnTimeout on this throwaway transport.
+	defer client.CloseIdleConnections()
 
 	resp, err := client.Do(req)
 	if err != nil {

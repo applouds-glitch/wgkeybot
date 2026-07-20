@@ -9,15 +9,9 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
-import android.net.NetworkRequest;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.os.PowerManager;
@@ -317,11 +311,7 @@ public final class GoBackend implements Backend {
 
         @Nullable private GoBackend owner;
         @Nullable private PowerManager.WakeLock wakeLock;
-        @Nullable private BroadcastReceiver powerStateReceiver;
-        @Nullable private ConnectivityManager connectivityManager;
-        @Nullable private ConnectivityManager.NetworkCallback networkCallback;
         @Nullable private String lastNotificationText;
-        private long lastNetworkChangeTime = 0L;
 
         public Builder getBuilder() { return new Builder(); }
 
@@ -405,40 +395,6 @@ public final class GoBackend implements Backend {
             wakeLock = null;
         }
 
-        private void setupNetworkCallback() {
-            connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            if (connectivityManager == null) return;
-            networkCallback = new ConnectivityManager.NetworkCallback() {
-                @Override public void onAvailable(final Network network) {
-                    Log.d(TAG, "Network available: " + network);
-                    handleNetworkChange();
-                }
-                @Override public void onLost(final Network network) {
-                    Log.d(TAG, "Network lost: " + network);
-                }
-            };
-            final NetworkRequest request = new NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-                    .build();
-            connectivityManager.registerNetworkCallback(request, networkCallback);
-        }
-
-        private void teardownNetworkCallback() {
-            if (connectivityManager != null && networkCallback != null) {
-                connectivityManager.unregisterNetworkCallback(networkCallback);
-                networkCallback = null;
-            }
-        }
-
-        private void handleNetworkChange() {
-            final long now = System.currentTimeMillis();
-            if (now - lastNetworkChangeTime < 5000) return;
-            lastNetworkChangeTime = now;
-//            Log.d(TAG, "Network changed, signalling TurnBackend");
-//            TurnBackend.wgSetPauseFlag(0);
-        }
-
         @Override
         public void onCreate() {
             Log.d(TAG, "VpnService.onCreate()");
@@ -466,50 +422,6 @@ public final class GoBackend implements Backend {
             TurnBackend.onVpnServiceCreated(this);
 
             acquireWakeLock();
-            setupNetworkCallback();
-
-            // Drive the native keepalive cadence from device power state: screen
-            // off / Doze → idle (relaxed keepalive, fewer radio wakeups), screen
-            // on → active (fast keepalive for snappy recovery). This never pauses
-            // the tunnel — only the keepalive interval and dead-stream detector
-            // adapt (see TurnBackend.wgSetIdleMode / native keepaliveCadence).
-            powerStateReceiver = new BroadcastReceiver() {
-                @Override
-                public void onReceive(final Context context, final Intent intent) {
-                    final String action = intent.getAction();
-                    if (action == null)
-                        return;
-                    switch (action) {
-                        case Intent.ACTION_SCREEN_ON:
-                            Log.d(TAG, "Screen on → keepalive active");
-                            TurnBackend.wgSetIdleMode(0);
-                            break;
-                        case Intent.ACTION_SCREEN_OFF:
-                            Log.d(TAG, "Screen off → keepalive idle");
-                            TurnBackend.wgSetIdleMode(1);
-                            break;
-                        case PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED:
-                            final PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-                            if (pm != null && pm.isDeviceIdleMode()) {
-                                Log.d(TAG, "Doze idle → keepalive idle");
-                                TurnBackend.wgSetIdleMode(1);
-                            }
-                            // Doze exit leaves the cadence to the screen state
-                            // (SCREEN_ON restores active); do nothing here.
-                            break;
-                        default:
-                            break;
-                    }
-                }
-            };
-            final IntentFilter powerFilter = new IntentFilter();
-            powerFilter.addAction(Intent.ACTION_SCREEN_ON);
-            powerFilter.addAction(Intent.ACTION_SCREEN_OFF);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
-                powerFilter.addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED);
-            registerReceiver(powerStateReceiver, powerFilter);
-
-
 
             super.onCreate();
         }
@@ -539,11 +451,6 @@ public final class GoBackend implements Backend {
             Log.d(TAG, "VpnService.onDestroy()");
             stopForeground(STOP_FOREGROUND_REMOVE);
             releaseWakeLock();
-            teardownNetworkCallback();
-            if (powerStateReceiver != null) {
-                unregisterReceiver(powerStateReceiver);
-                powerStateReceiver = null;
-            }
             if (owner != null) {
                 final Tunnel tunnel = owner.currentTunnel;
                 if (tunnel != null) {

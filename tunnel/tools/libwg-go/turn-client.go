@@ -19,7 +19,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -71,32 +70,22 @@ func init() {
 	os.Setenv("GODEBUG", "netdns=go")
 }
 
-// clearTransientState resets DNS cache and HTTP connections without touching
-// credential caches. Called on every tunnel start so stale DNS/sockets are
-// flushed, but credentials earned in a prior session are reused if still valid.
+// clearTransientState resets the DNS cache without touching credential caches.
+// Called on every tunnel start so stale DNS is flushed, but credentials earned
+// in a prior session are reused if still valid. No HTTP pool is flushed here:
+// the VK cred fetch builds a per-fetch tlsclient and closes its idle
+// connections when done, and the DoH resolver does the same — there is no
+// long-lived shared client to reset.
 func clearTransientState() {
 	ClearCache()
-	turnHTTPClient.CloseIdleConnections()
-	turnLog("[PROXY] Transient state cleared (DNS + HTTP; creds preserved)")
+	turnLog("[PROXY] Transient state cleared (DNS; creds preserved)")
 }
 
 //export wgNotifyNetworkChange
 func wgNotifyNetworkChange() {
+	resetNetworkPathProof()
 	ClearCache()
-	turnHTTPClient.CloseIdleConnections()
-	turnLog("[NETWORK] Network change: DNS cache + HTTP connections reset (creds preserved)")
-}
-
-var turnHTTPClient = &http.Client{
-	Timeout: 20 * time.Second,
-	Transport: &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout: 30 * time.Second,
-			Control: protectControl,
-		}).DialContext,
-		MaxIdleConns:    100,
-		IdleConnTimeout: 90 * time.Second,
-	},
+	turnLog("[NETWORK] Network change: path proof and DNS cache reset (creds preserved)")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -129,6 +118,8 @@ type stream struct {
 	// device) uses a distinct keystream even at the same counter. Random per
 	// stream; set at creation in StartTunnelGroups.
 	ssrc uint32
+
+	networkGeneration uint64
 }
 
 // stunBindingIndication is a minimal STUN Binding Indication (RFC 5389, 20 bytes).
@@ -152,98 +143,62 @@ func isStunKeepalive(b []byte) bool {
 
 const iPacketBuffMaxSize = 2048
 
-// Keepalive cadence. A single per-stream goroutine (runKeepalive) sends the STUN
-// Binding Indication AND runs dead-stream detection, replacing the former triad
-// of a 25s Indication ticker + a 10s TURN Binding Request probe + an optional
-// watchdog. The send interval and the dead-stream threshold adapt to app state
-// (see globalIdleFlag):
-//
-//	active — foreground / screen on: fast keepalive so a broken stream is
-//	         detected and rebuilt within ~35s.
-//	idle   — screen off / Doze: keepalive relaxes to the NAT-hold floor and the
-//	         detector widens to ~90s, cutting per-stream radio wakeups ~2.5×.
-//
-// The NAT-hold floor (25s) is the hard ceiling: carrier CGNAT UDP mappings
-// commonly expire in 30-60s, so an idle keepalive must not exceed ~25-30s or the
-// relay path silently dies. WireGuard's own PersistentKeepalive=25 holds the far
-// leg in lock-step. Liveness is proved only by a real packet FROM the peer (WG
-// data or the server's echo of our Indication) landing in the RX goroutine and
-// bumping lastRx — a successful send proves nothing (a dead TURN allocation still
-// accepts WriteTo, since SEND indications are fire-and-forget).
-const (
-	kaActiveInterval = 10 * time.Second
-	kaActiveDead     = 35 * time.Second
-	kaIdleInterval   = 25 * time.Second
-	kaIdleDead       = 90 * time.Second
-)
-
-// keepaliveCadence returns the current keepalive send interval and dead-stream
-// detection threshold for the active/idle mode (see globalIdleFlag).
-func keepaliveCadence() (interval, dead time.Duration) {
-	if atomic.LoadInt32(&globalIdleFlag) != 0 {
-		return kaIdleInterval, kaIdleDead
-	}
-	return kaActiveInterval, kaActiveDead
-}
-
-// alignedSleep blocks until the next multiple of interval on a global wall-clock
-// grid (shared by every stream), then reports true; it reports false if ctx is
-// cancelled first. Because all streams align to the same grid with the same
-// interval, their keepalives fire in one coalesced burst — the radio wakes once
-// per interval instead of once per stream — with no cross-stream coordination.
-func alignedSleep(ctx context.Context, interval time.Duration) bool {
-	next := time.Now().Truncate(interval).Add(interval)
-	t := time.NewTimer(time.Until(next))
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
-}
-
-// freezeSlack is how far past the requested interval a runKeepalive sleep may run
-// before it is treated as a host freeze (iOS extension suspend, aggressive Doze)
-// rather than a dead path. On a detected freeze the liveness clock is reset and
-// the stream is NOT torn down — otherwise every stream would tear down on thaw
-// and mass-reconnect on one credential, tripping the TURN 486 quota → captcha.
-const freezeSlack = 20 * time.Second
-
-// runKeepalive is the single per-stream keepalive + liveness loop shared by all
-// three transports. Each iteration sleeps on the shared aligned grid (coalesced
-// across streams), tears the stream down when no real packet has arrived within
-// the current dead-stream threshold (so WorkerGroup rebuilds it), then emits one
-// keepalive via send. send receives the tick counter (used by NoDTLS to pace
-// cover traffic) and returns any transport write error (logged, non-fatal — only
-// a stale lastRx tears the stream down). Returns when ctx is cancelled or the
-// dead-stream detector fires.
-func (s *stream) runKeepalive(ctx context.Context, lastRx *atomic.Int64, reportErr func(error), send func(tick int) error) {
-	for tick := 0; ; tick++ {
-		interval, dead := keepaliveCadence()
+// runKeepalive is the single per-stream NAT-hold and liveness loop shared by
+// all transports. Connections are established with a safety stagger, but every
+// ready stream sends its normal keepalive on the same 25s wall-clock grid so the
+// packets and their echoes occupy one short radio-active window. A failed write
+// may retry early; after success the stream automatically rejoins the grid.
+// Only a validated inbound packet proves liveness, except after a host freeze,
+// where a stale clock says nothing about the path and is reset (see freezeSlack).
+func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, reportErr func(error), send func(tick int) error) {
+	var retryAt time.Time
+	tick := 0
+	for {
+		deadline, wakeReason := activity.nextDeadline(time.Now(), retryAt)
 		before := time.Now()
-		if !alignedSleep(ctx, interval) {
+		if !waitUntil(ctx, deadline) {
 			return
 		}
-		if slept := time.Since(before); slept > interval+freezeSlack {
-			// The host froze us (iOS extension suspend / deep Doze): lastRx is
-			// stale through no fault of the path. Reset the clock and re-stimulate
-			// the path instead of tearing the stream down on thaw.
+
+		now := time.Now()
+		rxAge := activity.rxAge(now)
+
+		// nextDeadline never returns a point further out than the shared grid, so
+		// a sleep this long means the host froze us rather than that the path went
+		// quiet. Reset the liveness clock and re-stimulate the path; tearing the
+		// stream down here would mass-reconnect every stream on thaw.
+		if slept := now.Sub(before); slept > keepaliveInterval+freezeSlack {
 			turnLog("[STREAM %d] keepalive: slept %v (freeze) — resetting liveness clock", s.id, slept.Round(time.Second))
-			lastRx.Store(time.Now().Unix())
-			if err := send(tick); err != nil {
+			activity.resetLiveness(now)
+			err := send(tick)
+			tick++
+			if err != nil {
 				turnLog("[STREAM %d] keepalive send error: %v", s.id, err)
+				retryAt = now.Add(keepaliveSendRetry)
+				continue
 			}
+			retryAt = time.Time{}
 			continue
 		}
-		if time.Since(time.Unix(lastRx.Load(), 0)) > dead {
-			turnLog("[STREAM %d] dead-stream detector: no RX for >%v — closing", s.id, dead)
-			reportErr(fmt.Errorf("dead-stream: no RX for >%v", dead))
+
+		if rxAge >= deadStreamTimeout {
+			turnLog("[STREAM %d] dead-stream detector: no RX for %v — closing", s.id, rxAge.Round(time.Second))
+			reportErr(fmt.Errorf("dead-stream: no RX for %v", rxAge.Round(time.Second)))
 			return
 		}
-		if err := send(tick); err != nil {
-			turnLog("[STREAM %d] keepalive send error: %v", s.id, err)
+		// An RX that arrived after the timer was armed may make an old liveness
+		// deadline harmless. Recalculate instead of emitting an off-grid packet.
+		if wakeReason == keepaliveDeadCheckWake {
+			continue
 		}
+		err := send(tick)
+		tick++
+		if err != nil {
+			turnLog("[STREAM %d] keepalive send error: %v", s.id, err)
+			retryAt = now.Add(keepaliveSendRetry)
+			continue
+		}
+		retryAt = time.Time{}
 	}
 }
 
@@ -333,14 +288,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	// waiting out its 60s deadline.
 	context.AfterFunc(sCtx, func() { relayConn.Close() })
 
-	// lastRx tracks the last sign of life on the relay path — only a real
-	// packet from the peer (WG data or the server's keepalive echo) counts and
-	// bumps it in the RX goroutine. A keepalive *send* must never refresh it: a
-	// dead TURN allocation still accepts WriteTo (SEND indications are
-	// fire-and-forget), so "sent OK" proves nothing. runKeepalive tears the
-	// stream down once lastRx goes stale past the current dead-stream threshold.
-	var lastRx atomic.Int64
-	lastRx.Store(time.Now().Unix())
+	activity := newStreamActivity(time.Now())
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -396,25 +344,26 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			if from.String() != peer.String() {
 				continue
 			}
-			// A real packet from the peer is the only proof the relay path is
-			// alive — record it so runKeepalive's dead-stream detector holds off.
-			// Covers both WG data and the server's STUN-keepalive echo.
-			lastRx.Store(time.Now().Unix())
-			a := s.peer.Load()
-			if a == nil {
-				continue
-			}
 			if hasWrap {
 				m, unwrapErr := unwrapPacket(s.wrapKey, wire[:n], plain)
 				if unwrapErr != nil {
 					turnLog("[STREAM %d] WRAP RX skip: %v", s.id, unwrapErr)
 					continue
 				}
+				// Only a successfully parsed WRAP packet is inbound liveness
+				// evidence. A valid cover packet has no WG payload but still proves
+				// that the relay path works in both directions.
+				activity.noteRx(time.Now())
+				markNetworkPathProven(s.networkGeneration)
 				if m == 0 {
 					continue
 				}
 				if isStunKeepalive(plain[:m]) {
-					continue // liveness already recorded; don't feed it to WG
+					continue
+				}
+				a := s.peer.Load()
+				if a == nil {
+					continue
 				}
 				if _, err := s.out.WriteTo(plain[:m], *a); err != nil {
 					noDtlsRxErrorCount.Add(1)
@@ -422,8 +371,17 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 					return
 				}
 			} else {
+				if n == 0 {
+					continue
+				}
+				activity.noteRx(time.Now())
+				markNetworkPathProven(s.networkGeneration)
 				if isStunKeepalive(wire[:n]) {
-					continue // liveness already recorded; don't feed it to WG
+					continue
+				}
+				a := s.peer.Load()
+				if a == nil {
+					continue
 				}
 				if _, err := s.out.WriteTo(wire[:n], *a); err != nil {
 					noDtlsRxErrorCount.Add(1)
@@ -434,8 +392,8 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		}
 	}()
 
-	// Keepalive + cover traffic + dead-stream detection (one coalesced,
-	// app-state-adaptive loop; see runKeepalive). Sends the STUN Indication
+	// Keepalive + cover traffic + dead-stream detection (one coalesced loop; see
+	// runKeepalive). Sends the STUN Indication
 	// (liveness stimulus + NAT hold), paces WRAP cover traffic every 3rd tick,
 	// and re-announces the 17-byte session header so a restarted server re-adopts
 	// this stream within one tick without a reconnect. A send never refreshes
@@ -443,7 +401,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	go func() {
 		defer wg.Done()
 		defer sCancel()
-		s.runKeepalive(sCtx, &lastRx, reportErr, func(tick int) error {
+		s.runKeepalive(sCtx, activity, reportErr, func(tick int) error {
 			var sendErr error
 			if hasWrap {
 				if enc, err := wrapPacket(s.wrapKey, stunBindingIndication, s.ssrc); err == nil {
@@ -605,6 +563,9 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 						turnLog("[STREAM %d] WRAP RX skip: %v", s.id, unwrapErr)
 						continue
 					}
+					if m == 0 {
+						continue
+					}
 					data = plain[:m]
 				} else {
 					data = wire[:n]
@@ -625,6 +586,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	}
 	dtlsConn.SetDeadline(time.Time{})
 	turnLog("[STREAM %d] DTLS handshake OK", s.id)
+	markNetworkPathProven(s.networkGeneration)
 
 	// Session + stream ID handshake (proxy_v2 only). Sent as a small burst
 	// for the same reason as runNoDTLS — even though DTLS is ordered, the
@@ -652,8 +614,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	s.ready.Store(true)
 	s.okFunc()
 
-	var lastRx atomic.Int64
-	lastRx.Store(time.Now().Unix())
+	activity := newStreamActivity(time.Now())
 
 	wg.Add(3)
 
@@ -689,9 +650,15 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 				reportErr(fmt.Errorf("DTLS read: %w", err))
 				return
 			}
-			lastRx.Store(time.Now().Unix())
+			// dtlsConn.Read only returns authenticated application data, so this
+			// is valid inbound liveness evidence.
+			activity.noteRx(time.Now())
+			markNetworkPathProven(s.networkGeneration)
 			if isStunKeepalive(buf[:n]) {
-				continue // keepalive echo: liveness recorded, don't feed it to WG
+				continue
+			}
+			if n == 0 {
+				continue
 			}
 			if a := s.peer.Load(); a != nil {
 				if _, err := s.out.WriteTo(buf[:n], *a); err != nil {
@@ -703,9 +670,9 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		}
 	}()
 
-	// Keepalive + dead-stream detection (one coalesced, app-state-adaptive loop;
-	// see runKeepalive). The STUN Indication goes via dtlsConn.Write so the server
-	// receives a valid DTLS ApplicationData record (refreshing its 5-min read
+	// Keepalive + dead-stream detection (one coalesced loop; see runKeepalive).
+	// The STUN Indication goes via dtlsConn.Write so the server
+	// receives a valid DTLS ApplicationData record (refreshing server read
 	// deadline) and echoes the 20 bytes straight back through this stream; the
 	// echo bumps lastRx in the DTLS→WireGuard RX goroutine — the only proof of a
 	// live path (a dead allocation still accepts the write). runKeepalive tears
@@ -714,7 +681,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	go func() {
 		defer wg.Done()
 		defer sCancel()
-		s.runKeepalive(sCtx, &lastRx, reportErr, func(int) error {
+		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
 			_, err := dtlsConn.Write(stunBindingIndication)
 			return err
 		})
@@ -769,6 +736,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	defer srtpConn.Close()
 	context.AfterFunc(sCtx, func() { srtpConn.Close() })
 	turnLog("[STREAM %d] SRTP handshake OK", s.id)
+	markNetworkPathProven(s.networkGeneration)
 
 	// Session + stream ID handshake (proxy_v2 model). Sent as a small burst
 	// for the same reason as runDTLS — the server parses the session ID on the
@@ -795,8 +763,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	s.ready.Store(true)
 	s.okFunc()
 
-	var lastRx atomic.Int64
-	lastRx.Store(time.Now().Unix())
+	activity := newStreamActivity(time.Now())
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -834,9 +801,14 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 				reportErr(fmt.Errorf("SRTP read: %w", err))
 				return
 			}
-			lastRx.Store(time.Now().Unix())
+			// srtpConn.Read has already authenticated and decrypted this packet.
+			activity.noteRx(time.Now())
+			markNetworkPathProven(s.networkGeneration)
 			if isStunKeepalive(buf[:n]) {
-				continue // keepalive echo: liveness recorded, don't feed it to WG
+				continue
+			}
+			if n == 0 {
+				continue
 			}
 			if a := s.peer.Load(); a != nil {
 				if _, err := s.out.WriteTo(buf[:n], *a); err != nil {
@@ -848,8 +820,8 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 		}
 	}()
 
-	// Keepalive + dead-stream detection (one coalesced, app-state-adaptive loop;
-	// see runKeepalive). The STUN Indication goes through the SRTP pipe; the
+	// Keepalive + dead-stream detection (one coalesced loop; see runKeepalive).
+	// The STUN Indication goes through the SRTP pipe; the
 	// server echoes it back through this stream and the echo bumps lastRx in the
 	// SRTP→WireGuard RX goroutine — the only proof of a live path. runKeepalive
 	// tears the stream down when lastRx goes stale, replacing the former 10s TURN
@@ -858,7 +830,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	go func() {
 		defer wg.Done()
 		defer sCancel()
-		s.runKeepalive(sCtx, &lastRx, reportErr, func(int) error {
+		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
 			_, err := srtpConn.Write(stunBindingIndication)
 			return err
 		})
@@ -882,28 +854,12 @@ var currentTurnDone <-chan struct{}
 var turnMutex sync.Mutex
 var globalGetCreds getCredsFunc
 
-// globalPauseFlag is set to 1 by Android when the device enters Doze mode.
-// WorkerGroup checks this atomically and suspends credential rotation while set.
-var globalPauseFlag int32
-
-//export wgSetPauseFlag
-func wgSetPauseFlag(flag C.int) {
-	atomic.StoreInt32(&globalPauseFlag, int32(flag))
-	turnLog("[PROXY] PauseFlag=%d", flag)
-}
-
-// globalIdleFlag is set to 1 by the host app when the device/screen goes idle
-// (Android: screen off / Doze). While set, per-stream keepalives relax to the
-// NAT-hold floor (kaIdleInterval) and the dead-stream detector widens
-// (kaIdleDead) to save radio wakeups without dropping the tunnel — see
-// keepaliveCadence. Hosts that never call this (iOS/Windows) stay in the fast
-// active cadence, which is the safe default.
-var globalIdleFlag int32
-
-//export wgSetIdleMode
-func wgSetIdleMode(idle C.int) {
-	atomic.StoreInt32(&globalIdleFlag, int32(idle))
-	turnLog("[PROXY] IdleMode=%d", idle)
+//export wgSetNetworkAvailable
+func wgSetNetworkAvailable(available C.int) {
+	setNetworkAvailable(available != 0)
+	validated, proven, effective, remaining := networkAvailabilitySnapshot()
+	turnLog("[PROXY] AndroidValidated=%t transportProven=%t effectiveAvailable=%t proofTTL=%v",
+		validated, proven, effective, remaining.Round(time.Second))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -934,10 +890,9 @@ func parseLinks(raw string, maxLinks int) []string {
 
 //export wgTurnProxyStart
 func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char, networkHandleC C.longlong) int32 {
-	clearTransientState()                  // flush DNS + HTTP without clearing credential caches
-	atomic.StoreInt32(&globalPauseFlag, 0) // reset on each new tunnel start
-	atomic.StoreInt32(&globalIdleFlag, 0)  // start in fast/active keepalive cadence
-	globalCaptchaLockout.Store(0)          // reset captcha lockout on fresh start
+	networkGeneration := beginNetworkPathGeneration()
+	clearTransientState()         // flush DNS without clearing credential caches
+	globalCaptchaLockout.Store(0) // reset captcha lockout on fresh start
 
 	if networkHandleC != 0 {
 		if dnsStr := C.getNetworkDnsServers(C.longlong(networkHandleC)); dnsStr != nil {
@@ -1056,6 +1011,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	var callRequiresAuth int32 // set to 1 if any group gets error_code 9005
 	var prefetchOk int32       // set to 1 if any group succeeds
 	var prefetchLockout int32  // set to 1 if any group hits the global lockout
+	var callUnavailable int32  // set to 1 if any group's call is dead/deleted/invalid link
 	for i, lk := range links {
 		prefetchWg.Add(1)
 		go func(groupID int, link string) {
@@ -1072,6 +1028,9 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 					if strings.Contains(prefetchErr.Error(), "CALL_REQUIRES_AUTH") {
 						atomic.StoreInt32(&callRequiresAuth, 1)
 						turnLog("[PROXY] Pre-fetch group %d: CALL_REQUIRES_AUTH — aborting", groupID)
+					} else if strings.Contains(prefetchErr.Error(), "CALL_UNAVAILABLE") {
+						atomic.StoreInt32(&callUnavailable, 1)
+						turnLog("[PROXY] Pre-fetch group %d: CALL_UNAVAILABLE (call ended/deleted or invalid link)", groupID)
 					} else {
 						turnLog("[PROXY] Pre-fetch group %d failed: %v (WorkerGroup will retry)", groupID, prefetchErr)
 						if strings.Contains(prefetchErr.Error(), "CAPTCHA_WAIT_REQUIRED") {
@@ -1090,6 +1049,11 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		cancel()
 		return -2
 	}
+	if atomic.LoadInt32(&prefetchOk) == 0 && atomic.LoadInt32(&callUnavailable) == 1 {
+		turnLog("[PROXY] All pre-fetches failed: call unavailable (ended/deleted or invalid link) — aborting startup")
+		cancel()
+		return -4 // distinct code: dead call — caller must not retry other stream counts
+	}
 	if atomic.LoadInt32(&prefetchOk) == 0 && atomic.LoadInt32(&prefetchLockout) == 1 {
 		turnLog("[PROXY] All pre-fetches failed due to CAPTCHA_WAIT_REQUIRED — aborting startup")
 		cancel()
@@ -1098,18 +1062,18 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 
 	// ── Launch groups ─────────────────────────────────────────────────────────
 	_, okChan, done, err := StartTunnelGroups(ctx, packetLc, TunnelGroupsConfig{
-		Links:           links,
-		PeerAddr:        peer,
-		PeerType:        peerType,
-		UseUDP:          udp != 0,
-		TurnIP:          turnIp,
-		TurnPort:        turnPort,
-		StreamsPerGroup: streamsPerCred,
-		Cert:            &cert,
-		SessionID:       sessionID,
-		WatchdogTimeout: watchdogTimeout,
-		PauseFlag:       &globalPauseFlag,
-		WrapKey:         wrapKey,
+		Links:             links,
+		PeerAddr:          peer,
+		PeerType:          peerType,
+		UseUDP:            udp != 0,
+		TurnIP:            turnIp,
+		TurnPort:          turnPort,
+		StreamsPerGroup:   streamsPerCred,
+		Cert:              &cert,
+		SessionID:         sessionID,
+		WatchdogTimeout:   watchdogTimeout,
+		WrapKey:           wrapKey,
+		NetworkGeneration: networkGeneration,
 	})
 	if err != nil {
 		turnLog("[PROXY] StartTunnelGroups failed: %v", err)
@@ -1148,6 +1112,7 @@ const allocationDrainTimeout = 3 * time.Second
 
 //export wgTurnProxyStop
 func wgTurnProxyStop() {
+	resetNetworkPathProof()
 	turnMutex.Lock()
 	cancel := currentTurnCancel
 	done := currentTurnDone

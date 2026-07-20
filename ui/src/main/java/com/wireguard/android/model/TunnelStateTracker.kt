@@ -16,6 +16,7 @@ import com.wireguard.android.BR
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.fragment.TunnelState
 import com.wireguard.android.fragment.TunnelUiState
+import com.wireguard.android.util.ScreenStateMonitor
 import com.wireguard.android.util.applicationScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,6 +24,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -125,6 +127,13 @@ class TunnelStateTracker(private val context: Context) {
 
         pollingJob = applicationScope.launch(Dispatchers.IO) {
             while (isActive) {
+                // Screen off → no UI surface is looking (the widget included, and a
+                // state change while parked is re-rendered by the first poll after
+                // wake). Park instead of a JNI stats call every 2s all night. This
+                // is display-only: the tunnel, keepalives and the handshake watchdog
+                // are untouched. Resumes (and polls immediately) when the screen
+                // turns on; a tunnel-down while parked cancels this job as usual.
+                ScreenStateMonitor.screenOn.first { it }
                 if (tunnel.state != Tunnel.State.UP) {
                     emit(TunnelUiState(configLoadedAt = _uiState.value.configLoadedAt))
                     break

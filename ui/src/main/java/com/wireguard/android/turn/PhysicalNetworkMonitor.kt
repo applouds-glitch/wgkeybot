@@ -24,6 +24,7 @@ class PhysicalNetworkMonitor(context: Context) {
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     
     private val _bestNetwork = MutableStateFlow<Network?>(null)
+    private val _validated = MutableStateFlow(false)
     
     /**
      * Flow of the best available physical network.
@@ -35,10 +36,32 @@ class PhysicalNetworkMonitor(context: Context) {
         .distinctUntilChanged()
 
     /**
+     * Whether [currentNetwork] currently has validated upstream connectivity.
+     * This is separate from [bestNetwork] because Android can add or remove
+     * NET_CAPABILITY_VALIDATED without changing the Network object.
+     */
+    val validated = _validated.asStateFlow()
+
+    /**
      * Synchronously get the current best network without debounce.
      */
     val currentNetwork: Network?
         get() = _bestNetwork.value
+
+    /**
+     * True if [network] currently reports validated internet connectivity
+     * (NET_CAPABILITY_VALIDATED) — the system confirmed a real upstream, not
+     * just an associated link. A captive portal, associated-but-dead Wi-Fi or
+     * no-signal cell reports INTERNET but not VALIDATED. Native combines this
+     * hint with observed TURN reachability and a rate-limited recovery probe, so
+     * probe-blocking corporate networks are not treated as permanently offline.
+     */
+    fun isValidated(network: Network?): Boolean {
+        if (network == null) return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
 
     private val networks = ConcurrentHashMap<Network, NetworkCapabilities>()
 
@@ -63,13 +86,25 @@ class PhysicalNetworkMonitor(context: Context) {
     }
 
     private fun update() {
-        // Priority logic: WiFi first, then Cellular, then any other physical network with internet
-        val wifi = networks.entries.find { it.value.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) }?.key
-        val cell = networks.entries.find { it.value.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) }?.key
-        
-        // If no WiFi/Cellular found, take the first available network from our list
-        val best = wifi ?: cell ?: networks.keys.firstOrNull()
-        _bestNetwork.value = best
+        val candidates = networks.entries.toList()
+        val validatedCandidates = candidates.filter { (_, caps) ->
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }
+
+        fun bestFrom(entries: List<Map.Entry<Network, NetworkCapabilities>>): Map.Entry<Network, NetworkCapabilities>? =
+            entries.firstOrNull { it.value.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) }
+                ?: entries.firstOrNull { it.value.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) }
+                ?: entries.firstOrNull()
+
+        // Prefer a usable validated path over associated-but-dead Wi-Fi. If no
+        // path is validated yet, retain the old priority as a passive baseline.
+        val bestEntry = bestFrom(validatedCandidates) ?: bestFrom(candidates)
+        _bestNetwork.value = bestEntry?.key
+        _validated.value = bestEntry?.value?.let { caps ->
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        } == true
     }
 
     fun start() {
@@ -101,5 +136,6 @@ class PhysicalNetworkMonitor(context: Context) {
         }
         networks.clear()
         _bestNetwork.value = null
+        _validated.value = false
     }
 }

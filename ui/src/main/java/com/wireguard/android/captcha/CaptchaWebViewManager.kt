@@ -56,6 +56,13 @@ object CaptchaWebViewManager {
     private val VIEWPORT_WIDTHS = intArrayOf(356, 358, 360, 362, 364, 366, 368)
     private val VIEWPORT_HEIGHTS = intArrayOf(376, 378, 380, 382, 384, 386, 388)
 
+    // Randomize within the mobile Android family only. A Windows/desktop UA on a
+    // real phone WebView contradicts the phone screen, touch points and
+    // navigator.userAgentData (mobile=true, platform=Android) that VK's captcha
+    // JS reads on-page. Same "real Chrome on Android, no wv" masquerade as
+    // CaptchaActivity / CaptchaFingerprintProbe so all captcha modes agree.
+    private val ANDROID_VERSIONS = arrayOf("12", "13", "14", "15")
+
     private val CHROME_BUILDS = arrayOf(
         "146.0.0.0", "145.0.6422.60", "145.0.6422.53",
         "144.0.6367.78", "144.0.6367.61", "143.0.6312.99"
@@ -253,10 +260,11 @@ object CaptchaWebViewManager {
     private fun createWebViewSync(context: Context, onStep: (String) -> Unit): WebView? {
         val vw = VIEWPORT_WIDTHS[Random.Default.nextInt(VIEWPORT_WIDTHS.size)]
         val vh = VIEWPORT_HEIGHTS[Random.Default.nextInt(VIEWPORT_HEIGHTS.size)]
+        val androidVer = ANDROID_VERSIONS[Random.Default.nextInt(ANDROID_VERSIONS.size)]
         val chromeBuild = CHROME_BUILDS[Random.Default.nextInt(CHROME_BUILDS.size)]
-        val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$chromeBuild Safari/537.36"
+        val ua = "Mozilla/5.0 (Linux; Android $androidVer) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$chromeBuild Mobile Safari/537.36"
 
-        Log.d(TAG, "Fingerprint: ${vw}x${vh}, Chrome/$chromeBuild")
+        Log.d(TAG, "Fingerprint: ${vw}x${vh}, Android $androidVer, Chrome/$chromeBuild")
 
         val latch = CountDownLatch(1)
         var webView: WebView? = null

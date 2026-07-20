@@ -17,18 +17,18 @@ import (
 
 // TunnelGroupsConfig — configuration for launching multiple WorkerGroups.
 type TunnelGroupsConfig struct {
-	Links           []string
-	PeerAddr        *net.UDPAddr
-	PeerType        string
-	UseUDP          bool
-	TurnIP          string
-	TurnPort        int
-	StreamsPerGroup int
-	Cert            *tls.Certificate
-	SessionID       []byte
-	PauseFlag       *int32
-	WatchdogTimeout int
-	WrapKey         []byte // ← добавить: 32 байта = WRAP включён, nil = выключен
+	Links             []string
+	PeerAddr          *net.UDPAddr
+	PeerType          string
+	UseUDP            bool
+	TurnIP            string
+	TurnPort          int
+	StreamsPerGroup   int
+	Cert              *tls.Certificate
+	SessionID         []byte
+	WatchdogTimeout   int
+	WrapKey           []byte // ← добавить: 32 байта = WRAP включён, nil = выключен
+	NetworkGeneration uint64
 }
 
 // StartTunnelGroups launches N WorkerGroups concurrently.
@@ -66,22 +66,18 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	allStreams := make([]*stream, totalStreams)
 	for i := range allStreams {
 		allStreams[i] = &stream{
-			ctx:             gCtx,
-			id:              i,
-			in:              make(chan []byte, 512),
-			out:             lc,
-			sessionID:       cfg.SessionID,
-			cert:            cfg.Cert,
-			watchdogTimeout: wd,
-			okFunc:          okFunc,
-			wrapKey:         cfg.WrapKey, // ← добавить
-			ssrc:            randU32(),   // per-stream RTP SSRC → distinct ChaCha nonce
+			ctx:               gCtx,
+			id:                i,
+			in:                make(chan []byte, 512),
+			out:               lc,
+			sessionID:         cfg.SessionID,
+			cert:              cfg.Cert,
+			watchdogTimeout:   wd,
+			okFunc:            okFunc,
+			wrapKey:           cfg.WrapKey, // ← добавить
+			ssrc:              randU32(),   // per-stream RTP SSRC → distinct ChaCha nonce
+			networkGeneration: cfg.NetworkGeneration,
 		}
-	}
-
-	var pauseFlag int32
-	if cfg.PauseFlag == nil {
-		cfg.PauseFlag = &pauseFlag
 	}
 
 	var groupsWg sync.WaitGroup
@@ -98,14 +94,13 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 		groupStreams := allStreams[gi*n : gi*n+n]
 
 		groupCfg := WorkerGroupConfig{
-			GroupID:   gi,
-			Link:      link,
-			PeerAddr:  cfg.PeerAddr,
-			UseUDP:    cfg.UseUDP,
-			PeerType:  cfg.PeerType,
-			TurnIP:    cfg.TurnIP,
-			TurnPort:  cfg.TurnPort,
-			PauseFlag: cfg.PauseFlag,
+			GroupID:  gi,
+			Link:     link,
+			PeerAddr: cfg.PeerAddr,
+			UseUDP:   cfg.UseUDP,
+			PeerType: cfg.PeerType,
+			TurnIP:   cfg.TurnIP,
+			TurnPort: cfg.TurnPort,
 		}
 
 		groupsWg.Add(1)
@@ -126,12 +121,10 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 		close(done)
 	}()
 
-	// Chunked dispatcher: sends chunkSize consecutive packets through the
-	// same stream before rotating, preserving packet order within a chunk.
-	// Reduces WireGuard-level reordering caused by per-stream latency variance
-	// across independent DTLS/TURN paths.
+	// Chunked round-robin dispatcher: sends eight consecutive packets through
+	// the same ready stream before rotating. This avoids per-packet path-quality
+	// accounting while preserving packet order within each chunk.
 	go func() {
-		nStreams := totalStreams
 		const chunkSize = 8
 		lastUsed := 0
 		packetsInChunk := 0
@@ -161,8 +154,8 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			}
 
 			var s *stream
-			for i := 0; i < nStreams; i++ {
-				st := allStreams[(lastUsed+i)%nStreams]
+			for i := 0; i < totalStreams; i++ {
+				st := allStreams[(lastUsed+i)%totalStreams]
 				if st.ready.Load() {
 					s = st
 					break
@@ -181,7 +174,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			}
 
 			if packetsInChunk >= chunkSize {
-				lastUsed = (lastUsed + 1) % nStreams
+				lastUsed = (lastUsed + 1) % totalStreams
 				packetsInChunk = 0
 			}
 		}

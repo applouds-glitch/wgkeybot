@@ -11,6 +11,7 @@ import android.os.StrictMode
 import android.os.StrictMode.ThreadPolicy
 import android.os.StrictMode.VmPolicy
 import android.util.Log
+import android.webkit.WebView
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.datastore.core.DataStore
@@ -22,6 +23,7 @@ import com.wireguard.android.backend.Backend
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.TurnBackend
 import com.wireguard.android.activity.CaptchaActivity
+import com.wireguard.android.captcha.CaptchaDeviceProfile
 import com.wireguard.android.captcha.CaptchaWebViewManager
 import com.wireguard.android.configStore.FileConfigStore
 import com.wireguard.android.model.TunnelManager
@@ -74,6 +76,13 @@ class Application : android.app.Application() {
     override fun onCreate() {
         Log.i(TAG, USER_AGENT)
         super.onCreate()
+
+        if (BuildConfig.DEBUG) {
+            WebView.setWebContentsDebuggingEnabled(true)
+            Log.d(TAG, "WebView debugging enabled for debug build")
+        }
+
+        CaptchaDeviceProfile.initialize(applicationContext)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Создаём канал уведомлений сразу при старте приложения
@@ -145,7 +154,14 @@ class Application : android.app.Application() {
                 CaptchaActivity.solveCaptcha(applicationContext, redirectUri)
             }
         }
-        
+
+        // Feed the Go captcha solver real device metrics (screen, DPR, cores,
+        // memory) + a persisted stable browser_fp, instead of synthetic randoms.
+        TurnBackend.setCaptchaDeviceProfileProvider {
+            com.wireguard.android.captcha.CaptchaDeviceProfile.buildJson(applicationContext)
+        }
+
+        com.wireguard.android.util.ScreenStateMonitor.init(applicationContext)
         tunnelManager.onCreate()
         tunnelStateTracker = TunnelStateTracker(applicationContext)
         tunnelStateTracker.attach()

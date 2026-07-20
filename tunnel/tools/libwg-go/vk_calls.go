@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -39,6 +40,35 @@ const (
 	vkCallsOKHost         = "https://calls.okcdn.ru/fb.do"
 	vkCallsOKAppKey       = "CGMMEJLGDIHBABABA"
 )
+
+// errCallUnavailable marks a terminal "the VK call is gone" failure: the call
+// ended, was deleted, or the join link is invalid/expired. No captcha,
+// credential rotation or retry can recover it, so the caller must stop instead
+// of falling back to the legacy captcha chain (which would burn credentials and
+// prompt the user for a captcha it can never satisfy). The message carries the
+// "CALL_UNAVAILABLE" marker so the string-matching pre-fetch caller in
+// turn-client.go recognises it, while Go callers can use isCallUnavailable.
+var errCallUnavailable = errors.New("CALL_UNAVAILABLE")
+
+func callUnavailablef(format string, a ...interface{}) error {
+	return fmt.Errorf("%w: "+format, append([]interface{}{errCallUnavailable}, a...)...)
+}
+
+func isCallUnavailable(err error) bool { return errors.Is(err, errCallUnavailable) }
+
+// isFatalVKCallCode reports whether a VK api.vk.me error_code means the call is
+// permanently unreachable. Ported from amurcanov/proxy-turn-vk-android@d95b65b5:
+// 951 (call not found) and 954 (invalid/expired join link) on the messages.*
+// endpoints. The legacy calls.getAnonymousToken 9xxx call domain is classified
+// separately in getTokenChain, since 9005 there means CALL_REQUIRES_AUTH.
+func isFatalVKCallCode(code int) bool {
+	switch code {
+	case 951, 954:
+		return true
+	default:
+		return false
+	}
+}
 
 // getVKCredsViaVKCalls runs the 5-step VK Calls anonymous flow and returns
 // (username, password, resolvedTurnAddrs, lifetimeSecs, error). It reuses the
@@ -232,6 +262,9 @@ func vkCallsAPIError(step string, resp map[string]interface{}) error {
 	msg, _ := errObj["error_msg"].(string)
 	if code == 0 && msg == "" {
 		return nil
+	}
+	if isFatalVKCallCode(int(code)) {
+		return callUnavailablef("%s: VK call unavailable (error_code %d): %s", step, int(code), msg)
 	}
 	if int(code) == 14 {
 		return fmt.Errorf("%s: VK captcha gate (error_code 14): %s", step, msg)

@@ -37,6 +37,7 @@ type winner struct {
 // are managed by the calling WorkerGroup.
 func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []string, cfg WorkerGroupConfig, raceAll bool) error {
 	s.ready.Store(false)
+	defer s.ready.Store(false)
 
 	// raceCtx is cancelled the moment a winner is chosen (or ctx dies) so the
 	// losing racers stop dialing / abort their semaphore wait promptly.

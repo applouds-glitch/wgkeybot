@@ -19,7 +19,7 @@ extern char *wgVersion();
 extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, const char *mode, int n, int udp, const char *listen_addr, const char *turn_ip, int turn_port, const char *peer_type, int streams_per_cred, int watchdog_timeout, const char *wrap_key, long long network_handle);
 extern void wgTurnProxyStop();
 extern void wgNotifyNetworkChange();
-extern void wgSetIdleMode(int idle);
+extern void wgSetNetworkAvailable(int available);
 extern const char* getNetworkDnsServers(long long network_handle);
 
 static JavaVM *java_vm;
@@ -46,6 +46,7 @@ static jmethodID inet_address_get_host_method;
 // Captcha handler
 static jclass turn_backend_class_global = NULL;
 static jmethodID on_captcha_required_method = NULL;
+static jmethodID get_captcha_device_profile_method = NULL;
 
 
 // Helper to update the cached Network object
@@ -130,7 +131,20 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetVpnSe
 			jclass tb_class = (*env)->FindClass(env, "com/wireguard/android/backend/TurnBackend");
 			if (tb_class) {
 				turn_backend_class_global = (*env)->NewGlobalRef(env, tb_class);
+				// A missing method (e.g. stripped by R8) leaves a pending
+				// NoSuchMethodError; clear it or the next JNI call aborts the VM.
 				on_captcha_required_method = (*env)->GetStaticMethodID(env, turn_backend_class_global, "onCaptchaRequired", "(Ljava/lang/String;)Ljava/lang/String;");
+				if (!on_captcha_required_method) {
+					(*env)->ExceptionClear(env);
+					__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
+						"wgSetVpnService: TurnBackend.onCaptchaRequired not found — captcha WebView disabled");
+				}
+				get_captcha_device_profile_method = (*env)->GetStaticMethodID(env, turn_backend_class_global, "getCaptchaDeviceProfile", "()Ljava/lang/String;");
+				if (!get_captcha_device_profile_method) {
+					(*env)->ExceptionClear(env);
+					__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
+						"wgSetVpnService: TurnBackend.getCaptchaDeviceProfile not found — using fallback captcha profile");
+				}
 				(*env)->DeleteLocalRef(env, tb_class);
 			}
 		}
@@ -340,9 +354,9 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgNotifyNe
 	wgNotifyNetworkChange();
 }
 
-JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetIdleMode(JNIEnv *env, jclass c, jint idle)
+JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetworkAvailable(JNIEnv *env, jclass c, jint available)
 {
-	wgSetIdleMode(idle);
+	wgSetNetworkAvailable(available);
 }
 
 JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_TurnBackend_wgGetNetworkDnsServers(JNIEnv *env, jclass c, jlong network_handle)
@@ -561,5 +575,49 @@ const char* requestCaptcha(const char* redirect_uri)
 
 	__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI",
 		"requestCaptcha: returning %s", result ? "token" : "NULL");
+	return result;
+}
+
+// Called from Go to fetch the captcha device profile (real screen/DPR/core/mem
+// metrics + persisted browser_fp) as a JSON string. Returns a malloc'd string
+// that the caller (Go) must free, or NULL if unavailable.
+const char* getCaptchaDeviceProfile(void)
+{
+	JNIEnv *env;
+	int attached = 0;
+	const char* result = NULL;
+
+	if (!java_vm || !turn_backend_class_global || !get_captcha_device_profile_method) {
+		return NULL;
+	}
+
+	if ((*java_vm)->GetEnv(java_vm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
+		if ((*java_vm)->AttachCurrentThread(java_vm, &env, NULL) != 0) {
+			__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
+				"getCaptchaDeviceProfile: AttachCurrentThread failed");
+			return NULL;
+		}
+		attached = 1;
+	}
+
+	jstring j_result = (jstring)(*env)->CallStaticObjectMethod(env, turn_backend_class_global,
+		get_captcha_device_profile_method);
+
+	if ((*env)->ExceptionCheck(env)) {
+		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
+			"getCaptchaDeviceProfile: exception occurred");
+		(*env)->ExceptionClear(env);
+	} else if (j_result != NULL) {
+		const char* str = (*env)->GetStringUTFChars(env, j_result, NULL);
+		if (str && strlen(str) > 0) {
+			result = strdup(str);
+		}
+		(*env)->ReleaseStringUTFChars(env, j_result, str);
+		(*env)->DeleteLocalRef(env, j_result);
+	}
+
+	if (attached)
+		(*java_vm)->DetachCurrentThread(java_vm);
+
 	return result;
 }
