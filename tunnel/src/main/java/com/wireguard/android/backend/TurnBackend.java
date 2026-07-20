@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * Native interface for TURN proxy management.
@@ -25,6 +26,12 @@ public final class TurnBackend {
 
     // Captcha handler: called when automatic captcha solving fails and WebView is needed
     private static volatile Function<String, String> captchaHandler;
+
+    // Captcha device-profile provider: supplies a JSON blob of REAL device metrics
+    // (screen size, devicePixelRatio, core/memory counts) plus a persisted stable
+    // browser fingerprint, so the Go captcha solver presents a believable,
+    // consistent device instead of freshly randomized synthetic values.
+    private static volatile Supplier<String> captchaDeviceProfileProvider;
 
     private TurnBackend() {
     }
@@ -111,6 +118,37 @@ public final class TurnBackend {
     }
 
     /**
+     * Registers the captcha device-profile provider. Call once from
+     * Application.onCreate(). The provider must return a JSON string with real
+     * device metrics and a persisted browser_fp; it is invoked from a background
+     * (Go) thread during captcha solving.
+     * @param provider Supplier returning the device-profile JSON, or null to clear
+     */
+    public static void setCaptchaDeviceProfileProvider(@Nullable Supplier<String> provider) {
+        captchaDeviceProfileProvider = provider;
+        Log.d(TAG, "Captcha device-profile provider " + (provider != null ? "registered" : "cleared"));
+    }
+
+    /**
+     * Called from JNI (Go thread) to obtain the captcha device profile.
+     * @return device-profile JSON string, or empty string if no provider is set
+     */
+    @SuppressWarnings("unused") // Called from native code
+    public static String getCaptchaDeviceProfile() {
+        Supplier<String> provider = captchaDeviceProfileProvider;
+        if (provider == null) {
+            return "";
+        }
+        try {
+            String result = provider.get();
+            return result != null ? result : "";
+        } catch (Exception e) {
+            Log.e(TAG, "Captcha device-profile provider threw exception", e);
+            return "";
+        }
+    }
+
+    /**
      * Called from JNI (Go thread) when VK API requires captcha.
      * Blocks the calling thread until captcha is solved.
      * @param redirectUri The VK captcha page URL to show in WebView
@@ -155,15 +193,14 @@ public final class TurnBackend {
     );
     public static native void wgTurnProxyStop();
     public static native void wgNotifyNetworkChange();
-    public static native void wgSetPauseFlag(int flag);
 
     /**
-     * Signals the native TURN proxy that the device/screen has gone idle (1) or
-     * active (0). While idle, per-stream keepalives relax to the NAT-hold floor
-     * and the dead-stream detector widens, cutting radio wakeups without dropping
-     * the tunnel. Wired to screen on/off + Doze in GoBackend.VpnService.
+     * Reports whether Android currently has a validated physical upstream.
+     * Native combines this hint with recent TURN transport proof. A false value
+     * therefore parks normal reconnect work only after that proof expires; one
+     * rate-limited probe remains available for recovery.
      */
-    public static native void wgSetIdleMode(int idle);
+    public static native void wgSetNetworkAvailable(int available);
     public static native String wgGetNetworkDnsServers(long networkHandle);
 
     private static final String TAG = "WireGuard/TurnBackend";

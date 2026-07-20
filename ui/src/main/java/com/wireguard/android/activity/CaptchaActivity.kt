@@ -18,6 +18,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
+import com.wireguard.android.BuildConfig
 import com.wireguard.android.util.LocaleGuard
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -105,7 +106,14 @@ class CaptchaActivity : AppCompatActivity() {
         LocaleGuard.restore(this)
 
         setContentView(webView)
-        webView.loadUrl(redirectUri)
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, "Waiting ${DEBUG_INSPECTION_DELAY_MS}ms for DevTools before loading captcha")
+            webView.postDelayed({
+                if (!isFinishing && !isDestroyed) webView.loadUrl(redirectUri)
+            }, DEBUG_INSPECTION_DELAY_MS)
+        } else {
+            webView.loadUrl(redirectUri)
+        }
     }
 
     private fun deliverResult(token: String) {
@@ -204,6 +212,7 @@ class CaptchaActivity : AppCompatActivity() {
         private const val EXTRA_REDIRECT_URI = "redirect_uri"
         private const val CAPTCHA_TIMEOUT_SECONDS = 120L
         private const val MAX_CAPTCHA_RELOADS = 5
+        private const val DEBUG_INSPECTION_DELAY_MS = 15_000L
 
         @Volatile
         private var pendingResult: CompletableFuture<String>? = null

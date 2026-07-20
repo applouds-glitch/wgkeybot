@@ -29,9 +29,37 @@ const (
 	// the counter, the keystream index diverges, and every packet fails to
 	// decrypt. Must stay in sync with the server's wrapCounterMod.
 	wrapCounterMod = 4_000_000
+
+	// wgTransportOverhead is WireGuard's per-packet transport overhead
+	// (16-byte message_data header + 16-byte Poly1305 tag) on top of the inner
+	// IP packet. The largest payload handed to wrapPacket is tunnelMTU + this.
+	wgTransportOverhead = 32
+
+	// wrapDefaultMaxBody is the payload+padding ceiling for the default 1280
+	// tunnel MTU, used until SetWrapMTU learns the real interface MTU.
+	wrapDefaultMaxBody = 1280 + wgTransportOverhead
 )
 
 var wrapCounter atomic.Uint64
+
+// wrapMaxBody caps payload+padding so the obfuscation jitter never inflates a
+// near-full WireGuard packet past the tuned tunnel MTU. Without this a full-size
+// packet plus up to wrapMaxPad random bytes overflows links whose path MTU sits
+// just below full size and gets silently dropped — large transfers stall while
+// small ones (chat) pass. Small packets keep their full 0..wrapMaxPad cover
+// jitter; only packets already near the ceiling lose padding.
+var wrapMaxBody atomic.Int64
+
+func init() { wrapMaxBody.Store(wrapDefaultMaxBody) }
+
+// SetWrapMTU recomputes the padding ceiling from the active tunnel MTU. Called
+// once the WireGuard interface MTU is known; a non-positive mtu is ignored.
+func SetWrapMTU(mtu int) {
+	if mtu <= 0 {
+		return
+	}
+	wrapMaxBody.Store(int64(mtu + wgTransportOverhead))
+}
 
 // wrapCipher selects the WRAP keystream, signalled on the wire by the RTP X-bit
 // (byte[0] & 0x10). Kept byte-identical with the server's wrap.go:
@@ -231,6 +259,15 @@ func wrapPacket(key, payload []byte, ssrc uint32) ([]byte, error) {
 	counter := (wrapCounter.Add(1) - 1) % wrapCounterMod
 
 	padLen := randPadLen()
+	// MTU-safety: clamp padding so payload+padding never exceeds wrapMaxBody.
+	// Full-size packets ship unpadded (room <= 0); small packets keep their
+	// cover jitter. Prevents the random pad from black-holing near-full packets.
+	if room := int(wrapMaxBody.Load()) - len(payload); padLen > room {
+		if room < 0 {
+			room = 0
+		}
+		padLen = room
+	}
 	plainLen := len(payload) + padLen + wrapPadLen
 	// Single allocation: build header + plaintext contiguously in out, then
 	// encrypt the plaintext region in place.

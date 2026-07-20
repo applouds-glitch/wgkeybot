@@ -15,11 +15,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
-import kotlinx.coroutines.flow.collectLatest
 
 /**
  * Lightweight manager for per-tunnel TURN client processes and logs.
@@ -31,8 +33,8 @@ class TurnProxyManager(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.IO)
     
     // State
-    private var activeTunnelName: String? = null
-    private var activeSettings: TurnSettings? = null
+    @Volatile private var activeTunnelName: String? = null
+    @Volatile private var activeSettings: TurnSettings? = null
     @Volatile private var userInitiatedStop: Boolean = false
     
     // Network tracking
@@ -41,6 +43,18 @@ class TurnProxyManager(private val context: Context) {
     
     init {
         networkMonitor.start()
+
+        scope.launch {
+            networkMonitor.validated.collectLatest { validated ->
+                // A capability flicker must not tear down healthy TURN streams.
+                // Native combines this hint with fresh proof from authenticated
+                // TURN traffic, so false cannot park reconnects on a working
+                // corporate network that blocks Android validation probes.
+                if (activeTunnelName != null && activeSettings?.enabled == true) {
+                    TurnBackend.wgSetNetworkAvailable(if (validated) 1 else 0)
+                }
+            }
+        }
         
         scope.launch {
             networkMonitor.bestNetwork.collectLatest { network ->
@@ -94,9 +108,26 @@ class TurnProxyManager(private val context: Context) {
 
         var attempts = 0
         while (currentCoroutineContext().isActive && !userInitiatedStop) {
+            // Always probe a newly selected physical network once. Android can
+            // legitimately withhold VALIDATED on corporate/probe-blocking networks,
+            // while TURN itself is fully reachable. After a failed bootstrap, wait
+            // for validation or a slow timeout before spending on another full start.
+            // A genuinely new network cancels this collectLatest branch immediately.
+            if (attempts > 0 && !networkMonitor.validated.value) {
+                Log.w(TAG, "Network is not VALIDATED — waiting before controlled TURN retry")
+                withTimeoutOrNull(UNVALIDATED_RETRY_INTERVAL_MS) {
+                    networkMonitor.validated.first { it }
+                }
+                if (userInitiatedStop || !currentCoroutineContext().isActive) return
+            }
+
+            // The selected physical network may have changed while validation
+            // was pending. Use the monitor's current, non-debounced winner.
+            lastKnownNetwork = networkMonitor.currentNetwork
+
             attempts++
             Log.d(TAG, "Starting TURN for $name (Attempt $attempts)")
-            
+
             val success = startForTunnelInternal(name, settings)
             if (success) {
                 Log.d(TAG, "TURN restarted successfully on attempt $attempts")
@@ -210,6 +241,13 @@ class TurnProxyManager(private val context: Context) {
                     return@withContext false
                 }
 
+                lastKnownNetwork = networkMonitor.currentNetwork
+                // Preserve the historical manual-start behavior: allow one
+                // normal startup attempt even before Android publishes
+                // VALIDATED. Afterward native combines the actual capability
+                // with proof from the TURN handshake and strict RX path.
+                TurnBackend.wgSetNetworkAvailable(1)
+
                 // If network is still null, try one quick re-poll from monitor
                 if (lastKnownNetwork == null) {
                     lastKnownNetwork = networkMonitor.currentNetwork
@@ -291,6 +329,16 @@ class TurnProxyManager(private val context: Context) {
                         throw Exception(msg)
                     }
 
+                    if (ret == -4) {
+                        // Dead call: the VK call ended/was deleted or the join link is
+                        // invalid. No captcha, credential rotation or stream count can
+                        // revive a call that no longer exists — abort without retrying.
+                        val msg = context.getString(R.string.turn_call_unavailable)
+                        Log.e(TAG, "TURN: $msg")
+                        appendLogLine(tunnelName, msg)
+                        throw Exception(msg)
+                    }
+
                     if (ret == -3) {
                         // Captcha lockout: every credential pre-fetch failed because the
                         // captcha could not be solved. Stream count is irrelevant to a
@@ -336,6 +384,9 @@ class TurnProxyManager(private val context: Context) {
                 appendLogLine(tunnelName, msg)
                 false
             } finally {
+                // End the bounded bootstrap override. Native keeps the effective gate
+                // open when the just-established TURN path has fresh transport proof.
+                TurnBackend.wgSetNetworkAvailable(if (networkMonitor.validated.value) 1 else 0)
                 operationMutex.unlock()
             }
         }
@@ -433,5 +484,6 @@ class TurnProxyManager(private val context: Context) {
     companion object {
         private const val TAG = "WireGuard/TurnProxyManager"
         private const val MAX_LOG_CHARS = 128 * 1024
+        private const val UNVALIDATED_RETRY_INTERVAL_MS = 60_000L
     }
 }

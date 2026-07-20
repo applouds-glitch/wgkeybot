@@ -8,6 +8,7 @@ package main
 /*
 #include <stdlib.h>
 extern const char* requestCaptcha(const char* redirect_uri);
+extern const char* getCaptchaDeviceProfile();
 */
 import "C"
 
@@ -25,10 +26,12 @@ import (
 	"math/rand"
 	neturl "net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	tlsclient "github.com/kiper292/tls-client"
@@ -45,7 +48,8 @@ var errSliderDetected = errors.New("slider_detected")
 var errCaptchaBot = errors.New("captcha_bot")
 
 // errCaptchaRateLimit is returned when VK throttles the captcha endpoint
-// (check status ERROR_LIMIT, or getContent status ERROR/ERROR_LIMIT). The
+// (check or getContent status ERROR_LIMIT). A generic ERROR is kept distinct:
+// it may indicate an invalid captcha state or request rather than throttling. The
 // session is spent: retrying or escalating to another auto solver only burns
 // more requests and digs the rate-limit hole deeper, so callers must stop
 // hammering and fall back to the WebView instead.
@@ -64,7 +68,7 @@ func isCaptchaSessionExhausted(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "error_limit") ||
-		strings.Contains(msg, "getcontent status:") ||
+		strings.Contains(msg, "captcha_rate_limit") ||
 		strings.Contains(msg, "rate limit")
 }
 
@@ -86,6 +90,59 @@ var captchaHeaderOrder = []string{
 	"sec-fetch-dest", "referer", "accept-encoding", "priority",
 }
 var captchaPHeaderOrder = []string{":method", ":path", ":authority", ":scheme"}
+
+const captchaNotRobotAPIVersion = "5.131"
+
+var captchaFormFieldOrder = map[string][]string{
+	"captchaNotRobot.settings": {
+		"session_token", "domain", "adFp", "access_token",
+	},
+	"captchaNotRobot.componentDone": {
+		"session_token", "domain", "adFp", "browser_fp", "device", "access_token",
+	},
+	"captchaNotRobot.check": {
+		"session_token", "domain", "adFp", "accelerometer", "gyroscope", "motion",
+		"cursor", "taps", "connectionRtt", "connectionDownlink", "browser_fp",
+		"hash", "answer", "debug_info", "access_token",
+	},
+	"captchaNotRobot.getContent": {
+		"session_token", "domain", "adFp", "captcha_settings", "access_token",
+	},
+	"captchaNotRobot.endSession": {
+		"session_token", "domain", "adFp", "access_token",
+	},
+}
+
+// encodeCaptchaForm preserves the field order emitted by the VK WebView.
+// net/url.Values.Encode sorts keys alphabetically, which does not match the
+// captured browser requests and creates an avoidable fingerprint difference.
+func encodeCaptchaForm(method string, values neturl.Values) string {
+	orderedKeys := captchaFormFieldOrder[method]
+	seen := make(map[string]bool, len(values))
+	parts := make([]string, 0, len(values))
+	appendKey := func(key string) {
+		for _, value := range values[key] {
+			parts = append(parts, neturl.QueryEscape(key)+"="+neturl.QueryEscape(value))
+		}
+		seen[key] = true
+	}
+	for _, key := range orderedKeys {
+		if _, ok := values[key]; ok {
+			appendKey(key)
+		}
+	}
+	remaining := make([]string, 0, len(values)-len(seen))
+	for key := range values {
+		if !seen[key] {
+			remaining = append(remaining, key)
+		}
+	}
+	sort.Strings(remaining)
+	for _, key := range remaining {
+		appendKey(key)
+	}
+	return strings.Join(parts, "&")
+}
 
 type VkCaptchaError struct {
 	ErrorCode               int
@@ -279,7 +336,10 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID in
 		return "", fmt.Errorf("no redirect_uri for auto-solve")
 	}
 
-	const maxAttempts = 2
+	// Live diagnostics showed that a second check with the same session_token
+	// immediately returns ERROR_LIMIT after the first BOT/getContent refusal.
+	// A captcha session is therefore single-use for automatic solving.
+	const maxAttempts = 1
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		token, err := solveVkCaptchaOnce(ctx, captchaErr, streamID, client, profile, useSliderPOC)
@@ -288,9 +348,8 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID in
 		}
 		lastErr = err
 		turnLog("[STREAM %d] [Captcha] attempt %d/%d failed: %v", streamID, attempt, maxAttempts, err)
-		// VK has throttled this captcha session: another attempt would only
-		// burn more requests against the rate limit. Stop and let the caller
-		// fall back to the WebView.
+		// VK has throttled this captcha session. Stop and let the caller fall
+		// back to the WebView.
 		if isCaptchaSessionExhausted(err) {
 			turnLog("[STREAM %d] [Captcha] Session throttled (ERROR_LIMIT) — abandoning auto solve", streamID)
 			return "", err
@@ -379,6 +438,54 @@ func applyBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
 	req.Header.Set("DNT", "1")
 }
 
+// Fallback only. Kept identical to CaptchaFingerprintProbe.USER_AGENT and the
+// captcha solver WebView UA (CaptchaActivity) so a fingerprint-probe failure
+// still yields the same Android mobile UA VK sees in the interactive captcha.
+const captchaWebViewUserAgent = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
+
+// applyCaptchaBrowserProfileFhttp matches the actual Android WebView requests
+// captured on-device: an Android mobile UA paired with the Android WebView
+// client hints (mobile mode, Android WebView brand) that Chromium reports.
+func applyCaptchaBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
+	applyBrowserProfileFhttp(req, profile)
+	m, ok := androidCaptchaProfile()
+	if !ok || m.WebViewMajor <= 0 {
+		return
+	}
+	if m.UserAgent != "" {
+		req.Header.Set("User-Agent", m.UserAgent)
+	} else {
+		req.Header.Set("User-Agent", captchaWebViewUserAgent)
+	}
+	if m.SecChUA != "" {
+		req.Header.Set("sec-ch-ua", m.SecChUA)
+	} else if len(m.UABrands) > 0 {
+		brands := make([]string, 0, len(m.UABrands))
+		for _, brand := range m.UABrands {
+			brands = append(brands, fmt.Sprintf(`"%s";v="%s"`, brand.Brand, brand.Version))
+		}
+		req.Header.Set("sec-ch-ua", strings.Join(brands, ", "))
+	} else {
+		major := strconv.Itoa(m.WebViewMajor)
+		req.Header.Set("sec-ch-ua", fmt.Sprintf(`"Not;A=Brand";v="8", "Chromium";v="%s", "Android WebView";v="%s"`, major, major))
+	}
+	if m.SecChUAMobile != "" {
+		req.Header.Set("sec-ch-ua-mobile", m.SecChUAMobile)
+	} else if m.UAMobile || len(m.UABrands) == 0 {
+		req.Header.Set("sec-ch-ua-mobile", "?1")
+	} else {
+		req.Header.Set("sec-ch-ua-mobile", "?0")
+	}
+	if m.SecChUAPlatform != "" {
+		req.Header.Set("sec-ch-ua-platform", m.SecChUAPlatform)
+	} else if m.UAPlatform != "" {
+		req.Header.Set("sec-ch-ua-platform", fmt.Sprintf(`"%s"`, m.UAPlatform))
+	} else {
+		req.Header.Set("sec-ch-ua-platform", `"Android"`)
+	}
+	req.Header.Del("DNT")
+}
+
 // profileAcceptLanguage returns the Accept-Language header for a profile,
 // falling back to en-US when the profile predates the AcceptLanguage field.
 func profileAcceptLanguage(profile Profile) string {
@@ -405,9 +512,13 @@ type captchaViewport struct {
 	DevicePixelRatio float64
 }
 
-// randomViewport returns a randomized viewport matching real Android Chrome
-// phones (CSS-pixel layout size paired with its devicePixelRatio).
+// randomViewport returns the device's real CSS-pixel viewport when the Android
+// profile is available, otherwise a randomized one matching common Android
+// Chrome phones (CSS-pixel layout size paired with its devicePixelRatio).
 func randomViewport() captchaViewport {
+	if m, ok := androidCaptchaProfile(); ok {
+		return captchaViewport{Width: m.ScreenWidth, Height: m.ScreenHeight, DevicePixelRatio: m.DevicePixelRatio}
+	}
 	devices := []captchaViewport{
 		{Width: 412, Height: 915, DevicePixelRatio: 2.625},  // Pixel 7/8
 		{Width: 360, Height: 800, DevicePixelRatio: 3.0},    // Galaxy A-series
@@ -420,6 +531,13 @@ func randomViewport() captchaViewport {
 }
 
 func generateBrowserFp(_ Profile, _ captchaViewport) string {
+	// Prefer the device's persisted fingerprint: VK's bot detector burns a
+	// captcha session that presents a fresh browser_fp on every attempt, so a
+	// stable per-install value (persisted on the Android side) reads as one
+	// returning device instead of a bot cycling identities.
+	if m, ok := androidCaptchaProfile(); ok && m.BrowserFp != "" {
+		return m.BrowserFp
+	}
 	b := make([]byte, 16)
 	if _, err := cryptorand.Read(b); err != nil {
 		return fmt.Sprintf("%x", rand.Int63())
@@ -427,85 +545,98 @@ func generateBrowserFp(_ Profile, _ captchaViewport) string {
 	return hex.EncodeToString(b)
 }
 
-// generateHumanCursor produces a realistic mouse trajectory with returns, pauses, and micro-jitter.
-func generateHumanCursor() string {
-	startX := 40 + rand.Intn(300)  // within a ~360-412px mobile viewport: 40-340
-	startY := 200 + rand.Intn(450) // 200-650
-	startTime := time.Now().UnixMilli() - int64(rand.Intn(3000)+1500)
-	numPoints := 20 + rand.Intn(15)
-	points := make([]string, 0, numPoints)
-
-	for i := 0; i < numPoints; i++ {
-		// Micro-pause: sometimes repeat the same position for 2-3 frames
-		if i > 2 && rand.Intn(8) == 0 {
-			for repeat := 0; repeat < 1+rand.Intn(2); repeat++ {
-				startTime += int64(rand.Intn(60) + 40)
-				if len(points) < numPoints {
-					points = append(points, fmt.Sprintf(`{"x":%d,"y":%d,"t":%d}`, startX, startY, startTime))
-				}
-			}
-			continue
-		}
-		// Return movement: go backwards 2-8px every ~6 steps
-		if i > 3 && rand.Intn(6) == 0 {
-			startX -= rand.Intn(8) + 2
-			startY -= rand.Intn(5) + 1
-		} else {
-			startX += rand.Intn(20) - 5 // -5..+14
-			startY += rand.Intn(18) - 3 // -3..+14 — not always downward
-		}
-		startTime += int64(rand.Intn(50) + 15) // 15-65ms between points
-		// Keep the trajectory inside a phone viewport so accumulated drift can't
-		// place touch points off-screen.
-		startX = clampInt(startX, 8, 404)
-		startY = clampInt(startY, 60, 850)
-		points = append(points, fmt.Sprintf(`{"x":%d,"y":%d,"t":%d}`, startX, startY, startTime))
-	}
-	return "[" + strings.Join(points, ",") + "]"
+// androidDeviceMetrics is the real device fingerprint sourced from the Android
+// layer via JNI (TurnBackend.getCaptchaDeviceProfile). Feeding the captcha
+// solver the device's actual screen, pixel ratio and core/memory counts — plus
+// a browser_fp the Android side persists across sessions — presents a stable,
+// believable device instead of freshly randomized synthetic values.
+type androidDeviceMetrics struct {
+	UserAgent               string           `json:"userAgent"`
+	SecChUA                 string           `json:"secChUa"`
+	SecChUAMobile           string           `json:"secChUaMobile"`
+	SecChUAPlatform         string           `json:"secChUaPlatform"`
+	UABrands                []captchaUABrand `json:"uaBrands"`
+	UAMobile                bool             `json:"uaMobile"`
+	UAPlatform              string           `json:"uaPlatform"`
+	ScreenWidth             int              `json:"screenWidth"`
+	ScreenHeight            int              `json:"screenHeight"`
+	ScreenAvailWidth        int              `json:"screenAvailWidth"`
+	ScreenAvailHeight       int              `json:"screenAvailHeight"`
+	InnerWidth              int              `json:"innerWidth"`
+	InnerHeight             int              `json:"innerHeight"`
+	DevicePixelRatio        float64          `json:"devicePixelRatio"`
+	Language                string           `json:"language"`
+	Languages               []string         `json:"languages"`
+	HardwareConcurrency     int              `json:"hardwareConcurrency"`
+	DeviceMemory            int              `json:"deviceMemory"`
+	MaxTouchPoints          int              `json:"maxTouchPoints"`
+	ConnectionEffectiveType string           `json:"connectionEffectiveType"`
+	NotificationsPermission string           `json:"notificationsPermission"`
+	WebViewMajor            int              `json:"webViewMajor"`
+	BrowserFp               string           `json:"browserFp"`
 }
 
-// generateSensorNoise produces realistic accelerometer/gyroscope noise.
-func generateSensorNoise() string {
-	// Accelerometer: tiny random values around zero (gravity compensated)
-	accelPoints := make([]string, 8+rand.Intn(6))
-	for i := range accelPoints {
-		accelPoints[i] = fmt.Sprintf(`{"x":%.4f,"y":%.4f,"z":%.4f}`,
-			(rand.Float64()-0.5)*0.04, // ±0.02g
-			(rand.Float64()-0.5)*0.04,
-			1.0+(rand.Float64()-0.5)*0.03) // ~1g gravity ± noise
-	}
-	return "[" + strings.Join(accelPoints, ",") + "]"
+type captchaUABrand struct {
+	Brand   string `json:"brand"`
+	Version string `json:"version"`
 }
 
-func generateGyroNoise() string {
-	// Gyroscope: tiny rotation rates
-	points := make([]string, 8+rand.Intn(6))
-	for i := range points {
-		points[i] = fmt.Sprintf(`{"x":%.4f,"y":%.4f,"z":%.4f}`,
-			(rand.Float64()-0.5)*0.02,
-			(rand.Float64()-0.5)*0.02,
-			(rand.Float64()-0.5)*0.02)
+var (
+	androidDevMu   sync.Mutex
+	androidDevVal  *androidDeviceMetrics
+	androidDevDone bool
+)
+
+// androidCaptchaProfile returns the real device metrics from the Android layer,
+// caching the first successful fetch. An empty/invalid result is NOT cached, so
+// a captcha that fires before the provider is registered still picks up the
+// real profile on a later attempt. Callers fall back to synthetic values when
+// ok is false (non-Android builds, or provider not yet registered).
+func androidCaptchaProfile() (*androidDeviceMetrics, bool) {
+	androidDevMu.Lock()
+	defer androidDevMu.Unlock()
+	if androidDevDone {
+		return androidDevVal, androidDevVal != nil
 	}
-	return "[" + strings.Join(points, ",") + "]"
+	js := fetchAndroidDeviceProfileJSON()
+	if js == "" {
+		return nil, false
+	}
+	var m androidDeviceMetrics
+	if err := json.Unmarshal([]byte(js), &m); err != nil {
+		turnLog("[Captcha] device profile parse failed: %v", err)
+		return nil, false
+	}
+	if m.ScreenWidth <= 0 || m.ScreenHeight <= 0 || m.DevicePixelRatio <= 0 {
+		turnLog("[Captcha] device profile incomplete — using synthetic values")
+		return nil, false
+	}
+	androidDevVal = &m
+	androidDevDone = true
+	turnLog("[Captcha] device profile loaded: %dx%d dpr=%.3f cores=%d mem=%d fp=%.8s",
+		m.ScreenWidth, m.ScreenHeight, m.DevicePixelRatio, m.HardwareConcurrency, m.DeviceMemory, m.BrowserFp)
+	return androidDevVal, true
 }
 
-// generateConnectionMetrics produces realistic network metrics with natural variance.
+func fetchAndroidDeviceProfileJSON() string {
+	c := C.getCaptchaDeviceProfile()
+	if c == nil {
+		return ""
+	}
+	defer C.free(unsafe.Pointer(c))
+	return C.GoString(c)
+}
+
+// generateConnectionMetrics mirrors the two captured WebView requests: RTT was
+// unavailable, while NetworkInformation.downlink was sampled repeatedly at a
+// fixed value during the page lifetime (22 and 30 samples respectively).
 func generateConnectionMetrics() (rtt string, downlink string) {
-	rttValues := make([]string, 10)
-	for i := range rttValues {
-		// 45-85ms with occasional spike
-		base := 45 + rand.Intn(40)
-		if rand.Intn(10) == 0 {
-			base += rand.Intn(40) // spike up to 125ms
-		}
-		rttValues[i] = strconv.Itoa(base)
-	}
-	rtt = "[" + strings.Join(rttValues, ",") + "]"
-
-	dlValues := make([]string, 16)
+	rtt = "[]"
+	dlValues := make([]string, 22+rand.Intn(9))
+	value := math.Round((8.0+rand.Float64()*2.5)*10) / 10
+	formatted := strconv.FormatFloat(value, 'f', -1, 64)
 	for i := range dlValues {
-		base := 7.5 + rand.Float64()*7.0 // 7.5-14.5 Mbps
-		dlValues[i] = fmt.Sprintf("%.1f", math.Round(base*10)/10)
+		dlValues[i] = formatted
 	}
 	downlink = "[" + strings.Join(dlValues, ",") + "]"
 	return
@@ -524,7 +655,7 @@ func fetchCaptchaBootstrap(ctx context.Context, redirectURI string, client tlscl
 	}
 
 	req.Host = domain
-	applyBrowserProfileFhttp(req, profile)
+	applyCaptchaBrowserProfileFhttp(req, profile)
 	req.Header.Set("Sec-Fetch-Site", "none")
 	req.Header.Set("Sec-Fetch-Mode", "navigate")
 	req.Header.Set("Sec-Fetch-Dest", "document")
@@ -546,27 +677,77 @@ func fetchCaptchaBootstrap(ctx context.Context, redirectURI string, client tlscl
 }
 
 func buildCaptchaDeviceJSON(profile Profile, vp captchaViewport) string {
-	// Android Chrome: the visual viewport is the screen height minus the system
-	// status bar (availHeight) and additionally the URL/navigation chrome
-	// (innerHeight). screen.width == layout viewport width on mobile.
-	availHeight := vp.Height - 24 - rand.Intn(8)   // status bar: 24-31px
-	innerHeight := vp.Height - 112 - rand.Intn(40) // URL bar + nav: 112-151px
-	platform := profile.Platform
-	if platform == "" {
-		platform = "Linux armv8l"
+	if m, ok := androidCaptchaProfile(); ok && m.InnerWidth > 0 && m.InnerHeight > 0 {
+		languages := m.Languages
+		if len(languages) == 0 {
+			languages = []string{m.Language}
+		}
+		effectiveType := m.ConnectionEffectiveType
+		if effectiveType == "" {
+			effectiveType = "4g"
+		}
+		notifications := m.NotificationsPermission
+		if notifications == "" {
+			notifications = "denied"
+		}
+		payload := struct {
+			ScreenWidth             int      `json:"screenWidth"`
+			ScreenHeight            int      `json:"screenHeight"`
+			ScreenAvailWidth        int      `json:"screenAvailWidth"`
+			ScreenAvailHeight       int      `json:"screenAvailHeight"`
+			InnerWidth              int      `json:"innerWidth"`
+			InnerHeight             int      `json:"innerHeight"`
+			DevicePixelRatio        float64  `json:"devicePixelRatio"`
+			Language                string   `json:"language"`
+			Languages               []string `json:"languages"`
+			Webdriver               bool     `json:"webdriver"`
+			HardwareConcurrency     int      `json:"hardwareConcurrency"`
+			DeviceMemory            int      `json:"deviceMemory"`
+			ConnectionEffectiveType string   `json:"connectionEffectiveType"`
+			NotificationsPermission string   `json:"notificationsPermission"`
+		}{
+			ScreenWidth: m.ScreenWidth, ScreenHeight: m.ScreenHeight,
+			ScreenAvailWidth: m.ScreenAvailWidth, ScreenAvailHeight: m.ScreenAvailHeight,
+			InnerWidth: m.InnerWidth, InnerHeight: m.InnerHeight,
+			DevicePixelRatio: m.DevicePixelRatio,
+			Language:         m.Language, Languages: languages,
+			Webdriver:           false,
+			HardwareConcurrency: m.HardwareConcurrency, DeviceMemory: m.DeviceMemory,
+			ConnectionEffectiveType: effectiveType, NotificationsPermission: notifications,
+		}
+		if encoded, err := json.Marshal(payload); err == nil {
+			return string(encoded)
+		}
 	}
-	memChoices := []int{4, 6, 8}
+
+	// The invisible Android WebView is measured at roughly 360x382 physical
+	// pixels. JavaScript exposes that viewport in CSS pixels, while screen and
+	// screen.avail* retain the real device dimensions.
+	innerWidth := int(math.Round(float64(356+rand.Intn(13)) / vp.DevicePixelRatio))
+	innerHeight := int(math.Round(float64(376+rand.Intn(13)) / vp.DevicePixelRatio))
 	language, languages := captchaDeviceLanguages(profile)
 
+	// Prefer the device's real core/memory counts; fall back to plausible
+	// randomized values off-device or before the Android profile is available.
+	hardwareConcurrency := 6 + rand.Intn(3) // 6-8 cores
+	memChoices := []int{4, 6, 8}
+	deviceMemory := memChoices[rand.Intn(len(memChoices))]
+	if m, ok := androidCaptchaProfile(); ok {
+		if m.HardwareConcurrency > 0 {
+			hardwareConcurrency = m.HardwareConcurrency
+		}
+		if m.DeviceMemory > 0 {
+			deviceMemory = m.DeviceMemory
+		}
+	}
+
 	return fmt.Sprintf(
-		`{"screenWidth":%d,"screenHeight":%d,"screenAvailWidth":%d,"screenAvailHeight":%d,"innerWidth":%d,"innerHeight":%d,"devicePixelRatio":%s,"language":"%s","languages":%s,"webdriver":false,"hardwareConcurrency":%d,"deviceMemory":%d,"maxTouchPoints":5,"connectionEffectiveType":"4g","notificationsPermission":"default","userAgent":"%s","platform":"%s"}`,
-		vp.Width, vp.Height, vp.Width, availHeight, vp.Width, innerHeight,
+		`{"screenWidth":%d,"screenHeight":%d,"screenAvailWidth":%d,"screenAvailHeight":%d,"innerWidth":%d,"innerHeight":%d,"devicePixelRatio":%s,"language":"%s","languages":%s,"webdriver":false,"hardwareConcurrency":%d,"deviceMemory":%d,"connectionEffectiveType":"4g","notificationsPermission":"denied"}`,
+		vp.Width, vp.Height, vp.Width, vp.Height, innerWidth, innerHeight,
 		strconv.FormatFloat(vp.DevicePixelRatio, 'f', -1, 64),
 		language, languages,
-		6+rand.Intn(3), // 6-8 cores
-		memChoices[rand.Intn(len(memChoices))],
-		profile.UserAgent,
-		platform,
+		hardwareConcurrency,
+		deviceMemory,
 	)
 }
 
@@ -610,7 +791,7 @@ func fetchDebugInfoFromScript(ctx context.Context, scriptURL string, client tlsc
 	if err != nil {
 		return "", err
 	}
-	applyBrowserProfileFhttp(req, profile)
+	applyCaptchaBrowserProfileFhttp(req, profile)
 	req.Header.Set("Accept", "text/javascript,*/*")
 	req.Header.Set("Referer", "https://id.vk.com/")
 	req.Header.Set("Sec-Fetch-Site", "same-site")
@@ -641,13 +822,13 @@ func fetchDebugInfoFromScript(ctx context.Context, scriptURL string, client tlsc
 }
 
 func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo string, streamID int, client tlsclient.HttpClient, profile Profile) (string, error) {
-	vkReq := func(method string, postData string) (map[string]interface{}, error) {
-		reqURL := "https://api.vk.com/method/" + method + "?v=5.282"
-		req, err := fhttp.NewRequestWithContext(ctx, "POST", reqURL, strings.NewReader(postData))
+	vkReq := func(method string, values neturl.Values) (map[string]interface{}, error) {
+		reqURL := "https://api.vk.com/method/" + method + "?v=" + captchaNotRobotAPIVersion
+		req, err := fhttp.NewRequestWithContext(ctx, "POST", reqURL, strings.NewReader(encodeCaptchaForm(method, values)))
 		if err != nil {
 			return nil, err
 		}
-		applyBrowserProfileFhttp(req, profile)
+		applyCaptchaBrowserProfileFhttp(req, profile)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "*/*")
 		req.Header.Set("Origin", "https://id.vk.com")
@@ -677,10 +858,17 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 	}
 
 	vp := randomViewport()
-	baseParams := fmt.Sprintf("session_token=%s&domain=vk.com&adFp=&access_token=", neturl.QueryEscape(sessionToken))
+	baseValues := func() neturl.Values {
+		values := neturl.Values{}
+		values.Set("session_token", sessionToken)
+		values.Set("domain", "vk.com")
+		values.Set("adFp", "")
+		values.Set("access_token", "")
+		return values
+	}
 
 	turnLog("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
-	settingsResp, err := vkReq("captchaNotRobot.settings", baseParams)
+	settingsResp, err := vkReq("captchaNotRobot.settings", baseValues())
 	if err != nil {
 		return "", fmt.Errorf("settings failed: %w", err)
 	}
@@ -696,7 +884,9 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 	turnLog("[STREAM %d] [Captcha] Step 2/4: componentDone (viewport=%dx%d)", streamID, vp.Width, vp.Height)
 	browserFp := generateBrowserFp(profile, vp)
 	deviceJSON := buildCaptchaDeviceJSON(profile, vp)
-	componentDoneData := baseParams + fmt.Sprintf("&browser_fp=%s&device=%s", browserFp, neturl.QueryEscape(deviceJSON))
+	componentDoneData := baseValues()
+	componentDoneData.Set("browser_fp", browserFp)
+	componentDoneData.Set("device", deviceJSON)
 
 	if _, err := vkReq("captchaNotRobot.componentDone", componentDoneData); err != nil {
 		return "", fmt.Errorf("componentDone failed: %w", err)
@@ -705,20 +895,21 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 	time.Sleep(time.Duration(500+rand.Intn(300)) * time.Millisecond)
 
 	turnLog("[STREAM %d] [Captcha] Step 3/4: check", streamID)
-	cursorJSON := generateHumanCursor()
 	answer := base64.StdEncoding.EncodeToString([]byte("{}"))
 
-	accelJSON := generateSensorNoise()
-	gyroJSON := generateGyroNoise()
 	connRtt, connDownlink := generateConnectionMetrics()
-
-	checkData := baseParams + fmt.Sprintf(
-		"&accelerometer=%s&gyroscope=%s&motion=%s&cursor=%s&taps=%s&connectionRtt=%s&connectionDownlink=%s&browser_fp=%s&hash=%s&answer=%s&debug_info=%s",
-		neturl.QueryEscape(accelJSON), neturl.QueryEscape(gyroJSON), neturl.QueryEscape("[]"),
-		neturl.QueryEscape(cursorJSON), neturl.QueryEscape("[]"), neturl.QueryEscape(connRtt),
-		neturl.QueryEscape(connDownlink),
-		browserFp, hash, answer, debugInfo,
-	)
+	checkData := baseValues()
+	checkData.Set("accelerometer", "[]")
+	checkData.Set("gyroscope", "[]")
+	checkData.Set("motion", "[]")
+	checkData.Set("cursor", "[]")
+	checkData.Set("taps", "[]")
+	checkData.Set("connectionRtt", connRtt)
+	checkData.Set("connectionDownlink", connDownlink)
+	checkData.Set("browser_fp", browserFp)
+	checkData.Set("hash", hash)
+	checkData.Set("answer", answer)
+	checkData.Set("debug_info", debugInfo)
 
 	checkResp, err := vkReq("captchaNotRobot.check", checkData)
 	if err != nil {
@@ -750,7 +941,7 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 	time.Sleep(time.Duration(500+rand.Intn(300)) * time.Millisecond)
 
 	turnLog("[STREAM %d] [Captcha] Step 4/4: endSession", streamID)
-	if _, err := vkReq("captchaNotRobot.endSession", baseParams); err != nil {
+	if _, err := vkReq("captchaNotRobot.endSession", baseValues()); err != nil {
 		turnLog("[STREAM %d] [Captcha] Warning: endSession failed: %v", streamID, err)
 	}
 

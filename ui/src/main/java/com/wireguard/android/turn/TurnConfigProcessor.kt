@@ -62,7 +62,7 @@ object TurnConfigProcessor {
     }
 
     /**
-     * Modifies the configuration for active TURN usage (replaces Endpoint with local loopback and sets MTU 1280).
+     * Modifies the configuration for active TURN usage (replaces Endpoint with local loopback and sets the MTU).
      * Also sets PersistentKeepalive=25 when DTLS is enabled to keep connection alive.
      */
     fun modifyConfigForActiveTurn(config: Config, turnSettings: TurnSettings): Config {
@@ -77,9 +77,8 @@ object TurnConfigProcessor {
 
         try {
             ifaceBuilder.setListenPort(iface.listenPort.orElse(0))
-            // Use MTU from config (cap at 1200 for WRAP overhead), default 1200.
-            val mtu = iface.mtu.orElse(1200)
-            ifaceBuilder.setMtu(minOf(mtu, 1200))
+            // MTU comes from the config; 1200 only when the config omits it.
+            ifaceBuilder.setMtu(iface.mtu.orElse(1200))
         } catch (e: Exception) {
             // Should not happen with valid port/mtu
         }

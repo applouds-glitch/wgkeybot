@@ -10,7 +10,6 @@ import (
 	"image/color"
 	_ "image/jpeg"
 	"io"
-	"log"
 	"math"
 	mathrand "math/rand"
 	neturl "net/url"
@@ -109,13 +108,13 @@ func (s *captchaNotRobotSession) baseValues() neturl.Values {
 }
 
 func (s *captchaNotRobotSession) request(method string, values neturl.Values) (map[string]interface{}, error) {
-	reqURL := "https://api.vk.com/method/" + method + "?v=5.282"
+	reqURL := "https://api.vk.com/method/" + method + "?v=" + captchaNotRobotAPIVersion
 
-	req, err := fhttp.NewRequestWithContext(s.ctx, "POST", reqURL, strings.NewReader(values.Encode()))
+	req, err := fhttp.NewRequestWithContext(s.ctx, "POST", reqURL, strings.NewReader(encodeCaptchaForm(method, values)))
 	if err != nil {
 		return nil, err
 	}
-	applyBrowserProfileFhttp(req, s.profile)
+	applyCaptchaBrowserProfileFhttp(req, s.profile)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Origin", "https://id.vk.com")
@@ -176,10 +175,9 @@ func (s *captchaNotRobotSession) requestComponentDone() error {
 }
 
 func (s *captchaNotRobotSession) requestCheckboxCheck() (*captchaCheckResult, error) {
-	// A checkbox check models a tap/click, not a slider drag — use the same
-	// human-like cursor trajectory the standalone checkbox solver used so the
-	// in-session checkbox attempt scores no worse than the old separate path.
-	return s.requestCheck(generateHumanCursor(), base64.StdEncoding.EncodeToString([]byte("{}")))
+	// Both captured WebView checkbox checks sent an empty cursor array. The click
+	// itself is represented by the PoW hash/answer pair, not synthetic movement.
+	return s.requestCheck("[]", base64.StdEncoding.EncodeToString([]byte("{}")))
 }
 
 func (s *captchaNotRobotSession) requestSliderContent(sliderSettings string) (*sliderCaptchaContent, error) {
@@ -191,6 +189,14 @@ func (s *captchaNotRobotSession) requestSliderContent(sliderSettings string) (*s
 	resp, err := s.request("captchaNotRobot.getContent", values)
 	if err != nil {
 		return nil, fmt.Errorf("getContent failed: %w", err)
+	}
+	if respObj, ok := resp["response"].(map[string]interface{}); ok {
+		status, _ := respObj["status"].(string)
+		turnLog("[STREAM %d] [Captcha] getContent response: status=%q keys=%s",
+			s.streamID, status, responseKeys(respObj))
+	} else {
+		turnLog("[STREAM %d] [Captcha] getContent response has no response object (top-level keys=%s)",
+			s.streamID, responseKeys(resp))
 	}
 	return parseSliderCaptchaContentResponse(resp)
 }
@@ -205,12 +211,12 @@ func (s *captchaNotRobotSession) requestSliderCheck(activeSteps []int, candidate
 }
 
 func (s *captchaNotRobotSession) requestCheck(cursor string, answer string) (*captchaCheckResult, error) {
-	// Mobile profile: a real Android device exposes accelerometer/gyroscope and
-	// reports network metrics, so populate them (matching callCaptchaNotRobot).
+	// The WebView bridge advertised sensors but sent empty arrays in both live
+	// captures. Fabricated sensor noise was a stronger bot signal than absence.
 	connRtt, connDownlink := generateConnectionMetrics()
 	values := s.baseValues()
-	values.Set("accelerometer", generateSensorNoise())
-	values.Set("gyroscope", generateGyroNoise())
+	values.Set("accelerometer", "[]")
+	values.Set("gyroscope", "[]")
 	values.Set("motion", "[]")
 	values.Set("cursor", cursor)
 	values.Set("taps", "[]")
@@ -229,9 +235,9 @@ func (s *captchaNotRobotSession) requestCheck(cursor string, answer string) (*ca
 }
 
 func (s *captchaNotRobotSession) requestEndSession() {
-	log.Printf("[STREAM %d] [Captcha] Step 4/4: endSession", s.streamID)
+	turnLog("[STREAM %d] [Captcha] Step 4/4: endSession", s.streamID)
 	if _, err := s.request("captchaNotRobot.endSession", s.baseValues()); err != nil {
-		log.Printf("[STREAM %d] [Captcha] Warning: endSession failed: %v", s.streamID, err)
+		turnLog("[STREAM %d] [Captcha] Warning: endSession failed: %v", s.streamID, err)
 	}
 }
 
@@ -247,7 +253,7 @@ func callCaptchaNotRobotWithSliderPOC(
 ) (string, error) {
 	session := newCaptchaNotRobotSession(ctx, sessionToken, hash, debugInfo, streamID, client, profile)
 
-	log.Printf("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
+	turnLog("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
 	settingsResp, err := session.requestSettings()
 	if err != nil {
 		return "", err
@@ -256,7 +262,7 @@ func callCaptchaNotRobotWithSliderPOC(
 
 	time.Sleep(time.Duration(500+mathrand.Intn(300)) * time.Millisecond)
 
-	log.Printf("[STREAM %d] [Captcha] Step 2/4: componentDone", streamID)
+	turnLog("[STREAM %d] [Captcha] Step 2/4: componentDone", streamID)
 	if err := session.requestComponentDone(); err != nil {
 		return "", err
 	}
@@ -264,68 +270,45 @@ func callCaptchaNotRobotWithSliderPOC(
 	time.Sleep(time.Duration(500+mathrand.Intn(300)) * time.Millisecond)
 
 	sliderSettings, hasSlider := settingsResp.SettingsByType[sliderCaptchaType]
+	turnLog("[STREAM %d] [Captcha] Settings: show_type=%q available_types=%s has_slider=%t",
+		streamID, settingsResp.ShowCaptchaType, describeCaptchaTypes(settingsResp.SettingsByType), hasSlider)
 
-	// checkboxStatus records the outcome of the checkbox check when we run one.
-	// When the slider is already advertised we skip the checkbox entirely, so it
-	// stays empty and the error path below adapts its message accordingly.
-	checkboxStatus := ""
+	// The check is a state transition, not merely a solution attempt. VK uses its
+	// BOT/slider response to activate slider content for this session_token. Going
+	// directly from componentDone to getContent can yield a generic ERROR because
+	// the server-side session has not entered the slider state yet.
+	turnLog("[STREAM %d] [Captcha] Step 3/4: check", streamID)
+	initialCheck, err := session.requestCheckboxCheck()
+	if err != nil {
+		return "", err
+	}
+	if initialCheck.Status == "OK" {
+		if initialCheck.SuccessToken == "" {
+			return "", fmt.Errorf("success_token not found")
+		}
+		session.requestEndSession()
+		return initialCheck.SuccessToken, nil
+	}
+	if strings.EqualFold(initialCheck.Status, "ERROR_LIMIT") {
+		return "", fmt.Errorf("initial check status %s: %w", initialCheck.Status, errCaptchaRateLimit)
+	}
+	turnLog(
+		"[STREAM %d] [Captcha] Initial check: status=%q settings_show_type=%q check_show_type=%q available_types=%s",
+		streamID, initialCheck.Status, settingsResp.ShowCaptchaType,
+		initialCheck.ShowCaptchaType, describeCaptchaTypes(settingsResp.SettingsByType),
+	)
 	if !hasSlider {
-		// No slider offered: try the checkbox. Only if VK rejects it do we fall
-		// through and attempt getContent without explicit slider settings.
-		log.Printf("[STREAM %d] [Captcha] Step 3/4: check", streamID)
-		initialCheck, err := session.requestCheckboxCheck()
-		if err != nil {
-			return "", err
-		}
-		if initialCheck.Status == "OK" {
-			if initialCheck.SuccessToken == "" {
-				return "", fmt.Errorf("success_token not found")
-			}
-			session.requestEndSession()
-			return initialCheck.SuccessToken, nil
-		}
-		checkboxStatus = initialCheck.Status
-		log.Printf(
-			"[STREAM %d] [Captcha] Checkbox-style check returned status=%s (settings show_type=%q, check show_type=%q, available_types=%s)",
-			streamID,
-			initialCheck.Status,
-			settingsResp.ShowCaptchaType,
-			initialCheck.ShowCaptchaType,
-			describeCaptchaTypes(settingsResp.SettingsByType),
-		)
-		log.Printf(
-			"[STREAM %d] [Captcha] Slider settings not found in settings response. Trying getContent without captcha_settings...",
-			streamID,
-		)
-	} else {
-		// Slider already advertised — skip the checkbox check. It would only
-		// return BOT and burn a request against VK's per-token rate limit before
-		// we can fetch the slider image, so go straight to getContent.
-		log.Printf("[STREAM %d] [Captcha] Slider advertised in settings — fetching it directly (skipping checkbox)", streamID)
+		turnLog("[STREAM %d] [Captcha] Slider settings absent; trying getContent without captcha_settings", streamID)
 	}
 
 	sliderContent, err := session.requestSliderContent(sliderSettings)
 	if err != nil {
-		log.Printf(
-			"[STREAM %d] [Captcha] Slider getContent failed (status: %v). Trying to solve as a checkbox instead...",
-			streamID,
-			err,
-		)
-		// Fallback: maybe it's just a checkbox that needs a human-like check
-		time.Sleep(time.Duration(300+mathrand.Intn(200)) * time.Millisecond)
-		finalCheck, err2 := session.requestCheckboxCheck()
-		if err2 == nil && finalCheck.Status == "OK" {
-			if finalCheck.SuccessToken == "" {
-				return "", fmt.Errorf("success_token not found in fallback check")
-			}
-			log.Printf("[STREAM %d] [Captcha] Fallback checkbox check succeeded!", streamID)
-			session.requestEndSession()
-			return finalCheck.SuccessToken, nil
-		}
-		if checkboxStatus != "" {
-			return "", fmt.Errorf("check status: %s (slider getContent failed: %w)", checkboxStatus, err)
-		}
-		return "", fmt.Errorf("slider getContent failed: %w", err)
+		turnLog("[STREAM %d] [Captcha] Slider getContent failed after initial check status=%q: %v",
+			streamID, initialCheck.Status, err)
+		// Do not issue another check on the same session. For ERROR_LIMIT it would
+		// deepen the throttle; for a generic ERROR it hides the original protocol
+		// refusal and makes the next diagnostic run ambiguous.
+		return "", fmt.Errorf("check status: %s (slider getContent failed: %w)", initialCheck.Status, err)
 	}
 
 	candidates, err := rankSliderCandidates(sliderContent.Image, sliderContent.Size, sliderContent.Steps)
@@ -333,7 +316,7 @@ func callCaptchaNotRobotWithSliderPOC(
 		return "", err
 	}
 
-	log.Printf(
+	turnLog(
 		"[STREAM %d] [Captcha] Ranked %d slider positions locally; submitting top %d based on attempt budget %d",
 		streamID,
 		len(candidates),
@@ -342,7 +325,7 @@ func callCaptchaNotRobotWithSliderPOC(
 	)
 
 	successToken, err := trySliderCaptchaCandidates(candidates, sliderContent.Attempts, func(candidate sliderCandidate) (*captchaCheckResult, error) {
-		log.Printf(
+		turnLog(
 			"[STREAM %d] [Captcha] Slider guess position=%d score=%d",
 			streamID,
 			candidate.Index,
@@ -569,13 +552,12 @@ func parseSliderCaptchaContentResponse(resp map[string]interface{}) (*sliderCapt
 	}
 
 	status, _ := respObj["status"].(string)
-	if status != "OK" {
-		if upper := strings.ToUpper(status); upper == "ERROR" || upper == "ERROR_LIMIT" {
-			// VK refuses to serve the slider image to a throttled/flagged
-			// session — equivalent to a rate limit, not a transient glitch.
-			return nil, errCaptchaRateLimit
+	statusUpper := strings.ToUpper(status)
+	if statusUpper != "OK" {
+		if statusUpper == "ERROR_LIMIT" {
+			return nil, fmt.Errorf("slider getContent status %s: %w", status, errCaptchaRateLimit)
 		}
-		return nil, fmt.Errorf("slider getContent status: %s", status)
+		return nil, fmt.Errorf("slider getContent status: %s (response_keys=%s)", status, responseKeys(respObj))
 	}
 
 	extension, _ := respObj["extension"].(string)
@@ -615,6 +597,18 @@ func parseSliderCaptchaContentResponse(resp map[string]interface{}) (*sliderCapt
 		Steps:    swaps,
 		Attempts: attempts,
 	}, nil
+}
+
+// responseKeys returns a stable, non-sensitive summary for diagnostics. Values
+// are deliberately omitted because successful getContent responses contain the
+// full captcha image and other responses may gain token-like fields over time.
+func responseKeys(resp map[string]interface{}) string {
+	keys := make([]string, 0, len(resp))
+	for key := range resp {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ",")
 }
 
 func parseIntSlice(raw []interface{}) ([]int, error) {

@@ -12,7 +12,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -45,14 +44,13 @@ var allocSemaphore = make(chan struct{}, 3)
 
 // WorkerGroupConfig — parameters for one stream group (one VK link).
 type WorkerGroupConfig struct {
-	GroupID   int
-	Link      string
-	PeerAddr  *net.UDPAddr
-	UseUDP    bool
-	PeerType  string
-	TurnIP    string
-	TurnPort  int
-	PauseFlag *int32 // non-nil → check Doze-mode pause
+	GroupID  int
+	Link     string
+	PeerAddr *net.UDPAddr
+	UseUDP   bool
+	PeerType string
+	TurnIP   string
+	TurnPort int
 }
 
 // WorkerGroup runs the streams for one VK link using an error-driven, per-worker
@@ -111,20 +109,12 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 
 	failStreak := 0
 	for {
-		if ctx.Err() != nil {
+		permit, ok := waitForNetworkPermit(ctx, true)
+		if !ok {
 			return
 		}
-
-		// Doze-mode pause: suspend reconnects while the device is dozing.
-		if cfg.PauseFlag != nil && atomic.LoadInt32(cfg.PauseFlag) != 0 {
-			turnLog("[WORKER %d] Paused (Doze)", s.id)
-			for atomic.LoadInt32(cfg.PauseFlag) != 0 {
-				if ctx.Err() != nil {
-					return
-				}
-				time.Sleep(1 * time.Second)
-			}
-			turnLog("[WORKER %d] Resumed", s.id)
+		if permit.unvalidatedProbe {
+			turnLog("[WORKER %d] Controlled probe on unvalidated network", s.id)
 		}
 
 		// Fetch credentials via the shared cache. A cache hit is cheap (no VK
@@ -133,13 +123,18 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		select {
 		case vkSemaphore <- struct{}{}:
 		case <-ctx.Done():
+			releaseNetworkPermit(permit)
 			return
 		}
 		user, pass, addrs, err := fetchCreds(ctx, cfg.Link, cfg.GroupID)
 		<-vkSemaphore
 		if err != nil {
+			releaseNetworkPermit(permit)
 			if ctx.Err() != nil {
 				return
+			}
+			if !permit.unvalidatedProbe && !isNetworkAvailable() {
+				continue
 			}
 			turnLog("[WORKER %d] Credential error: %v — retry in 30s", s.id, err)
 			select {
@@ -147,6 +142,14 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 			case <-ctx.Done():
 				return
 			}
+			continue
+		}
+
+		// Effective availability can disappear while credentials are being fetched.
+		// Re-check before Allocate unless this worker owns the single controlled
+		// probe permit. Healthy sessions never pass through this gate.
+		if !permit.unvalidatedProbe && !isNetworkAvailable() {
+			releaseNetworkPermit(permit)
 			continue
 		}
 
@@ -166,9 +169,15 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		start := time.Now()
 		runErr := s.runWithCreds(ctx, user, pass, addrs, cfg, raceAll)
 		sessionDur := time.Since(start)
+		releaseNetworkPermit(permit)
 
 		if ctx.Err() != nil {
 			return
+		}
+		if !isNetworkAvailable() {
+			// Skip per-worker retry delays while offline. The gate above resumes on
+			// Android validation, fresh TURN proof, or one rate-limited probe permit.
+			continue
 		}
 
 		if runErr == nil {

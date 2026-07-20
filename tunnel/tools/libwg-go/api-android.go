@@ -85,6 +85,13 @@ func wgTurnOn(interfaceName string, tunFd int32, settings string) int32 {
 		return -1
 	}
 
+	// Tune the WRAP padding ceiling to the interface MTU (set by VpnService from
+	// the config) so cover padding never inflates a near-full packet past path
+	// MTU. Falls back to wrapDefaultMaxBody when the MTU can't be read.
+	if mtu, err := tun.MTU(); err == nil {
+		SetWrapMTU(mtu)
+	}
+
 	logger.Verbosef("Attaching to interface %v", name)
 	device := device.NewDevice(tun, conn.NewStdNetBind(), logger)
 
