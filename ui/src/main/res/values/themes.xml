@@ -33,14 +33,48 @@
     </style>
 
     <!-- WGKeyBot Connect screen styles -->
-    <style name="TextAppearance.WGKeyBot.LabelMono" parent="TextAppearance.Material3.LabelSmall">
-        <item name="android:fontFamily">monospace</item>
+
+    <!-- The status card's type, matched to the iOS StatusCard. Monospace is kept
+         for the numeric readout alone; the eyebrow labels are sans there, carried
+         as labels by caps and tracking rather than by a second typeface. -->
+
+    <!-- iOS: .caption2.weight(.semibold), tracking 1, uppercase. -->
+    <style name="TextAppearance.WGKeyBot.Eyebrow" parent="TextAppearance.Material3.LabelSmall">
         <item name="android:textSize">11sp</item>
-        <item name="android:letterSpacing">0.16</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.09</item>
         <item name="android:textAllCaps">true</item>
         <item name="android:textColor">@color/wgk_on_surface_variant</item>
     </style>
 
+    <!-- iOS: .title2.weight(.bold), tracking -0.6 — negative tracking at this size
+         keeps a two-word state from looking loose. Set two steps below the iOS 22pt:
+         this card carries its stage block in every state, and the headline was the
+         cheapest place to buy that height back. -->
+    <style name="TextAppearance.WGKeyBot.StatusHeadline" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:textSize">20sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">-0.03</item>
+    </style>
+
+    <!-- iOS: .system(.callout, design: .monospaced).weight(.semibold). No tracking:
+         the digits change every couple of seconds and wide spacing makes them
+         jitter. -->
+    <style name="TextAppearance.WGKeyBot.ValueMono" parent="TextAppearance.Material3.TitleMedium">
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <!-- iOS: .system(.caption2, design: .monospaced) — the unit under the figure. -->
+    <style name="TextAppearance.WGKeyBot.UnitMono" parent="TextAppearance.Material3.LabelSmall">
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:textColor">@color/wgk_on_surface_variant</item>
+    </style>
+
+    <!-- No outline: the disconnected state reads as a raised light disc on the
+         tinted field, carried by its fill and elevation alone. -->
     <style name="Widget.WGKeyBot.ConnectButton" parent="Widget.Material3.Button.IconButton.Filled">
         <item name="android:layout_width">156dp</item>
         <item name="android:layout_height">156dp</item>

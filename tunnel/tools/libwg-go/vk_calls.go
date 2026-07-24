@@ -35,7 +35,7 @@ import (
 // turn_server lifetime parsing.
 const (
 	vkConnectClientID     = "8093730"
-	vkCallsAPIHost        = "api.vk.me"
+	vkCallsAPIHost        = "internal.api.vk.ru"
 	vkCallsAnonAPIVersion = "5.276"
 	vkCallsOKHost         = "https://calls.okcdn.ru/fb.do"
 	vkCallsOKAppKey       = "CGMMEJLGDIHBABABA"
@@ -77,7 +77,7 @@ func getVKCredsViaVKCalls(ctx context.Context, link string, client tlsclient.Htt
 	deviceID := uuid.New().String()
 	name := generateName()
 	nameEnc := neturl.QueryEscape(name)
-	linkURL := neturl.QueryEscape("https://vk.com/call/join/" + link)
+	linkURL := neturl.QueryEscape("https://vk.ru/call/join/" + link)
 
 	doRequest := func(step, url string) (map[string]interface{}, error) {
 		req, err := fhttp.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(nil))

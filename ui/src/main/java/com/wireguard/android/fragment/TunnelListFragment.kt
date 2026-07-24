@@ -111,10 +111,8 @@ class TunnelListFragment : BaseFragment() {
         binding?.apply {
             wgkConnectButtonView.wgkConnectBtn.setOnClickListener { toggleWgKeybot() }
             wgkFooterRow.wgkSplitBtn.setOnClickListener { openSplitTunnelDialog() }
-            wgkFooterRow.wgkProxyModeGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
-                if (isChecked) onProxyModeSelected(checkedId)
-            }
-            updateProxyModeGroup()
+            wgkFooterRow.wgkConnectionModeBtn.setOnClickListener { showConnectionModeDialog() }
+            updateConnectionModeButton()
             wgkProfileCard.wgkRefreshBtn.setOnClickListener { refreshConfig() }
             wgkProfileCard.wgkAutoRefreshBtn.setOnClickListener { toggleAutoRefresh() }
             wgkProfileCard.wgkProfileIcon.setOnClickListener { onLogIconTap() }
@@ -302,24 +300,24 @@ class TunnelListFragment : BaseFragment() {
                 vm.notifyTunnelDown()
             }
 
-            // Split tunneling button label
+            // Split tunneling row value. The label is fixed; only the value moves,
+            // so the row keeps a stable left edge whatever the app count is.
             val config = tunnel.getConfigAsync()
             val appsActive = config.`interface`.includedApplications.isNotEmpty() ||
                     config.`interface`.excludedApplications.isNotEmpty()
-            b.wgkFooterRow.wgkSplitBtn.text = when {
+            b.wgkFooterRow.wgkSplitValue.text = when {
                 config.`interface`.includedApplications.isNotEmpty() ->
                     getString(R.string.wgk_split_only_count, config.`interface`.includedApplications.size)
                 config.`interface`.excludedApplications.isNotEmpty() ->
                     getString(R.string.wgk_split_excluded_count, config.`interface`.excludedApplications.size)
-                else -> getString(R.string.wgk_action_split_tunneling)
+                else -> getString(R.string.wgk_split_off_value)
             }
             val splitColor = ContextCompat.getColor(
                 requireContext(),
                 if (appsActive) R.color.wgk_on_surface else R.color.wgk_on_surface_variant
             )
-            b.wgkFooterRow.wgkSplitBtn.setTextColor(splitColor)
-            b.wgkFooterRow.wgkSplitBtn.iconTint =
-                android.content.res.ColorStateList.valueOf(splitColor)
+            b.wgkFooterRow.wgkSplitValue.setTextColor(splitColor)
+            b.wgkFooterRow.wgkSplitIcon.imageTintList = ColorStateList.valueOf(splitColor)
 
             maybeShowSplitWizard(auth, appsActive)
         }
@@ -378,17 +376,12 @@ class TunnelListFragment : BaseFragment() {
             tvKeyboard?.setVisible(true)
             // Mount into the dedicated TV keyboard column; fall back to the
             // container itself on layouts without it (defensive — TV layout has it).
-            val keyboardHost = b.wgkTvKeyboardHost ?: b.wgkNoConfigContainer
-            tvKeyboard?.attachTo(keyboardHost)
+            val keyboardHost = (b.wgkTvKeyboardHost ?: b.wgkNoConfigContainer) as? ViewGroup
+            if (keyboardHost != null) tvKeyboard?.attachTo(keyboardHost)
         } else {
             b.wgkTokenInputWrapper.isVisible = true
             b.wgkConnectWithTokenBtn.isVisible = true
             tvKeyboard?.detach()
-            b.wgkTokenInput.setOnFocusChangeListener { _, hasFocus ->
-                if (hasFocus && b.wgkTokenInput.text.isNullOrEmpty()) {
-                    pasteTokenFromClipboard(b)
-                }
-            }
             b.wgkPasteBtn.setOnClickListener {
                 pasteTokenFromClipboard(b)
             }
@@ -450,6 +443,15 @@ class TunnelListFragment : BaseFragment() {
     private fun renderConnectButton(b: TunnelListFragmentBinding, ui: TunnelUiState) {
         val btn = b.wgkConnectButtonView.wgkConnectBtn
         val arc = b.wgkConnectButtonView.wgkBusyArc
+        btn.contentDescription = getString(when (ui.state) {
+            TunnelState.Disconnected -> R.string.wgk_connect_cd_connect
+            TunnelState.Connected    -> R.string.wgk_connect_cd_disconnect
+            TunnelState.Failed       -> R.string.wgk_connect_cd_retry
+            TunnelState.Connecting,
+            TunnelState.Handshake,
+            TunnelState.Reconnecting -> R.string.wgk_connect_cd_cancel
+        })
+        val atRest = ui.state == TunnelState.Disconnected || ui.state == TunnelState.Failed
         when (ui.state) {
             TunnelState.Disconnected,
             TunnelState.Failed       -> { btn.isActivated = false; btn.isSelected = false; arc.hide() }
@@ -457,6 +459,13 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Handshake,
             TunnelState.Reconnecting -> { btn.isActivated = true;  btn.isSelected = false; arc.show() }
             TunnelState.Connected    -> { btn.isActivated = false; btn.isSelected = true;  arc.hide() }
+        }
+        // At rest the button already reads on its own outline, so the halo stays
+        // faint; it only comes up once the button is filled and the arc sweeps it.
+        val alphas = if (atRest) RING_ALPHA_REST else RING_ALPHA_ACTIVE
+        val cb = b.wgkConnectButtonView
+        listOf(cb.wgkRingOuter, cb.wgkRingMid, cb.wgkRingInner).forEachIndexed { i, ring ->
+            ring.alpha = alphas[i]
         }
     }
 
@@ -503,12 +512,37 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Reconnecting -> R.string.wgk_status_sub_reconnecting
             TunnelState.Failed       -> R.string.wgk_status_sub_failed
         })
+        if (isConnected && ui.uptimeSeconds > 0) {
+            sz.wgkStatusSub.text = getString(
+                R.string.wgk_status_sub_connected_time,
+                formatUptime(ui.uptimeSeconds)
+            )
+        }
 
-        sz.wgkRxtxLabel.setText(if (isConnected) R.string.wgk_rxtx_label else R.string.wgk_wireguard_label)
-        sz.wgkRxtxValue.isVisible = isConnected
+        sz.wgkStatusIcon.setImageResource(when (ui.state) {
+            TunnelState.Disconnected -> R.drawable.ic_status_lock_open
+            TunnelState.Connecting   -> R.drawable.ic_status_lock
+            TunnelState.Handshake    -> R.drawable.ic_status_antenna
+            TunnelState.Connected    -> R.drawable.ic_status_shield
+            TunnelState.Reconnecting,
+            TunnelState.Failed       -> R.drawable.ic_status_warning
+        })
+        sz.wgkStatusIcon.imageTintList = sz.wgkStatusHeadline.textColors
+
+        // Only shown while connected: without a value underneath, the label was
+        // left dangling in the corner and skewed the top of the card. The label now
+        // lives in the eyebrow row, so it is toggled separately from the value.
+        sz.wgkTrafficContainer.isVisible = isConnected
+        sz.wgkRxtxLabel.isVisible = isConnected
         if (isConnected) {
+            // One unit for both figures, chosen off the larger — mixing MB and GB
+            // across the two would misread, and "15734.2 MB" overflows the column.
+            val gb = maxOf(ui.rxBytes, ui.txBytes) >= 1_073_741_824L
+            val div = if (gb) 1_073_741_824.0 else 1_048_576.0
             sz.wgkRxtxValue.text = getString(R.string.wgk_rxtx_value,
-                ui.rxBytes / 1_048_576.0, ui.txBytes / 1_048_576.0)
+                ui.rxBytes / div, ui.txBytes / div)
+            sz.wgkRxtxUnit.setText(
+                if (gb) R.string.wgk_rxtx_unit_gb else R.string.wgk_rxtx_unit_mb)
         }
 
         val colorOutline = ContextCompat.getColor(requireContext(), R.color.wgk_outline)
@@ -535,6 +569,9 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Reconnecting -> if (stage < 2) colorSuccess else colorWarning
         }
 
+        // The stage block is never hidden — progressFor()/colorFor() already render
+        // it empty and outlined at rest. Toggling its visibility changed the card's
+        // height, which moved the connect button sitting directly above it.
         val segs = listOf(sz.wgkSegTunnel, sz.wgkSegHandshake, sz.wgkSegRouting)
         val dots = listOf(sz.wgkDotTunnel, sz.wgkDotHandshake, sz.wgkDotRouting)
         val lbls = listOf<TextView>(sz.wgkLblTunnel, sz.wgkLblHandshake, sz.wgkLblRouting)
@@ -624,10 +661,16 @@ class TunnelListFragment : BaseFragment() {
     private fun renderAutoRefreshIcon(b: TunnelListFragmentBinding) {
         val enabled = AuthStore.getInstance(requireContext()).isAutoRefreshEnabled()
         val colorRes = if (enabled) R.color.wgk_primary else R.color.wgk_on_surface_variant
-        b.wgkProfileCard.wgkAutoRefreshBtn.iconTint =
-            android.content.res.ColorStateList.valueOf(
+        b.wgkProfileCard.wgkAutoRefreshBtn.apply {
+            isSelected = enabled
+            contentDescription = getString(
+                if (enabled) R.string.wgk_auto_refresh_enabled_cd
+                else R.string.wgk_auto_refresh_disabled_cd
+            )
+            iconTint = ColorStateList.valueOf(
                 androidx.core.content.ContextCompat.getColor(requireContext(), colorRes)
             )
+        }
     }
 
     // Shared entry point used by both the refresh button and deeplink import.
@@ -799,6 +842,13 @@ class TunnelListFragment : BaseFragment() {
         }
     }
 
+    private fun formatUptime(seconds: Long): String {
+        val hours = seconds / 3600
+        val minutes = (seconds % 3600) / 60
+        val remainingSeconds = seconds % 60
+        return String.format(Locale.getDefault(), "%02d:%02d:%02d", hours, minutes, remainingSeconds)
+    }
+
     // ── Split tunneling ────────────────────────────────────────────────────────
 
     private fun openSplitTunnelDialog(forceExcluded: Boolean? = null) {
@@ -934,45 +984,58 @@ class TunnelListFragment : BaseFragment() {
         snackbar.show()
     }
 
-    private fun onProxyModeSelected(checkedId: Int) {
+    private fun showConnectionModeDialog() {
         val prefs = requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
-        val stability = checkedId == R.id.wgk_mode_reserve_btn
-        prefs.edit().putBoolean(KEY_STABILITY_MODE, stability).apply()
-        updateReserveButtonAppearance(stability)
-        if (stability) showReserveModeWarning()
-    }
-
-    private fun showReserveModeWarning() {
-        val b = binding ?: return
-        val snackbar = Snackbar.make(b.mainContainer, getString(R.string.turn_reserve_mode_warning), Snackbar.LENGTH_LONG)
-        snackbar.setBackgroundTint(ContextCompat.getColor(requireContext(), R.color.wgk_surface_container_high))
-        snackbar.setTextColor(ContextCompat.getColor(requireContext(), R.color.wgk_on_surface))
-        snackbar.show()
-    }
-
-    private fun updateProxyModeGroup() {
-        lifecycleScope.launch {
-            val ctx = requireContext()
-            val stability = withContext(Dispatchers.IO) {
-                ctx.getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
-                    .getBoolean(KEY_STABILITY_MODE, false)
+        val currentReserve = prefs.getBoolean(KEY_STABILITY_MODE, false)
+        val options = arrayOf(
+            getString(R.string.wgk_connection_mode_standard_option),
+            getString(R.string.wgk_connection_mode_reserve_option)
+        )
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.wgk_connection_mode_title)
+            .setSingleChoiceItems(options, if (currentReserve) 1 else 0) { dialog, which ->
+                dialog.dismiss()
+                setConnectionMode(which == 1)
             }
-            val group = binding?.wgkFooterRow?.wgkProxyModeGroup ?: return@launch
-            group.check(if (stability) R.id.wgk_mode_reserve_btn else R.id.wgk_mode_standard_btn)
-            updateReserveButtonAppearance(stability)
-        }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
-    private fun updateReserveButtonAppearance(isReserve: Boolean) {
-        val btn = binding?.wgkFooterRow?.wgkModeReserveBtn ?: return
+    private fun setConnectionMode(stability: Boolean) {
+        val prefs = requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_STABILITY_MODE, stability).apply()
+        updateConnectionModeButton()
+    }
+
+    private fun updateConnectionModeButton() {
+        val fr = binding?.wgkFooterRow ?: return
+        val isReserve = requireContext()
+            .getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
+            .getBoolean(KEY_STABILITY_MODE, false)
         val activeColor = ContextCompat.getColor(requireContext(), R.color.wgk_warning)
-        val normalColor = ContextCompat.getColor(requireContext(), R.color.wgk_on_surface_variant)
-        btn.setTextColor(if (isReserve) activeColor else normalColor)
+        // The label stays quiet; only the value carries the state, so switching to
+        // the fallback transport tints one word rather than the whole row.
+        fr.wgkConnectionModeValue.setText(
+            if (isReserve) R.string.wgk_connection_mode_reserve_value
+            else R.string.wgk_connection_mode_standard_value
+        )
+        fr.wgkConnectionModeValue.setTextColor(
+            if (isReserve) activeColor
+            else ContextCompat.getColor(requireContext(), R.color.wgk_on_surface)
+        )
+        fr.wgkConnectionModeIcon.imageTintList = ColorStateList.valueOf(
+            if (isReserve) activeColor
+            else ContextCompat.getColor(requireContext(), R.color.wgk_on_surface_variant)
+        )
     }
 
     companion object {
         private const val TAG = "WireGuard/TunnelListFragment"
         private const val TAG_SPLIT_WIZARD = "split_wizard"
         private val TOKEN_REGEX = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+        // Halo alphas, outer → inner. The resting set matches the layout defaults.
+        private val RING_ALPHA_REST = floatArrayOf(0.10f, 0.16f, 0.24f)
+        private val RING_ALPHA_ACTIVE = floatArrayOf(0.28f, 0.45f, 0.70f)
     }
 }

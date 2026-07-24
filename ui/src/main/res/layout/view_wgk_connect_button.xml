@@ -3,43 +3,50 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <FrameLayout
-        android:layout_width="260dp"
-        android:layout_height="260dp">
+        android:layout_width="232dp"
+        android:layout_height="232dp">
 
-        <!-- Outer ring — alpha 0.18 -->
+        <!-- Alphas here are the resting set; renderConnectButton() raises them
+             while the tunnel is coming up or connected. At rest the button carries
+             its own outline, so a bright halo around it only adds noise. -->
         <View
-            android:layout_width="260dp"
-            android:layout_height="260dp"
+            android:id="@+id/wgk_ring_outer"
+            android:layout_width="232dp"
+            android:layout_height="232dp"
             android:layout_gravity="center"
-            android:alpha="0.18"
+            android:alpha="0.10"
             android:background="@drawable/wgk_ring_outer" />
 
-        <!-- Middle ring — alpha 0.28 -->
         <View
-            android:layout_width="224dp"
-            android:layout_height="224dp"
+            android:id="@+id/wgk_ring_mid"
+            android:layout_width="204dp"
+            android:layout_height="204dp"
             android:layout_gravity="center"
-            android:alpha="0.28"
+            android:alpha="0.16"
             android:background="@drawable/wgk_ring_mid" />
 
-        <!-- Inner ring — alpha 0.42 -->
         <View
-            android:layout_width="192dp"
-            android:layout_height="192dp"
+            android:id="@+id/wgk_ring_inner"
+            android:layout_width="176dp"
+            android:layout_height="176dp"
             android:layout_gravity="center"
-            android:alpha="0.42"
+            android:alpha="0.24"
             android:background="@drawable/wgk_ring_inner" />
 
-        <!-- Busy arc during Connecting / Handshake -->
+        <!-- Busy arc during Connecting / Handshake. 178dp puts the arc centreline
+             exactly on the inner ring's stroke, so the sweep reads as that ring
+             animating rather than as a fourth circle; the transparent track lets
+             the static ring show through behind it. -->
         <com.google.android.material.progressindicator.CircularProgressIndicator
             android:id="@+id/wgk_busy_arc"
-            android:layout_width="200dp"
-            android:layout_height="200dp"
+            android:layout_width="178dp"
+            android:layout_height="178dp"
             android:layout_gravity="center"
             android:indeterminate="true"
             android:visibility="gone"
             app:indicatorColor="@color/wgk_primary"
-            app:indicatorSize="200dp"
+            app:indicatorSize="178dp"
+            app:trackColor="@android:color/transparent"
             app:trackThickness="3dp"
             app:indeterminateAnimationType="disjoint" />
 

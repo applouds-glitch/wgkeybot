@@ -7,7 +7,6 @@ package com.wireguard.android.activity
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
-import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -15,8 +14,6 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.text.SpannableString
 import android.text.Spanned
-import android.text.style.ForegroundColorSpan
-import android.text.style.RelativeSizeSpan
 import android.text.style.TypefaceSpan
 import android.view.Menu
 import android.view.MenuItem
@@ -31,7 +28,6 @@ import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
 import androidx.fragment.app.commit
 import androidx.lifecycle.lifecycleScope
-import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
 import com.wireguard.android.fragment.TunnelDetailFragment
 import com.wireguard.android.fragment.TunnelListFragment
@@ -70,11 +66,6 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         supportActionBar?.apply {
             title = SpannableString("WGKEYBOT").also {
                 it.setSpan(TypefaceSpan("sans-serif-condensed"), 0, it.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
-            }
-            subtitle = SpannableString("v${BuildConfig.VERSION_NAME}").also {
-                it.setSpan(TypefaceSpan("monospace"), 0, it.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
-                it.setSpan(RelativeSizeSpan(0.8f), 0, it.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
-                it.setSpan(ForegroundColorSpan(Color.parseColor("#80909090")), 0, it.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
             }
         }
         supportFragmentManager.addOnBackStackChangedListener(this)

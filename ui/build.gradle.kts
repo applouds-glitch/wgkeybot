@@ -65,6 +65,7 @@ android {
     }
     androidResources {
         generateLocaleConfig = true
+        localeFilters += listOf("en", "ru")
     }
     lint {
         disable += "LongLogTag"

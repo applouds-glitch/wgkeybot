@@ -6,19 +6,72 @@
         style="@style/Widget.WGKeyBot.Card"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        app:cardCornerRadius="22dp">
+        app:cardCornerRadius="16dp">
+
+        <!-- Composition ported from the iOS StatusCard (LiquidGlassMainScreen.swift):
+             a full-width eyebrow row, then state icon + headline + subtitle with the
+             traffic readout opposite, then a rule and the stage block.
+
+             The card holds one height in every state, and does so structurally
+             rather than by reserving a measured minimum: the rule and stage block
+             are always laid out (the bars simply read empty at rest), the headline
+             is capped to one line, and the subtitle always reserves two. Nothing
+             here appears or disappears vertically, so the card cannot push the
+             connect button — which is what lets the fragment layout hang the button
+             directly above it. The iOS card arrived at the same arrangement; see the
+             comments there before making anything in here conditional again.
+
+             The traffic column is the one exception: it appears on connect, but it
+             sits inside the headline row, whose height the text column governs. -->
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:animateLayoutChanges="true"
             android:orientation="vertical"
-            android:padding="16dp">
+            android:paddingHorizontal="18dp"
+            android:paddingVertical="14dp">
 
-            <!-- Top row: status text + RX/TX -->
+            <!-- Eyebrow row: both labels sit here rather than each heading its own
+                 column, so they align on one baseline across the card's full width. -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/wgk_status_label"
+                    android:textAppearance="@style/TextAppearance.WGKeyBot.Eyebrow" />
+
+                <TextView
+                    android:id="@+id/wgk_rxtx_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/wgk_rxtx_label"
+                    android:textAppearance="@style/TextAppearance.WGKeyBot.Eyebrow"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- Headline row. Top-aligned: the icon pairs with the headline, not with
+                 the centre of a subtitle that may wrap to two lines. -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal">
+
+                <ImageView
+                    android:id="@+id/wgk_status_icon"
+                    android:layout_width="20dp"
+                    android:layout_height="24dp"
+                    android:layout_marginEnd="10dp"
+                    android:contentDescription="@null"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_status_lock_open" />
 
                 <LinearLayout
                     android:layout_width="0dp"
@@ -26,62 +79,75 @@
                     android:layout_weight="1"
                     android:orientation="vertical">
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/wgk_status_label"
-                        android:textAppearance="@style/TextAppearance.WGKeyBot.LabelMono" />
-
+                    <!-- One line, shrinking to fit — a long state such as
+                         "Reconnecting…" must not wrap and lengthen the card. -->
                     <TextView
                         android:id="@+id/wgk_status_headline"
-                        android:layout_width="wrap_content"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
+                        android:ellipsize="end"
+                        android:maxLines="1"
                         android:text="@string/wgk_status_disconnected"
-                        android:textAppearance="?attr/textAppearanceTitleMedium"
-                        android:textColor="@color/wgk_on_surface" />
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.StatusHeadline"
+                        android:textColor="@color/wgk_on_surface"
+                        app:autoSizeMaxTextSize="20sp"
+                        app:autoSizeMinTextSize="14sp"
+                        app:autoSizeTextType="uniform" />
 
+                    <!-- Exactly one line, always. Reserving two (as iOS does) cost
+                         16dp in every state; the subtitles are written to fit one
+                         instead. -->
                     <TextView
                         android:id="@+id/wgk_status_sub"
-                        android:layout_width="wrap_content"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:fontFamily="monospace"
+                        android:layout_marginTop="3dp"
+                        android:ellipsize="end"
+                        android:lines="1"
                         android:text="@string/wgk_status_sub_disconnected"
                         android:textAppearance="?attr/textAppearanceBodySmall"
                         android:textColor="@color/wgk_on_surface_variant" />
                 </LinearLayout>
 
+                <!-- wrap_content against the weighted column on the left, so a long
+                     readout here starves the status text. The unit is split onto its
+                     own line to keep the figure itself short. -->
                 <LinearLayout
+                    android:id="@+id/wgk_traffic_container"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
                     android:gravity="end"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:id="@+id/wgk_rxtx_label"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/wgk_wireguard_label"
-                        android:textAppearance="@style/TextAppearance.WGKeyBot.LabelMono" />
+                    android:orientation="vertical"
+                    android:visibility="gone">
 
                     <TextView
                         android:id="@+id/wgk_rxtx_value"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.ValueMono"
+                        android:textColor="@color/wgk_on_surface" />
+
+                    <TextView
+                        android:id="@+id/wgk_rxtx_unit"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
-                        android:fontFamily="monospace"
-                        android:textColor="@color/wgk_on_surface"
-                        android:textSize="13sp"
-                        android:visibility="gone" />
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.UnitMono" />
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- 3-segment progress bars -->
+            <!-- Stage block. Always laid out, never toggled: at rest the bars simply
+                 carry no fill and the labels sit in the outline colour. Hiding them
+                 is what used to change the card's height. The iOS card sets a rule
+                 above this; it is dropped here because at 27dp of margins it cost
+                 more height than it bought separation. -->
             <LinearLayout
+                android:id="@+id/wgk_stage_progress_container"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="6dp"
                 android:orientation="horizontal"
                 android:weightSum="3">
 
@@ -90,7 +156,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:layout_marginEnd="3dp"
+                    android:layout_marginEnd="4dp"
                     android:max="100"
                     app:trackCornerRadius="2dp"
                     app:trackThickness="3dp" />
@@ -100,7 +166,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:layout_marginHorizontal="3dp"
+                    android:layout_marginHorizontal="4dp"
                     android:max="100"
                     app:trackCornerRadius="2dp"
                     app:trackThickness="3dp" />
@@ -110,17 +176,16 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:layout_marginStart="3dp"
+                    android:layout_marginStart="4dp"
                     android:max="100"
                     app:trackCornerRadius="2dp"
                     app:trackThickness="3dp" />
             </LinearLayout>
 
-            <!-- Stage labels with colored dots -->
             <LinearLayout
+                android:id="@+id/wgk_stage_labels_container"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
                 android:orientation="horizontal">
 
                 <LinearLayout
@@ -139,10 +204,8 @@
                         android:id="@+id/wgk_lbl_tunnel"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:fontFamily="monospace"
                         android:text="@string/wgk_stage_tunnel"
-                        android:textAppearance="?attr/textAppearanceLabelSmall"
-                        android:textAllCaps="false" />
+                        android:textAppearance="?attr/textAppearanceLabelSmall" />
                 </LinearLayout>
 
                 <LinearLayout
@@ -161,10 +224,8 @@
                         android:id="@+id/wgk_lbl_handshake"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:fontFamily="monospace"
                         android:text="@string/wgk_stage_handshake"
-                        android:textAppearance="?attr/textAppearanceLabelSmall"
-                        android:textAllCaps="false" />
+                        android:textAppearance="?attr/textAppearanceLabelSmall" />
                 </LinearLayout>
 
                 <LinearLayout
@@ -183,10 +244,8 @@
                         android:id="@+id/wgk_lbl_routing"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:fontFamily="monospace"
                         android:text="@string/wgk_stage_routing"
-                        android:textAppearance="?attr/textAppearanceLabelSmall"
-                        android:textAllCaps="false" />
+                        android:textAppearance="?attr/textAppearanceLabelSmall" />
                 </LinearLayout>
             </LinearLayout>
         </LinearLayout>

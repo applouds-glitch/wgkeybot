@@ -101,14 +101,14 @@ func newCaptchaNotRobotSession(
 func (s *captchaNotRobotSession) baseValues() neturl.Values {
 	values := neturl.Values{}
 	values.Set("session_token", s.sessionToken)
-	values.Set("domain", "vk.com")
+	values.Set("domain", "vk.ru")
 	values.Set("adFp", "")
 	values.Set("access_token", "")
 	return values
 }
 
 func (s *captchaNotRobotSession) request(method string, values neturl.Values) (map[string]interface{}, error) {
-	reqURL := "https://api.vk.com/method/" + method + "?v=" + captchaNotRobotAPIVersion
+	reqURL := "https://api.vk.ru/method/" + method + "?v=" + captchaNotRobotAPIVersion
 
 	req, err := fhttp.NewRequestWithContext(s.ctx, "POST", reqURL, strings.NewReader(encodeCaptchaForm(method, values)))
 	if err != nil {
@@ -117,8 +117,8 @@ func (s *captchaNotRobotSession) request(method string, values neturl.Values) (m
 	applyCaptchaBrowserProfileFhttp(req, s.profile)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Origin", "https://id.vk.com")
-	req.Header.Set("Referer", "https://id.vk.com/")
+	req.Header.Set("Origin", "https://id.vk.ru")
+	req.Header.Set("Referer", "https://id.vk.ru/")
 	req.Header.Set("Sec-Fetch-Site", "same-site")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
