@@ -8,53 +8,93 @@
         android:gravity="center_horizontal"
         android:orientation="vertical">
 
-        <com.google.android.material.button.MaterialButtonToggleGroup
-            android:id="@+id/wgk_proxy_mode_group"
+        <!-- Preference row, not a command: it reports the current transport and
+             opens a dialog. Label left, value right — so the value reads on its
+             own and the warning tint lands on it instead of the whole row. -->
+        <LinearLayout
+            android:id="@+id/wgk_connection_mode_btn"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            app:singleSelection="true"
-            app:selectionRequired="true"
-            app:checkedButton="@id/wgk_mode_standard_btn">
+            android:layout_height="48dp"
+            android:background="@drawable/wgk_row_pill_bg"
+            android:clickable="true"
+            android:defaultFocusHighlightEnabled="false"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/wgk_mode_standard_btn"
-                style="?attr/materialButtonOutlinedStyle"
+            <ImageView
+                android:id="@+id/wgk_connection_mode_icon"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_vpn_arrow"
+                app:tint="@color/wgk_on_surface_variant" />
+
+            <TextView
                 android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
                 android:layout_weight="1"
-                android:layout_height="40dp"
-                android:text="@string/turn_proxy_mode_standard"
-                android:textAppearance="?attr/textAppearanceLabelSmall"
-                android:textColor="@color/wgk_on_surface_variant"
-                android:gravity="center"
-                app:strokeColor="@color/wgk_outline" />
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="@string/wgk_connection_mode_title"
+                android:textAppearance="?attr/textAppearanceLabelLarge"
+                android:textColor="@color/wgk_on_surface_variant" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/wgk_mode_reserve_btn"
-                style="?attr/materialButtonOutlinedStyle"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="40dp"
-                android:text="@string/turn_proxy_mode_reserve"
-                android:textAppearance="?attr/textAppearanceLabelSmall"
-                android:textColor="@color/wgk_on_surface_variant"
-                android:gravity="center"
-                app:strokeColor="@color/wgk_outline" />
+            <TextView
+                android:id="@+id/wgk_connection_mode_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:text="@string/wgk_connection_mode_standard_value"
+                android:textAppearance="?attr/textAppearanceLabelLarge"
+                android:textColor="@color/wgk_on_surface" />
+        </LinearLayout>
 
-        </com.google.android.material.button.MaterialButtonToggleGroup>
-
-        <com.google.android.material.button.MaterialButton
+        <LinearLayout
             android:id="@+id/wgk_split_btn"
-            style="?attr/materialButtonOutlinedStyle"
             android:layout_width="match_parent"
-            android:layout_height="44dp"
-            android:layout_marginTop="12dp"
-            android:text="@string/wgk_action_split_tunneling"
-            android:textColor="@color/wgk_on_surface_variant"
-            app:cornerRadius="22dp"
-            app:icon="@drawable/ic_call_split"
-            app:iconSize="16dp"
-            app:iconTint="@color/wgk_on_surface_variant"
-            app:strokeColor="@color/wgk_outline" />
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/wgk_row_pill_bg"
+            android:clickable="true"
+            android:defaultFocusHighlightEnabled="false"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp">
+
+            <ImageView
+                android:id="@+id/wgk_split_icon"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_call_split"
+                app:tint="@color/wgk_on_surface_variant" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="@string/wgk_action_split_tunneling"
+                android:textAppearance="?attr/textAppearanceLabelLarge"
+                android:textColor="@color/wgk_on_surface_variant" />
+
+            <TextView
+                android:id="@+id/wgk_split_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:text="@string/wgk_split_off_value"
+                android:textAppearance="?attr/textAppearanceLabelLarge"
+                android:textColor="@color/wgk_on_surface_variant" />
+        </LinearLayout>
 
     </LinearLayout>
 </layout>

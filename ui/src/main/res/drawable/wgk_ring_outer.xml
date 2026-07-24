@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 260x260dp — alpha 0.18 set in layout -->
+<!-- Outermost halo ring — size and alpha set in layout. Drawn with wgk_outline:
+     at outline_variant the ring sat within ~1.03:1 of the background in both
+     themes, so it reserved space it never visually occupied. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="oval">
-    <stroke android:width="1dp" android:color="@color/wgk_outline_variant" />
+    <stroke android:width="1dp" android:color="@color/wgk_outline" />
     <solid android:color="@android:color/transparent" />
 </shape>

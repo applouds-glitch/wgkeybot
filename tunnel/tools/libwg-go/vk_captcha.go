@@ -793,7 +793,7 @@ func fetchDebugInfoFromScript(ctx context.Context, scriptURL string, client tlsc
 	}
 	applyCaptchaBrowserProfileFhttp(req, profile)
 	req.Header.Set("Accept", "text/javascript,*/*")
-	req.Header.Set("Referer", "https://id.vk.com/")
+	req.Header.Set("Referer", "https://id.vk.ru/")
 	req.Header.Set("Sec-Fetch-Site", "same-site")
 	req.Header.Set("Sec-Fetch-Mode", "no-cors")
 	req.Header.Set("Sec-Fetch-Dest", "script")
@@ -823,7 +823,7 @@ func fetchDebugInfoFromScript(ctx context.Context, scriptURL string, client tlsc
 
 func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo string, streamID int, client tlsclient.HttpClient, profile Profile) (string, error) {
 	vkReq := func(method string, values neturl.Values) (map[string]interface{}, error) {
-		reqURL := "https://api.vk.com/method/" + method + "?v=" + captchaNotRobotAPIVersion
+		reqURL := "https://api.vk.ru/method/" + method + "?v=" + captchaNotRobotAPIVersion
 		req, err := fhttp.NewRequestWithContext(ctx, "POST", reqURL, strings.NewReader(encodeCaptchaForm(method, values)))
 		if err != nil {
 			return nil, err
@@ -831,8 +831,8 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 		applyCaptchaBrowserProfileFhttp(req, profile)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "*/*")
-		req.Header.Set("Origin", "https://id.vk.com")
-		req.Header.Set("Referer", "https://id.vk.com/")
+		req.Header.Set("Origin", "https://id.vk.ru")
+		req.Header.Set("Referer", "https://id.vk.ru/")
 		req.Header.Set("Sec-Fetch-Site", "same-site")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
@@ -861,7 +861,7 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 	baseValues := func() neturl.Values {
 		values := neturl.Values{}
 		values.Set("session_token", sessionToken)
-		values.Set("domain", "vk.com")
+		values.Set("domain", "vk.ru")
 		values.Set("adFp", "")
 		values.Set("access_token", "")
 		return values

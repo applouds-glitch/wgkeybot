@@ -151,7 +151,7 @@ object CaptchaFingerprintProbe {
                         view: WebView,
                         request: WebResourceRequest,
                     ): WebResourceResponse? {
-                        if (request.url.host == "api.vk.com" && request.url.path == "/captcha-fingerprint-probe.js") {
+                        if (request.url.host == "api.vk.ru" && request.url.path == "/captcha-fingerprint-probe.js") {
                             capturedHeaders.set(request.requestHeaders)
                             return WebResourceResponse(
                                 "application/javascript",
@@ -177,8 +177,8 @@ object CaptchaFingerprintProbe {
                     }
                 }
                 loadDataWithBaseURL(
-                    "https://id.vk.com/",
-                    "<html><head><script src=\"https://api.vk.com/captcha-fingerprint-probe.js\"></script></head><body></body></html>",
+                    "https://id.vk.ru/",
+                    "<html><head><script src=\"https://api.vk.ru/captcha-fingerprint-probe.js\"></script></head><body></body></html>",
                     "text/html",
                     "UTF-8",
                     null,

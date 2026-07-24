@@ -145,7 +145,7 @@ class CaptchaActivity : AppCompatActivity() {
         }
         return host == "id.vk.ru" ||
             host == "login.vk.ru" ||
-            host == "oauth.vk.com" ||
+            host == "oauth.vk.ru" ||
             host == "api.vk.ru" ||
             host.endsWith(".id.vk.ru") ||
             host.endsWith(".login.vk.ru")

@@ -5,14 +5,14 @@
 <resources xmlns:android="http://schemas.android.com/apk/res/android">
 
     <style name="WireGuardTheme.Toolbar" parent="Widget.Material3.Toolbar">
-        <item name="android:background">?attr/colorSurface</item>
+        <item name="android:background">@color/wgk_top_bar</item>
     </style>
 
     <style name="AppThemeBase" parent="WireGuardTheme">
         <item name="materialCardViewStyle">@style/WireGuardTheme.MaterialCardView</item>
         <item name="toolbarStyle">@style/WireGuardTheme.Toolbar</item>
         <item name="bottomSheetDialogTheme">@style/WireGuardTheme.BottomSheetDialog</item>
-        <item name="android:statusBarColor">?android:colorBackground</item>
+        <item name="android:statusBarColor">@color/wgk_top_bar</item>
         <item name="android:windowLightStatusBar">@bool/light_status_bar</item>
     </style>
 

@@ -18,9 +18,9 @@
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="18dp"
+            android:paddingStart="16dp"
             android:paddingTop="16dp"
-            android:paddingEnd="14dp"
+            android:paddingEnd="16dp"
             android:paddingBottom="16dp">
 
             <!-- Profile icon: not focusable on TV (log view is secondary) -->
@@ -84,7 +84,7 @@
                 android:nextFocusUp="@id/wgk_connect_btn"
                 android:nextFocusLeft="@id/wgk_connect_btn"
                 android:nextFocusRight="@id/wgk_refresh_btn"
-                android:nextFocusDown="@id/wgk_mode_standard_btn"
+                android:nextFocusDown="@id/wgk_connection_mode_btn"
                 android:contentDescription="@string/wgk_auto_refresh_cd"
                 app:icon="@drawable/ic_auto_renew"
                 app:iconGravity="textTop"
@@ -106,7 +106,7 @@
                 android:focusable="true"
                 android:nextFocusUp="@id/wgk_connect_btn"
                 android:nextFocusLeft="@id/wgk_auto_refresh_btn"
-                android:nextFocusDown="@id/wgk_mode_reserve_btn"
+                android:nextFocusDown="@id/wgk_connection_mode_btn"
                 android:contentDescription="@string/wgk_profile_refresh_cd"
                 app:icon="@drawable/ic_refresh"
                 app:iconGravity="textTop"

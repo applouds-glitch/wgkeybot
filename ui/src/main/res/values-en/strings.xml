@@ -2,13 +2,13 @@
 <resources>
     <!-- ── Main connect screen ──────────────────────────────────────────── -->
     <string name="wgk_headline_disconnected">Tap to connect</string>
-    <string name="wgk_headline_connecting">Bringing tunnel up</string>
-    <string name="wgk_headline_handshake">Handshake in progress</string>
-    <string name="wgk_headline_connected">Tunnel active</string>
-    <string name="wgk_headline_reconnecting">Connection lost</string>
-    <string name="wgk_headline_failed">Failed to connect</string>
+    <string name="wgk_headline_connecting">Tap to cancel</string>
+    <string name="wgk_headline_handshake">Tap to cancel</string>
+    <string name="wgk_headline_connected">Tap to disconnect</string>
+    <string name="wgk_headline_reconnecting">Tap to stop</string>
+    <string name="wgk_headline_failed">Tap to try again</string>
 
-    <string name="wgk_profile_name">Config</string>
+    <string name="wgk_profile_name">Configuration</string>
     <string name="wgk_profile_loaded_at">Loaded at %1$s</string>
     <string name="wgk_profile_loaded_on">Loaded %1$s</string>
     <string name="wgk_profile_never_loaded">—</string>
@@ -16,30 +16,38 @@
     <string name="wgk_menu_cd">Menu</string>
 
     <string name="wgk_status_label">STATUS</string>
-    <string name="wgk_status_disconnected">Disconnected</string>
+    <string name="wgk_status_disconnected">VPN is off</string>
     <string name="wgk_status_connecting">Connecting…</string>
-    <string name="wgk_status_handshake">Handshake…</string>
-    <string name="wgk_status_connected">Connected</string>
-    <string name="wgk_status_reconnecting">Reconnecting…</string>
-    <string name="wgk_status_failed">Error</string>
+    <string name="wgk_status_handshake">Contacting server…</string>
+    <string name="wgk_status_connected">Protected</string>
+    <string name="wgk_status_reconnecting">Restoring connection…</string>
+    <string name="wgk_status_failed">Couldn’t connect</string>
 
     <string name="wgk_status_sub_disconnected">Ready to connect</string>
-    <string name="wgk_status_sub_connecting">Bringing up wg interface</string>
-    <string name="wgk_status_sub_handshake">Exchanging keys</string>
-    <string name="wgk_status_sub_connected">Connection established</string>
+    <string name="wgk_status_sub_connecting">Starting the secure connection</string>
+    <string name="wgk_status_sub_handshake">Checking the server connection</string>
+    <string name="wgk_status_sub_connected">Your traffic is protected</string>
+    <string name="wgk_status_sub_connected_time">Online for %1$s</string>
     <string name="wgk_status_sub_reconnecting">Server not responding — retrying</string>
-    <string name="wgk_status_sub_failed">Server unreachable. Check your network and try again</string>
+    <string name="wgk_status_sub_failed">Server unreachable — check your network</string>
 
-    <string name="wgk_rxtx_label">RX / TX</string>
+    <string name="wgk_rxtx_label">TRAFFIC</string>
     <string name="wgk_wireguard_label">WIREGUARD</string>
-    <string name="wgk_rxtx_value">%.1f↓ / %.1f↑ MB</string>
+    <string name="wgk_rxtx_value">%1$.1f↓ / %2$.1f↑</string>
+    <string name="wgk_rxtx_unit_mb">MB</string>
+    <string name="wgk_rxtx_unit_gb">GB</string>
 
-    <string name="wgk_stage_tunnel">Tunnel up</string>
-    <string name="wgk_stage_handshake">Handshake</string>
-    <string name="wgk_stage_routing">Routing</string>
+    <string name="wgk_stage_tunnel">Starting</string>
+    <string name="wgk_stage_handshake">Connecting</string>
+    <string name="wgk_stage_routing">Ready</string>
 
     <!-- ── Split tunneling screen ──────────────────────────────────────── -->
     <string name="wgk_action_split_tunneling">Split tunneling</string>
+    <string name="wgk_connection_mode_title">Connection mode</string>
+    <string name="wgk_connection_mode_standard_value">Standard</string>
+    <string name="wgk_connection_mode_reserve_value">Fallback</string>
+    <string name="wgk_connection_mode_standard_option">Standard — faster, recommended</string>
+    <string name="wgk_connection_mode_reserve_option">Fallback — slower, use if standard mode fails</string>
     <string name="wgk_split_search_hint">Search apps</string>
     <string name="wgk_split_show_system">System apps</string>
     <string name="wgk_split_exclude_hint">Selected apps will bypass the VPN. Everything else goes through the tunnel.</string>
@@ -49,6 +57,7 @@
     <string name="wgk_split_selected_of">%1$d of %2$d selected</string>
     <string name="wgk_split_toggle_all">Toggle all</string>
     <string name="wgk_split_cancel">Cancel</string>
+    <string name="wgk_split_off_value">Off</string>
     <string name="wgk_split_only_count">Only: %d apps</string>
     <string name="wgk_split_excluded_count">Excluded: %d apps</string>
     <string name="wgk_split_wizard_title">Set up split tunneling</string>
@@ -61,19 +70,23 @@
     <string name="wgk_split_wizard_later_hint">You can set this up later on the main screen.</string>
 
     <!-- ── Auth / token entry ──────────────────────────────────────────── -->
-    <string name="wgk_no_key_title">Key not found</string>
-    <string name="wgk_no_key_subtitle">Get a config from the Telegram bot and open its link to connect</string>
-    <string name="wgk_no_key_action">Open @wg_key_bot</string>
+    <string name="wgk_no_key_title">Connect WGKeyBot</string>
+    <string name="wgk_no_key_subtitle">Get access in Telegram, or enter a connection token you already have</string>
+    <string name="wgk_no_key_action">Open Telegram bot</string>
     <string name="wgk_expired_title">Subscription expired</string>
     <string name="wgk_expired_subtitle">Contact the bot to renew your subscription</string>
     <string name="wgk_check_subscription_action">Check payment</string>
-    <string name="wgk_token_hint">Token from the bot</string>
+    <string name="wgk_token_hint">Connection token</string>
     <string name="wgk_token_error_empty">Enter a token</string>
     <string name="wgk_paste_cd">Paste from clipboard</string>
     <string name="wgk_pasted_from_clipboard">Token pasted from clipboard</string>
     <string name="wgk_clipboard_no_token">No token in clipboard</string>
     <string name="wgk_connect_action">Connect</string>
-    <string name="wgk_or_divider">or</string>
+    <string name="wgk_or_divider">or enter a token</string>
+    <string name="wgk_connect_cd_connect">Connect VPN</string>
+    <string name="wgk_connect_cd_disconnect">Disconnect VPN</string>
+    <string name="wgk_connect_cd_cancel">Cancel connection</string>
+    <string name="wgk_connect_cd_retry">Try connecting again</string>
 
     <!-- ── Proxy mode toggle ────────────────────────────────────────────── -->
     <string name="turn_proxy_mode_standard">Primary</string>
@@ -81,6 +94,8 @@
 
     <!-- ── Auto-refresh / theme toggle ─────────────────────────────────── -->
     <string name="wgk_auto_refresh_cd">Config auto-refresh</string>
+    <string name="wgk_auto_refresh_enabled_cd">Config auto-refresh is on. Tap to turn it off</string>
+    <string name="wgk_auto_refresh_disabled_cd">Config auto-refresh is off. Tap to turn it on</string>
     <string name="wgk_theme_toggle_cd">Switch theme</string>
     <string name="wgk_auto_refresh_enabled">Config auto-refresh every 12 hours enabled</string>
     <string name="wgk_auto_refresh_disabled">Config auto-refresh every 12 hours disabled</string>
@@ -109,5 +124,4 @@
         <item quantity="one">%d more tap to logs</item>
         <item quantity="other">%d more taps to logs</item>
     </plurals>
-    <string name="turn_reserve_mode_warning">Slow speed. Use only if primary mode fails.</string>
 </resources>

@@ -321,8 +321,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 		applyBrowserProfileFhttp(req, profile)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "*/*")
-		req.Header.Set("Origin", "https://vk.com")
-		req.Header.Set("Referer", "https://vk.com/")
+		req.Header.Set("Origin", "https://vk.ru")
+		req.Header.Set("Referer", "https://vk.ru/")
 		req.Header.Set("Sec-Fetch-Site", "same-site")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
@@ -354,7 +354,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	// when the original token may have expired during captcha solving.
 	refreshAnonymToken := func() (string, error) {
 		data := fmt.Sprintf("client_id=%s&token_type=messages&client_secret=%s&version=1&app_id=%s", creds.ClientID, creds.ClientSecret, creds.ClientID)
-		resp, err := doRequest(data, "https://login.vk.com/?act=get_anonym_token")
+		resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
 		if err != nil {
 			return "", err
 		}
@@ -388,7 +388,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	// OAuth-only token that getAnonymousToken rejects with anonym_token.not_found.
 	// Only the host moved to vk.com, not the params.
 	data := fmt.Sprintf("client_id=%s&token_type=messages&client_secret=%s&version=1&app_id=%s", creds.ClientID, creds.ClientSecret, creds.ClientID)
-	resp, err := doRequest(data, "https://login.vk.com/?act=get_anonym_token")
+	resp, err := doRequest(data, "https://login.vk.ru/?act=get_anonym_token")
 	if err != nil {
 		turnLog("[VK Auth] Token 1 request failed: %v", err)
 		return "", "", nil, 0, err
@@ -418,8 +418,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	vkDelayRandom(100, 150)
 
 	// getCallPreview — имитация поведения VK-клиента перед запросом токена звонка
-	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&fields=photo_200&access_token=%s", link, token1)
-	_, err = doRequest(data, fmt.Sprintf("https://api.vk.com/method/calls.getCallPreview?v=5.282&client_id=%s", creds.ClientID))
+	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&fields=photo_200&access_token=%s", link, token1)
+	_, err = doRequest(data, fmt.Sprintf("https://api.vk.ru/method/calls.getCallPreview?v=5.282&client_id=%s", creds.ClientID))
 	if err != nil {
 		turnLog("[VK Auth] getCallPreview warning: %v", err)
 	}
@@ -427,8 +427,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	vkDelayRandom(200, 400)
 
 	// Token 2
-	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
-	urlAddr := fmt.Sprintf("https://api.vk.com/method/calls.getAnonymousToken?v=5.282&client_id=%s", creds.ClientID)
+	data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
+	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.282&client_id=%s", creds.ClientID)
 
 	manualCaptcha := true
 	autoCaptchaSliderPOC := true
@@ -622,10 +622,10 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 				captchaSolveAttempt = 0 // reset for next captcha (if any)
 
 				if captchaKey != "" {
-					data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&captcha_key=%s&captcha_sid=%s&access_token=%s",
+					data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=%s&captcha_key=%s&captcha_sid=%s&access_token=%s",
 						link, escapedName, neturl.QueryEscape(captchaKey), captchaErr.CaptchaSid, token1)
 				} else {
-					data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&captcha_key=&captcha_sid=%s&is_sound_captcha=0&success_token=%s&captcha_ts=%s&captcha_attempt=%s&access_token=%s",
+					data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=%s&captcha_key=&captcha_sid=%s&is_sound_captcha=0&success_token=%s&captcha_ts=%s&captcha_attempt=%s&access_token=%s",
 						link, escapedName, captchaErr.CaptchaSid, neturl.QueryEscape(successToken), captchaErr.CaptchaTs, captchaErr.CaptchaAttempt, token1)
 				}
 				continue
@@ -654,7 +654,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 					turnLog("[STREAM %d] Token1 refresh failed for retry %d, reusing existing token1: %v", streamID, retryErr10, refreshErr)
 				}
 				// Reset to base data so VK issues a new captcha that auto-solver can handle.
-				data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
+				data = fmt.Sprintf("vk_join_link=https://vk.ru/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
 				baseData = data
 				attempt = -1 // loop header will increment to 0
 				continue

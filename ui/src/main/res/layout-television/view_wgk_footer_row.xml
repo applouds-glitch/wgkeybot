@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-  ~ Android TV variant of the footer row.
-  ~ Buttons 52 dp tall (D-pad safe), proper nextFocus chain.
+  ~ Android TV variant of the footer rows.
+  ~ Taller rows (52 dp) and an explicit D-pad chain; the focused look comes from
+  ~ the state_focused branch of wgk_row_pill_bg.
   ~ IDs must match layout/view_wgk_footer_row.xml (same ViewBinding class).
-  ~ D-pad chain: ↑ ← auto-refresh / refresh  ↓ → split tunneling
   -->
 <layout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
@@ -13,66 +13,93 @@
         android:gravity="center_horizontal"
         android:orientation="vertical">
 
-        <com.google.android.material.button.MaterialButtonToggleGroup
-            android:id="@+id/wgk_proxy_mode_group"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            app:singleSelection="true"
-            app:selectionRequired="true"
-            app:checkedButton="@id/wgk_mode_standard_btn">
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/wgk_mode_standard_btn"
-                style="?attr/materialButtonOutlinedStyle"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="52dp"
-                android:focusable="true"
-                android:nextFocusUp="@id/wgk_auto_refresh_btn"
-                android:nextFocusLeft="@id/wgk_auto_refresh_btn"
-                android:nextFocusRight="@id/wgk_mode_reserve_btn"
-                android:nextFocusDown="@id/wgk_split_btn"
-                android:text="@string/turn_proxy_mode_standard"
-                android:textAppearance="?attr/textAppearanceLabelMedium"
-                android:textColor="@color/wgk_on_surface_variant"
-                android:gravity="center"
-                app:strokeColor="@color/wgk_outline" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/wgk_mode_reserve_btn"
-                style="?attr/materialButtonOutlinedStyle"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="52dp"
-                android:focusable="true"
-                android:nextFocusUp="@id/wgk_refresh_btn"
-                android:nextFocusLeft="@id/wgk_mode_standard_btn"
-                android:nextFocusRight="@id/wgk_refresh_btn"
-                android:nextFocusDown="@id/wgk_split_btn"
-                android:text="@string/turn_proxy_mode_reserve"
-                android:textAppearance="?attr/textAppearanceLabelMedium"
-                android:textColor="@color/wgk_on_surface_variant"
-                android:gravity="center"
-                app:strokeColor="@color/wgk_outline" />
-
-        </com.google.android.material.button.MaterialButtonToggleGroup>
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/wgk_split_btn"
-            style="?attr/materialButtonOutlinedStyle"
+        <LinearLayout
+            android:id="@+id/wgk_connection_mode_btn"
             android:layout_width="match_parent"
             android:layout_height="52dp"
-            android:layout_marginTop="12dp"
+            android:background="@drawable/wgk_row_pill_bg"
+            android:clickable="true"
+            android:defaultFocusHighlightEnabled="false"
             android:focusable="true"
-            android:nextFocusUp="@id/wgk_mode_standard_btn"
-            android:text="@string/wgk_action_split_tunneling"
-            android:textAppearance="?attr/textAppearanceLabelMedium"
-            android:textColor="@color/wgk_on_surface_variant"
-            app:cornerRadius="22dp"
-            app:icon="@drawable/ic_call_split"
-            app:iconSize="18dp"
-            app:iconTint="@color/wgk_on_surface_variant"
-            app:strokeColor="@color/wgk_outline" />
+            android:gravity="center_vertical"
+            android:nextFocusDown="@id/wgk_split_btn"
+            android:nextFocusUp="@id/wgk_auto_refresh_btn"
+            android:orientation="horizontal"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp">
+
+            <ImageView
+                android:id="@+id/wgk_connection_mode_icon"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_vpn_arrow"
+                app:tint="@color/wgk_on_surface_variant" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="@string/wgk_connection_mode_title"
+                android:textAppearance="?attr/textAppearanceLabelMedium"
+                android:textColor="@color/wgk_on_surface_variant" />
+
+            <TextView
+                android:id="@+id/wgk_connection_mode_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:text="@string/wgk_connection_mode_standard_value"
+                android:textAppearance="?attr/textAppearanceLabelMedium"
+                android:textColor="@color/wgk_on_surface" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/wgk_split_btn"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/wgk_row_pill_bg"
+            android:clickable="true"
+            android:defaultFocusHighlightEnabled="false"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:nextFocusUp="@id/wgk_connection_mode_btn"
+            android:orientation="horizontal"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp">
+
+            <ImageView
+                android:id="@+id/wgk_split_icon"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_call_split"
+                app:tint="@color/wgk_on_surface_variant" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="@string/wgk_action_split_tunneling"
+                android:textAppearance="?attr/textAppearanceLabelMedium"
+                android:textColor="@color/wgk_on_surface_variant" />
+
+            <TextView
+                android:id="@+id/wgk_split_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:text="@string/wgk_split_off_value"
+                android:textAppearance="?attr/textAppearanceLabelMedium"
+                android:textColor="@color/wgk_on_surface_variant" />
+        </LinearLayout>
 
     </LinearLayout>
 </layout>

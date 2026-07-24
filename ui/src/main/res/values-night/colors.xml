@@ -18,6 +18,7 @@
     <color name="wgk_primary_30">#4DA4C9FE</color>
     <color name="wgk_warning">#FFFFB870</color>
     <color name="wgk_error">#FFFFB4AB</color>
+    <color name="wgk_top_bar">#FF191B20</color>
 
     <!-- Darker widget background for the system dark theme. -->
     <color name="widget_bg">#E60A0C10</color>
