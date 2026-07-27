@@ -9,7 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"sync"
+	"sort"
 )
 
 // fetchCreds fetches TURN credentials for a specific group via the shared cache.
@@ -41,58 +41,31 @@ func fetchCreds(ctx context.Context, link string, groupID int) (user, pass strin
 	return
 }
 
-// preferredAddr remembers, per group, the TURN server that last won the
-// Allocate race (see stream_run_with_creds.go). It is a warm-cache hint only:
-// the next reconnect tries it first (head-start), but still races the rest in
-// case it has died. Kept separate from StreamCredentialsCache so it never
-// interferes with credential freshness/single-flight.
-var (
-	preferredMu   sync.Mutex
-	preferredAddr = map[int]string{}
-)
-
-// recordPreferred stores the race-winning address for a group.
-func recordPreferred(groupID int, addr string) {
-	preferredMu.Lock()
-	preferredAddr[groupID] = addr
-	preferredMu.Unlock()
-}
-
-// hasPreferred reports whether a fastest server has already been elected for the
-// group. The first connection (none elected yet) probes all servers at once;
-// later connections follow the election and only head-start-race.
-func hasPreferred(groupID int) bool {
-	preferredMu.Lock()
-	_, ok := preferredAddr[groupID]
-	preferredMu.Unlock()
-	return ok
-}
-
-// orderPreferred returns addrs with the group's remembered preferred server
-// moved to index 0 (the head-start slot). If there is no remembered preferred,
-// or it is absent from the current list (e.g. creds were refreshed with a
-// different server set), addrs is returned unchanged. When reordering it
-// returns a fresh slice — addrs may alias the cached ServerAddrs slice, so it
-// must not be mutated in place.
-func orderPreferred(addrs []string, groupID int) []string {
-	preferredMu.Lock()
-	pref := preferredAddr[groupID]
-	preferredMu.Unlock()
-	if pref == "" {
+// assignServers returns addrs rotated so index 0 is this stream's assigned TURN
+// server, picked round-robin by stream ID. Streams are thereby spread evenly
+// across every server VK returned instead of piling onto whichever one happened
+// to win a latency race — the load (and the per-credential Allocate quota) is
+// split across the hosts, and a reconnecting stream always returns to its own
+// server rather than sticking to a stale winner.
+//
+// The list is first sorted into a canonical order so the same physical server
+// gets the same index in every group, regardless of the order VK returned the
+// urls in for that group's link. The remaining servers follow in canonical
+// order and act purely as failover candidates: runWithCreds dials them only
+// after the assigned one errors.
+//
+// Returns a fresh slice when rotating — addrs may alias the cached ServerAddrs
+// slice (returned by reference on a cache hit), so it must not be mutated in
+// place.
+func assignServers(addrs []string, streamID int) []string {
+	if len(addrs) < 2 {
 		return addrs
 	}
-	for i, a := range addrs {
-		if a != pref {
-			continue
-		}
-		if i == 0 {
-			return addrs
-		}
-		out := make([]string, 0, len(addrs))
-		out = append(out, pref)
-		out = append(out, addrs[:i]...)
-		out = append(out, addrs[i+1:]...)
-		return out
-	}
-	return addrs
+	sorted := append([]string(nil), addrs...)
+	sort.Strings(sorted)
+	idx := streamID % len(sorted)
+	out := make([]string, 0, len(sorted))
+	out = append(out, sorted[idx:]...)
+	out = append(out, sorted[:idx]...)
+	return out
 }

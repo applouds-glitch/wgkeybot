@@ -32,6 +32,7 @@ import com.wireguard.android.turn.TurnConfigProcessor
 import com.wireguard.android.turn.TurnSettings
 import com.wireguard.android.turn.TurnSettingsStore
 import com.wireguard.android.util.ErrorMessages
+import com.wireguard.android.util.ScreenStateMonitor
 import com.wireguard.android.util.UserKnobs
 import com.wireguard.android.util.applicationScope
 import com.wireguard.config.Config
@@ -47,6 +48,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -463,7 +465,7 @@ class TunnelManager(
             var prevTx = -1L
             var deadChecks = 0
             while (isActive) {
-                delay(WATCHDOG_POLL_MS)
+                awaitNextWatchdogPoll()
                 if (getBackend().getState(tunnel) != Tunnel.State.UP)
                     return@launch
                 val stats = try {
@@ -505,6 +507,24 @@ class TunnelManager(
                 }
             }
         }
+    }
+
+    /**
+     * Waits until the next handshake-watchdog poll is due. With the screen on the
+     * cadence is unchanged, so a user staring at a dead tunnel still gets a fast
+     * teardown. With the screen off nobody is looking, so the watchdog stops
+     * burning a JNI stats call (which parses the whole uapi config) every 30s all
+     * night and instead sleeps until the screen comes back on — or for
+     * [WATCHDOG_POLL_IDLE_MS], whichever happens first, so a tunnel that died in
+     * the dark is still caught. The tunnel itself, its keepalives and the native
+     * dead-stream detector are untouched.
+     */
+    private suspend fun awaitNextWatchdogPoll() {
+        if (ScreenStateMonitor.screenOn.value) {
+            delay(WATCHDOG_POLL_MS)
+            return
+        }
+        withTimeoutOrNull(WATCHDOG_POLL_IDLE_MS) { ScreenStateMonitor.screenOn.first { it } }
     }
 
     private fun cancelHandshakeWatchdog(name: String) {
@@ -601,6 +621,8 @@ class TunnelManager(
 
         // Background watchdog: tears the tunnel down on prolonged loss of handshake.
         private const val WATCHDOG_POLL_MS = 30_000L
+        // Poll cadence with the screen off, where a slower verdict costs nothing.
+        private const val WATCHDOG_POLL_IDLE_MS = 180_000L
         // Handshake age beyond which an in-use connection is considered broken.
         private const val WATCHDOG_STALE_MS = 180_000L
         // Grace period for a tunnel that has never completed a single handshake.

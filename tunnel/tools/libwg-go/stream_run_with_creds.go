@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pion/logging"
 	"github.com/pion/turn/v5"
 )
 
@@ -23,24 +22,24 @@ type winner struct {
 	client *turn.Client
 	raw    net.Conn       // underlying dialed UDP/TCP conn
 	relay  net.PacketConn // relay allocation from client.Allocate()
-	addr   string         // TURN server that won
+	addr   string         // TURN server the session runs on
 	rtt    time.Duration  // Dial → Allocate latency
 }
 
-// runWithCreds establishes one TURN session with pre-fetched credentials,
-// racing the candidate servers ICE-style. With raceAll every server is dialed
-// at once to elect the genuinely fastest — a one-off probe done by the first
-// connection in a group. Otherwise the preferred server (addrs[0]) gets a
-// head-start and the rest are raced only if it does not win within
-// preferredHeadStart (failover, not a probe). The first server to complete
-// Allocate wins; the losers are cancelled/closed. Retry and credential rotation
-// are managed by the calling WorkerGroup.
-func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []string, cfg WorkerGroupConfig, raceAll bool) error {
+// runWithCreds establishes one TURN session with pre-fetched credentials on the
+// stream's assigned server, addrs[0] (see assignServers). There is no latency
+// race: only if that server fails to Allocate are the remaining candidates
+// dialed, all at once, and the first of those to complete Allocate takes the
+// session while the others are cancelled/closed. The assignment is per attempt,
+// so the next reconnect goes back to the stream's own server. Retry and
+// credential rotation are managed by the calling WorkerGroup.
+func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []string, cfg WorkerGroupConfig) error {
 	s.ready.Store(false)
 	defer s.ready.Store(false)
 
 	// raceCtx is cancelled the moment a winner is chosen (or ctx dies) so the
-	// losing racers stop dialing / abort their semaphore wait promptly.
+	// losing failover candidates stop dialing / abort their semaphore wait
+	// promptly.
 	raceCtx, cancelRace := context.WithCancel(ctx)
 	defer cancelRace()
 
@@ -65,10 +64,10 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 				winCh <- winner{client: client, raw: raw, relay: relay, addr: addr, rtt: rtt}
 			})
 			if !claimed {
-				// Another server won first: log this server's RTT for the
-				// A-vs-B comparison, then release the surplus allocation
+				// Another failover candidate got there first: log this
+				// server's RTT, then release the surplus allocation
 				// (relayConn.Close → Refresh(lifetime=0) deallocates server-side).
-				turnLog("[STREAM %d] Race lost by %s rtt=%v (group %d)", s.id, addr, rtt, cfg.GroupID)
+				turnLog("[STREAM %d] Failover candidate %s lost rtt=%v (group %d)", s.id, addr, rtt, cfg.GroupID)
 				relay.Close()
 				client.Close()
 				raw.Close()
@@ -80,7 +79,6 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 	launchedCount := 1
 	fannedOut := len(addrs) == 1
 
-	var grace <-chan time.Time
 	fanOut := func() {
 		if fannedOut {
 			return
@@ -90,18 +88,6 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			launchedCount++
 		}
 		fannedOut = true
-		grace = nil
-	}
-
-	if raceAll {
-		// Probe: race every server at once to elect the genuinely fastest.
-		fanOut()
-	} else if !fannedOut {
-		// Head-start: let the preferred server (addrs[0]) try to win alone;
-		// fan out to the rest only if it does not win within the grace window.
-		t := time.NewTimer(preferredHeadStart)
-		defer t.Stop()
-		grace = t.C
 	}
 
 	var lastErr error
@@ -114,13 +100,11 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			lastErr = err
 			errCount++
 			if !fannedOut {
-				// Preferred failed before the grace window: race the rest now.
+				// The assigned server failed: try the failover candidates.
 				fanOut()
 			} else if errCount == launchedCount {
 				return fmt.Errorf("TURN allocate: all %d servers failed: %w", len(addrs), lastErr)
 			}
-		case <-grace:
-			fanOut()
 		case <-ctx.Done():
 			cancelRace()
 			// A racer may still win after we leave; reap it so the allocation
@@ -168,7 +152,7 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		Username:       user,
 		Password:       pass,
 		Conn:           turnConn,
-		LoggerFactory:  logging.NewDefaultLoggerFactory(),
+		LoggerFactory:  pionLogFactory{streamID: s.id},
 	})
 	if err != nil {
 		raw.Close()
@@ -199,18 +183,15 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 	return client, raw, relay, time.Since(start), nil
 }
 
-// runSession runs the relay session on the race winner and owns its lifecycle:
-// it closes the relay, client and underlying conn on exit (matching the
-// pre-race defer order). It also records the winning server as the group's
-// preferred (warm cache) for the next reconnect.
+// runSession runs the relay session on the connected server and owns its
+// lifecycle: it closes the relay, client and underlying conn on exit.
 func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig) error {
 	defer w.raw.Close()
 	defer w.client.Close()
 	defer w.relay.Close()
 
-	turnLog("[STREAM %d] Race won by %s rtt=%v (group %d)", s.id, w.addr, w.rtt, cfg.GroupID)
+	turnLog("[STREAM %d] TURN %s rtt=%v (group %d)", s.id, w.addr, w.rtt, cfg.GroupID)
 	turnLog("[STREAM %d] Relay: %s", s.id, w.relay.LocalAddr())
-	recordPreferred(cfg.GroupID, w.addr)
 
 	switch cfg.PeerType {
 	case "wireguard":
@@ -222,10 +203,10 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	}
 }
 
-// reapRace drains any late-arriving race winner (after the caller has given up
-// on ctx cancellation) and closes its resources so they don't leak. winCh holds
-// at most one winner (guarded by sync.Once), so a single non-blocking drain
-// after all racers have exited is sufficient.
+// reapRace drains any late-arriving winner (after the caller has given up on
+// ctx cancellation) and closes its resources so they don't leak. winCh holds at
+// most one winner (guarded by sync.Once), so a single non-blocking drain after
+// all dialers have exited is sufficient.
 func reapRace(wg *sync.WaitGroup, winCh chan winner) {
 	wg.Wait()
 	select {
