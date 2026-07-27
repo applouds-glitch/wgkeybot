@@ -18,15 +18,6 @@ import (
 const (
 	defaultCycleSecs = 36000 // cap for the credential cache TTL (see credentials.go)
 	workerStagger    = 500 * time.Millisecond
-
-	// preferredHeadStart is the grace window the preferred server (addrs[0])
-	// gets to win the Allocate race alone before runWithCreds fans out to the
-	// other servers. Long enough that a healthy preferred usually wins by itself
-	// on typical mobile RTT (keeping steady-state at ~1 Allocate/stream), short
-	// enough that a dead preferred fails over quickly. Set to 400ms after field
-	// logs showed mobile-hotspot RTT spiking to ~315ms, which made a healthy
-	// preferred occasionally exceed a 300ms window and fan out unnecessarily.
-	preferredHeadStart = 400 * time.Millisecond
 )
 
 // vkSemaphore limits concurrent VK API credential fetches across all groups.
@@ -93,11 +84,13 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 // re-fetch creds (only for auth/quota errors) and reconnect. It returns only
 // when ctx is cancelled.
 //
-// The TURN server is no longer chosen by index: runWithCreds races all servers
-// (preferred first, see orderPreferred) and the fastest to Allocate wins.
-// failStreak now only counts consecutive connect failures to drive the retry
-// backoff. A session that stayed up for a while (or was closed cleanly by the
-// server) resets the streak for a fast retry.
+// The TURN server is assigned statically, round-robin by stream ID (see
+// assignServers), so the streams are spread evenly across every server VK
+// returned. The other servers are failover only: runWithCreds dials them just
+// for this attempt, and only after the assigned one errors. failStreak only
+// counts consecutive connect failures to drive the retry backoff. A session
+// that stayed up for a while (or was closed cleanly by the server) resets the
+// streak for a fast retry.
 func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger time.Duration) {
 	if stagger > 0 {
 		select {
@@ -156,18 +149,12 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		// Apply optional manual TurnIP/TurnPort override to the fetched list.
 		addrs = applyTurnOverride(addrs, cfg)
 
-		// Put the last race winner (if any) first so it gets the head-start in
-		// the Allocate race; runWithCreds still races the rest if it has died.
-		addrs = orderPreferred(addrs, cfg.GroupID)
-
-		// The first connection in a group (no winner elected yet) probes all
-		// servers at once to pick the fastest; everyone else follows that
-		// election and only head-start-races (preferred first, fan out on
-		// failure) — so A-vs-B is tested once per group, not on every stream.
-		raceAll := !hasPreferred(cfg.GroupID)
+		// Every stream owns one TURN server (round-robin by stream ID); the
+		// rest of the list follows only as failover for this attempt.
+		addrs = assignServers(addrs, s.id)
 
 		start := time.Now()
-		runErr := s.runWithCreds(ctx, user, pass, addrs, cfg, raceAll)
+		runErr := s.runWithCreds(ctx, user, pass, addrs, cfg)
 		sessionDur := time.Since(start)
 		releaseNetworkPermit(permit)
 

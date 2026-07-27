@@ -17,13 +17,18 @@ import (
 
 // TunnelGroupsConfig — configuration for launching multiple WorkerGroups.
 type TunnelGroupsConfig struct {
-	Links             []string
-	PeerAddr          *net.UDPAddr
-	PeerType          string
-	UseUDP            bool
-	TurnIP            string
-	TurnPort          int
-	StreamsPerGroup   int
+	Links           []string
+	PeerAddr        *net.UDPAddr
+	PeerType        string
+	UseUDP          bool
+	TurnIP          string
+	TurnPort        int
+	StreamsPerGroup int
+	// TotalStreams is the stream count to spread over Links. It may be less
+	// than len(Links)*StreamsPerGroup, in which case the last group is short —
+	// StreamsPerGroup is a group's capacity, not its guaranteed size. Zero
+	// means "fill every group", the old behaviour.
+	TotalStreams      int
 	Cert              *tls.Certificate
 	SessionID         []byte
 	WatchdogTimeout   int
@@ -62,26 +67,44 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 		})
 	}
 
-	totalStreams := len(cfg.Links) * n
+	totalStreams := cfg.TotalStreams
+	if totalStreams <= 0 || totalStreams > len(cfg.Links)*n {
+		totalStreams = len(cfg.Links) * n
+	}
 	allStreams := make([]*stream, totalStreams)
 	for i := range allStreams {
 		allStreams[i] = &stream{
-			ctx:               gCtx,
-			id:                i,
-			in:                make(chan []byte, 512),
-			out:               lc,
-			sessionID:         cfg.SessionID,
-			cert:              cfg.Cert,
-			watchdogTimeout:   wd,
-			okFunc:            okFunc,
-			wrapKey:           cfg.WrapKey, // ← добавить
-			ssrc:              randU32(),   // per-stream RTP SSRC → distinct ChaCha nonce
+			ctx:             gCtx,
+			id:              i,
+			in:              make(chan []byte, 512),
+			out:             lc,
+			sessionID:       cfg.SessionID,
+			cert:            cfg.Cert,
+			watchdogTimeout: wd,
+			okFunc:          okFunc,
+			wrapKey:         cfg.WrapKey, // ← добавить
+			// Slice the keepalive window by the actual stream count, so every
+			// stream gets its own slot whatever the configured fan-out.
+			kaPhase:           keepalivePhase(i, totalStreams),
+			ssrc:              randU32(), // per-stream RTP SSRC → distinct ChaCha nonce
 			networkGeneration: cfg.NetworkGeneration,
 		}
 	}
 
 	var groupsWg sync.WaitGroup
 	for gi, link := range cfg.Links {
+		// The last group is short whenever TotalStreams isn't a multiple of n.
+		// Checked before the cascade sleep so a group with nothing to run
+		// doesn't cost 2s on startup.
+		start := gi * n
+		if start >= totalStreams {
+			break
+		}
+		end := start + n
+		if end > totalStreams {
+			end = totalStreams
+		}
+
 		if gi > 0 {
 			// Cascading group launch: each group starts ~2s after the
 			// previous one so TURN allocations and VK credential fetches
@@ -91,7 +114,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			time.Sleep(baseDelay + jitter)
 		}
 
-		groupStreams := allStreams[gi*n : gi*n+n]
+		groupStreams := allStreams[start:end]
 
 		groupCfg := WorkerGroupConfig{
 			GroupID:  gi,
@@ -108,7 +131,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			defer groupsWg.Done()
 			WorkerGroup(gCtx, groupCfg, groupStreams)
 		}()
-		turnLog("[INIT] Group %d started (link=%.12s, streams %d-%d)", gi, link, gi*n, gi*n+n-1)
+		turnLog("[INIT] Group %d started (link=%.12s, streams %d-%d)", gi, link, start, end-1)
 	}
 
 	// done closes once every WorkerGroup has fully exited. Each WorkerGroup waits
@@ -135,7 +158,12 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 		// never TX'd through still receives RX packets; without an addr
 		// stored those packets hit s.peer.Load() == nil and are dropped.)
 		// WG's UDP source port is stable for the tunnel's lifetime, so we
-		// only re-broadcast when the address actually changes.
+		// only re-broadcast when the address actually changes. The comparison
+		// avoids addr.String() — that formatted a fresh string on every single
+		// packet just to detect a change that happens once per tunnel. lc is a
+		// *net.UDPConn, so ReadFrom always yields *net.UDPAddr; lastAddrStr
+		// keeps the old behaviour for any other net.Addr implementation.
+		var lastAddr *net.UDPAddr
 		var lastAddrStr string
 		for {
 			b := packetPool.Get().([]byte)[:iPacketBuffMaxSize]
@@ -145,12 +173,21 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 				return
 			}
 
-			if curStr := addr.String(); curStr != lastAddrStr {
+			changed := false
+			if ua, ok := addr.(*net.UDPAddr); ok {
+				changed = lastAddr == nil || ua.Port != lastAddr.Port || !ua.IP.Equal(lastAddr.IP)
+				if changed {
+					lastAddr = ua
+				}
+			} else if curStr := addr.String(); curStr != lastAddrStr {
+				changed = true
+				lastAddrStr = curStr
+			}
+			if changed {
 				returnAddr := addr
 				for _, st := range allStreams {
 					st.peer.Store(&returnAddr)
 				}
-				lastAddrStr = curStr
 			}
 
 			var s *stream

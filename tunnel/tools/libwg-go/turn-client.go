@@ -113,6 +113,12 @@ type stream struct {
 	// nil = WRAP disabled (plain mode).
 	wrapKey []byte
 
+	// kaPhase is this stream's offset within the shared keepalive grid window,
+	// derived from id and the total stream count at startup (see keepalivePhase).
+	// Constant for the stream's life, so its NAT-hold gap stays exactly one
+	// keepaliveInterval.
+	kaPhase time.Duration
+
 	// ssrc is this stream's random RTP SSRC. It is written into every outbound
 	// WRAP header and folded into the ChaCha20 nonce, so each stream (and each
 	// device) uses a distinct keystream even at the same counter. Random per
@@ -141,13 +147,28 @@ func isStunKeepalive(b []byte) bool {
 	return len(b) == 20 && b[4] == 0x21 && b[5] == 0x12 && b[6] == 0xA4 && b[7] == 0x42
 }
 
+// sameRelayPeer reports whether from is the expected relay peer. The obvious
+// from.String() != peer.String() costs two string allocations on every single
+// received packet; pion's relay conn always hands back a *net.UDPAddr (both the
+// Data-indication and the ChannelData path construct one), so the fast path is
+// the only one taken in practice. peerStr — precomputed once by the caller —
+// preserves the old semantics for any other net.Addr implementation.
+func sameRelayPeer(from net.Addr, peer *net.UDPAddr, peerStr string) bool {
+	if ua, ok := from.(*net.UDPAddr); ok {
+		return ua.Port == peer.Port && ua.IP.Equal(peer.IP)
+	}
+	return from.String() == peerStr
+}
+
 const iPacketBuffMaxSize = 2048
 
 // runKeepalive is the single per-stream NAT-hold and liveness loop shared by
 // all transports. Connections are established with a safety stagger, but every
 // ready stream sends its normal keepalive on the same 25s wall-clock grid so the
-// packets and their echoes occupy one short radio-active window. A failed write
-// may retry early; after success the stream automatically rejoins the grid.
+// packets and their echoes occupy one short radio-active window — staggered
+// inside that window by the stream's phase (see keepalivePhase), so one lost
+// burst cannot starve every sibling's liveness clock at the same instant. A
+// failed write may retry early; after success the stream rejoins the grid.
 // Only a validated inbound packet proves liveness, except after a host freeze,
 // where a stale clock says nothing about the path and is reset (see freezeSlack).
 func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, reportErr func(error), send func(tick int) error) {
@@ -288,7 +309,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	// waiting out its 60s deadline.
 	context.AfterFunc(sCtx, func() { relayConn.Close() })
 
-	activity := newStreamActivity(time.Now())
+	activity := newStreamActivity(time.Now(), s.kaPhase)
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -297,6 +318,13 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	go func() {
 		defer wg.Done()
 		defer sCancel()
+		// Scratch buffer for WRAP encryption, owned by this goroutine alone.
+		// relayConn.WriteTo copies the payload into its own STUN/ChannelData
+		// message, so the buffer is free to be reused on the next packet.
+		var txBuf []byte
+		if hasWrap {
+			txBuf = make([]byte, iPacketBuffMaxSize+wrapMaxOverhead)
+		}
 		for {
 			select {
 			case <-sCtx.Done():
@@ -304,15 +332,15 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			case b := <-s.in:
 				var payload []byte
 				if hasWrap {
-					var err error
-					payload, err = wrapPacket(s.wrapKey, b, s.ssrc)
-					if err != nil {
+					n, wrapErr := wrapPacketInto(txBuf, s.wrapKey, b, s.ssrc)
+					if wrapErr != nil {
 						packetPool.Put(b[:cap(b)])
 						noDtlsTxDropCount.Add(1)
-						turnLog("[STREAM %d] WRAP TX error: %v", s.id, err)
-						reportErr(fmt.Errorf("WRAP TX: %w", err))
+						turnLog("[STREAM %d] WRAP TX error: %v", s.id, wrapErr)
+						reportErr(fmt.Errorf("WRAP TX: %w", wrapErr))
 						return
 					}
+					payload = txBuf[:n]
 				} else {
 					payload = b
 				}
@@ -334,6 +362,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		defer sCancel()
 		wire := make([]byte, iPacketBuffMaxSize)
 		plain := make([]byte, iPacketBuffMaxSize)
+		peerStr := peer.String()
 		for {
 			n, from, err := relayConn.ReadFrom(wire)
 			if err != nil {
@@ -341,7 +370,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				reportErr(fmt.Errorf("relay RX: %w", err))
 				return
 			}
-			if from.String() != peer.String() {
+			if !sameRelayPeer(from, peer, peerStr) {
 				continue
 			}
 			if hasWrap {
@@ -510,6 +539,12 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		defer wg.Done()
 		defer sCancel()
 		buf := make([]byte, iPacketBuffMaxSize)
+		// Scratch buffer for WRAP encryption, owned by this goroutine alone
+		// (see runNoDTLS TX for why reuse is safe).
+		var txBuf []byte
+		if s.wrapKey != nil {
+			txBuf = make([]byte, iPacketBuffMaxSize+wrapMaxOverhead)
+		}
 		for {
 			n, _, err := c2.ReadFrom(buf)
 			if err != nil {
@@ -518,13 +553,14 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 
 			var payload []byte
 			if s.wrapKey != nil {
-				payload, err = wrapPacket(s.wrapKey, buf[:n], s.ssrc)
-				if err != nil {
-					turnLog("[STREAM %d] WRAP TX error: %v", s.id, err)
+				wrapped, wrapErr := wrapPacketInto(txBuf, s.wrapKey, buf[:n], s.ssrc)
+				if wrapErr != nil {
+					turnLog("[STREAM %d] WRAP TX error: %v", s.id, wrapErr)
 					relayTxErrorCount.Add(1)
-					reportErr(fmt.Errorf("WRAP TX: %w", err))
+					reportErr(fmt.Errorf("WRAP TX: %w", wrapErr))
 					return
 				}
+				payload = txBuf[:wrapped]
 			} else {
 				payload = buf[:n]
 			}
@@ -546,6 +582,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		defer sCancel()
 		wire := make([]byte, iPacketBuffMaxSize)
 		plain := make([]byte, iPacketBuffMaxSize)
+		peerStr := peer.String()
 		for {
 			n, from, err := relayConn.ReadFrom(wire)
 			if err != nil {
@@ -554,7 +591,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 				reportErr(fmt.Errorf("relay RX: %w", err))
 				return
 			}
-			if from.String() == peer.String() {
+			if sameRelayPeer(from, peer, peerStr) {
 				var data []byte
 				if s.wrapKey != nil {
 					m, unwrapErr := unwrapPacket(s.wrapKey, wire[:n], plain)
@@ -614,7 +651,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	s.ready.Store(true)
 	s.okFunc()
 
-	activity := newStreamActivity(time.Now())
+	activity := newStreamActivity(time.Now(), s.kaPhase)
 
 	wg.Add(3)
 
@@ -763,7 +800,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	s.ready.Store(true)
 	s.okFunc()
 
-	activity := newStreamActivity(time.Now())
+	activity := newStreamActivity(time.Now(), s.kaPhase)
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -949,30 +986,36 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	}
 
 	// ── Apply StreamNum cap / expand ─────────────────────────────────────────
-	// StreamNum (n) constrains total streams.
-	//   • n < defaultTotal: reduce streamsPerCred so total matches n.
-	//   • n > defaultTotal: add extra groups by cycling links, so total = n.
-	// streamsPerCred must stay in sync because credential cache slots are keyed
-	// by streamID/streamsPerCred (credentials.go:getCacheID).
+	// StreamNum (n) is the total stream count. streamsPerCred is a group's
+	// capacity — the most streams one credential may carry — not its exact size.
+	//   • n < total: reduce streamsPerCred so total matches n.
+	//   • n > total: add groups by cycling links until they hold n streams, and
+	//     let the last group take the remainder rather than rounding the total
+	//     up to a multiple of streamsPerCred (n=12, streamsPerCred=9 gives 9 + 3,
+	//     not 9 + 9). A short trailing group needs no special handling
+	//     elsewhere: streamID/streamsPerCred — the credential cache key in
+	//     credentials.go:getCacheID — already maps streams 9-11 to slot 1.
+	// streamsPerCred must stay in sync with that division either way.
+	totalStreams := len(links) * streamsPerCred
 	if maxTotal := int(n); maxTotal > 0 {
-		defaultTotal := len(links) * streamsPerCred
-		if maxTotal < defaultTotal {
+		if maxTotal < totalStreams {
 			perGroup := maxTotal / len(links)
 			if perGroup < 1 {
 				perGroup = 1
 			}
 			streamsPerCred = perGroup
-		} else if maxTotal > defaultTotal {
+			totalStreams = len(links) * streamsPerCred
+		} else if maxTotal > totalStreams {
 			numGroups := (maxTotal + streamsPerCred - 1) / streamsPerCred
 			origLinks := links
 			links = make([]string, numGroups)
 			for i := range links {
 				links[i] = origLinks[i%len(origLinks)]
 			}
+			totalStreams = maxTotal
 		}
 	}
 
-	totalStreams := len(links) * streamsPerCred
 	turnLog("[PROXY] Starting: listen=%s StreamNum=%d streamsPerGroup=%d links=%d actualTotal=%d mode=%s peerType=%s watchdog=%ds",
 		listenAddr, int(n), streamsPerCred, len(links), totalStreams, mode, peerType, watchdogTimeout)
 	turnLog("[PROXY] Identities (%d): %v", len(links), links)
@@ -1069,6 +1112,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		TurnIP:            turnIp,
 		TurnPort:          turnPort,
 		StreamsPerGroup:   streamsPerCred,
+		TotalStreams:      totalStreams,
 		Cert:              &cert,
 		SessionID:         sessionID,
 		WatchdogTimeout:   watchdogTimeout,

@@ -249,12 +249,19 @@ func randPadLen() int {
 	return int(b[0]) % (wrapMaxPad + 1)
 }
 
-// wrapPacket encrypts payload for the outbound (uplink) direction using
-// clientCipher and the per-connection ssrc (written into the header and, for
-// ChaCha, folded into the nonce).
-func wrapPacket(key, payload []byte, ssrc uint32) ([]byte, error) {
+// wrapMaxOverhead is how much longer a wrapped packet can be than its payload:
+// the header plus the largest possible random pad plus the pad-length trailer.
+// Hot TX paths size their scratch buffer with it.
+const wrapMaxOverhead = wrapHdrLen + wrapMaxPad + wrapPadLen
+
+// wrapPacketInto encrypts payload for the outbound (uplink) direction into dst
+// and returns the number of bytes written. It is the allocation-free form of
+// wrapPacket for the per-packet TX paths, where the caller owns a scratch
+// buffer for the lifetime of its goroutine. dst must have room for
+// len(payload)+wrapMaxOverhead; dst and payload must not overlap.
+func wrapPacketInto(dst, key, payload []byte, ssrc uint32) (int, error) {
 	if len(key) != wrapKeyLen {
-		return nil, fmt.Errorf("wrap: key must be %d bytes", wrapKeyLen)
+		return 0, fmt.Errorf("wrap: key must be %d bytes", wrapKeyLen)
 	}
 	counter := (wrapCounter.Add(1) - 1) % wrapCounterMod
 
@@ -269,9 +276,13 @@ func wrapPacket(key, payload []byte, ssrc uint32) ([]byte, error) {
 		padLen = room
 	}
 	plainLen := len(payload) + padLen + wrapPadLen
-	// Single allocation: build header + plaintext contiguously in out, then
-	// encrypt the plaintext region in place.
-	out := make([]byte, wrapHdrLen+plainLen)
+	total := wrapHdrLen + plainLen
+	if len(dst) < total {
+		return 0, fmt.Errorf("wrap: dst buffer too small (%d < %d)", len(dst), total)
+	}
+	// Header + plaintext are built contiguously in dst, then the plaintext
+	// region is encrypted in place.
+	out := dst[:total]
 	putHeader(out[:wrapHdrLen], counter, plainLen, clientCipher, ssrc)
 	plaintext := out[wrapHdrLen:]
 	copy(plaintext, payload)
@@ -280,7 +291,19 @@ func wrapPacket(key, payload []byte, ssrc uint32) ([]byte, error) {
 	}
 	binary.BigEndian.PutUint16(plaintext[plainLen-wrapPadLen:], uint16(padLen))
 	xorKeystream(clientCipher, key, counter, ssrc, wrapTxDir, plaintext)
-	return out, nil
+	return total, nil
+}
+
+// wrapPacket is the allocating form of wrapPacketInto, kept for the cold paths
+// (session handshake, keepalive, cover traffic) where a per-goroutine scratch
+// buffer would not pay for itself.
+func wrapPacket(key, payload []byte, ssrc uint32) ([]byte, error) {
+	out := make([]byte, len(payload)+wrapMaxOverhead)
+	n, err := wrapPacketInto(out, key, payload, ssrc)
+	if err != nil {
+		return nil, err
+	}
+	return out[:n], nil
 }
 
 func unwrapPacket(key, wire, dst []byte) (int, error) {

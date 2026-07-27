@@ -33,7 +33,19 @@ type StreamCredentialsCache struct {
 }
 
 const (
-	credentialLifetime = 10 * time.Minute
+	// credentialLifetime is the fallback TTL used when the VK API reports no
+	// lifetime of its own — which is what it always does in practice
+	// (api_ttl=0s in every "Credentials cached until" log line), so this is the
+	// TTL. It is deliberately generous: guessing low is the expensive mistake.
+	// A stream that dies after more than one TTL forces a full four-step VK
+	// re-auth even though the credential is demonstrably still good (logs show
+	// cache slots living 46m and 3h between fetches), and every extra VK
+	// request is captcha exposure. Guessing high costs one Allocate that comes
+	// back "error 401: Unauthorized" — classifyCredError matches it,
+	// refreshGroupCreds force-expires the slot, and the worker's sub-second
+	// retry fetches a fresh credential. Bounded downside, so prefer the long
+	// TTL and let the error path drive the re-fetch.
+	credentialLifetime = 60 * time.Minute
 	cacheSafetyMargin  = 60 * time.Second
 	// credRefreshThrottle is the minimum gap between error-driven credential
 	// re-fetches for one cache slot. The first worker in a slot that hits an
