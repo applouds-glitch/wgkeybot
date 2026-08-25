@@ -5,7 +5,7 @@
 
 package main
 
-// #cgo LDFLAGS: -llog
+// #cgo android LDFLAGS: -llog
 // #include <android/log.h>
 // extern int wgProtectSocket(int fd);
 import "C"
@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,20 +25,49 @@ import (
 	"time"
 )
 
-// DnsCache stores cached IP addresses
+// DnsCache stores cached IP addresses.
+//
+// inflight collapses concurrent lookups of the same name into one. Credential
+// fetches run two at a time (vkSemaphore) over the same handful of VK hosts,
+// and on a dead uplink both used to walk the entire server list independently:
+// twice the queries to resolvers that were already timing out, for one answer.
 type DnsCache struct {
-	mu   sync.RWMutex
-	ips  map[string]string
+	mu       sync.RWMutex
+	ips      map[string]string
+	inflight map[string]*dnsLookup
+}
+
+// dnsLookup is one resolution in progress, shared by every caller that asked
+// for the same name while it was running.
+type dnsLookup struct {
+	done chan struct{}
+	ip   string
+	err  error
 }
 
 const (
-	dnsTimeout     = 2 * time.Second
-	dohTimeout     = 2 * time.Second
-	dotTimeout     = 2 * time.Second
-	yandexIP       = "77.88.8.8"
-	yandexDomain   = "common.dot.dns.yandex.net"
-	googleIP       = "8.8.8.8"
-	googleDomain   = "dns.google"
+	dnsTimeout   = 2 * time.Second
+	dohTimeout   = 2 * time.Second
+	dotTimeout   = 2 * time.Second
+	yandexIP     = "77.88.8.8"
+	yandexDomain = "common.dot.dns.yandex.net"
+	googleIP     = "8.8.8.8"
+	googleDomain = "dns.google"
+
+	// dnsHedgeDelay is how long one server keeps the query to itself before the
+	// next one joins in.
+	//
+	// Walking the list strictly in order cost up to len(dnsServers) × timeout —
+	// six servers × 2s = 12s of pure waiting whenever the uplink was simply
+	// gone, paid again by every concurrent lookup. Hedging leaves the healthy
+	// case exactly as it was (the first server answers in tens of milliseconds
+	// and nothing else is ever dialled) while bounding the bad case to about one
+	// timeout plus the stagger.
+	//
+	// Set well above a normal LAN resolver's answer (single-digit milliseconds)
+	// so a working server is never raced against for no reason, and well below
+	// dnsTimeout so a hung one does not hold the whole list up.
+	dnsHedgeDelay = 400 * time.Millisecond
 )
 
 // DNSServerType represents the type of DNS server
@@ -79,63 +109,168 @@ var (
 
 var (
 	hostCache = &DnsCache{
-		ips: make(map[string]string),
+		ips:      make(map[string]string),
+		inflight: make(map[string]*dnsLookup),
 	}
 )
 
-// Resolve resolves DNS name using cache and ordered server list
+// Resolve resolves DNS name using cache and ordered server list. Callers asking
+// for the same name at the same time share one lookup: the first becomes its
+// leader and the rest wait on its answer.
 func (c *DnsCache) Resolve(ctx context.Context, domain string) (string, error) {
-	// 1. Check cache
-	c.mu.RLock()
-	if cached, ok := c.ips[domain]; ok {
-		c.mu.RUnlock()
-		return cached, nil
+	for {
+		c.mu.Lock()
+		if cached, ok := c.ips[domain]; ok {
+			c.mu.Unlock()
+			return cached, nil
+		}
+		if call, ok := c.inflight[domain]; ok {
+			c.mu.Unlock()
+			select {
+			case <-call.done:
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+			if call.err == nil {
+				return call.ip, nil
+			}
+			// The leader may have failed only because ITS caller went away — a
+			// worker torn down while we are still very much alive. That says
+			// nothing about the name, so take the lookup over instead of
+			// inheriting a cancellation that was never ours.
+			if isContextErr(call.err) && ctx.Err() == nil {
+				continue
+			}
+			return "", call.err
+		}
+		call := &dnsLookup{done: make(chan struct{})}
+		if c.inflight == nil {
+			c.inflight = make(map[string]*dnsLookup)
+		}
+		c.inflight[domain] = call
+		c.mu.Unlock()
+
+		call.ip, call.err = resolveWithOrderedServers(ctx, domain)
+
+		// Only successes are cached; a failure must not pin a name to an error.
+		// The entry leaves inflight under the same lock that publishes the
+		// answer, so a caller arriving now reads the cache instead of waiting.
+		c.mu.Lock()
+		if call.err == nil {
+			c.ips[domain] = call.ip
+		}
+		delete(c.inflight, domain)
+		c.mu.Unlock()
+		close(call.done)
+
+		return call.ip, call.err
 	}
-	c.mu.RUnlock()
-
-	// 2. Resolve with ordered server list
-	ip, err := resolveWithOrderedServers(ctx, domain)
-	if err != nil {
-		return "", err
-	}
-
-	// 3. Save to cache
-	c.mu.Lock()
-	c.ips[domain] = ip
-	c.mu.Unlock()
-
-	return ip, nil
 }
 
-// resolveWithOrderedServers resolves DNS using ordered server list starting from last successful
+func isContextErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// resolveAnyFn is the seam tests replace to drive the hedged race without
+// touching the network.
+var resolveAnyFn = resolveAny
+
+type dnsRaceResult struct {
+	idx int
+	ip  string
+	err error
+}
+
+// resolveWithOrderedServers resolves domain against the server list, starting
+// with the last one that worked and hedging: each further server joins the race
+// after dnsHedgeDelay, or immediately once one of the running queries has
+// failed. The first answer wins and cancels the rest.
+//
+// Order still matters — the last successful server gets a head start measured
+// in hedge delays, so the common case is one query to one server — but a server
+// that has stopped answering no longer costs its full timeout before the next
+// one is even tried.
 func resolveWithOrderedServers(ctx context.Context, domain string) (string, error) {
+	// Snapshot both, so the whole race runs against one list and one resolver
+	// even if InitSystemDns swaps the slice — or a test restores the seam — while
+	// a straggler is still in flight.
+	servers, resolve := dnsServers, resolveAnyFn
+	if len(servers) == 0 {
+		return "", fmt.Errorf("no DNS servers configured for %s", domain)
+	}
+
 	lastSuccessfulMu.RLock()
 	startIndex := lastSuccessfulIndex
 	lastSuccessfulMu.RUnlock()
+	if startIndex < 0 || startIndex >= len(servers) {
+		startIndex = 0
+	}
 
-	// Try all servers in order starting from last successful
-	for i := 0; i < len(dnsServers); i++ {
+	// Cancelled on every exit path, which is what stops the stragglers the
+	// moment one server has answered.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make(chan dnsRaceResult, len(servers))
+	// Fires immediately: the first server starts without waiting a hedge.
+	hedge := time.NewTimer(0)
+	defer hedge.Stop()
+
+	var (
+		started  int
+		finished int
+		firstErr error
+	)
+	for finished < len(servers) {
+		// Once every server is running there is nothing left to start, and the
+		// nil channel takes the hedge out of the select.
+		var nextServer <-chan time.Time
+		if started < len(servers) {
+			nextServer = hedge.C
+		}
+
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		default:
+
+		case <-nextServer:
+			idx := (startIndex + started) % len(servers)
+			server := servers[idx]
+			started++
+			turnLog("[DNS] Trying server %d (%v, %s) for %s", idx, server.Type, server.IP, domain)
+			go func() {
+				ip, err := resolve(ctx, domain, server)
+				// Buffered for every server, so a straggler losing the race
+				// still delivers and exits instead of leaking.
+				results <- dnsRaceResult{idx: idx, ip: ip, err: err}
+			}()
+			if started < len(servers) {
+				hedge.Reset(dnsHedgeDelay)
+			}
+
+		case res := <-results:
+			finished++
+			if res.err == nil {
+				turnLog("[DNS] Success with server %d: %s -> %s", res.idx, domain, res.ip)
+				lastSuccessfulMu.Lock()
+				lastSuccessfulIndex = res.idx
+				lastSuccessfulMu.Unlock()
+				return res.ip, nil
+			}
+			turnLog("[DNS] Server %d failed: %v", res.idx, res.err)
+			if firstErr == nil {
+				firstErr = res.err
+			}
+			// A server that already said no is not worth waiting the stagger
+			// out for: bring the next one forward.
+			if started < len(servers) {
+				hedge.Stop()
+				hedge.Reset(0)
+			}
 		}
-		idx := (i + startIndex) % len(dnsServers)
-		server := dnsServers[idx]
-		turnLog("[DNS] Trying server %d (%v, %s) for %s", idx, server.Type, server.IP, domain)
-		ip, err := resolveAny(ctx, domain, server)
-		if err == nil {
-			turnLog("[DNS] Success with server %d: %s -> %s", idx, domain, ip)
-			// Update last successful index
-			lastSuccessfulMu.Lock()
-			lastSuccessfulIndex = idx
-			lastSuccessfulMu.Unlock()
-			return ip, nil
-		}
-		turnLog("[DNS] Server %d failed: %v", idx, err)
 	}
 
-	return "", fmt.Errorf("all DNS servers failed for %s", domain)
+	return "", fmt.Errorf("all DNS servers failed for %s: %w", domain, firstErr)
 }
 
 // resolveAny resolves DNS using the specified server
@@ -176,6 +311,16 @@ func resolveUDPWithServer(ctx context.Context, domain string, serverIP string) (
 		return "", fmt.Errorf("failed to dial UDP: %w", err)
 	}
 	defer conn.Close()
+
+	// The read below blocks on its deadline, not on ctx, so a query that lost
+	// the hedged race would otherwise sit on a protected fd for the rest of its
+	// timeout. Closing on cancellation makes it return at once. The goroutine
+	// always ends: this function's own deadline fires the ctx if nothing else
+	// does, and cancel() runs on return.
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
 
 	// Send query
 	conn.SetDeadline(time.Now().Add(dnsTimeout))
@@ -285,6 +430,14 @@ func resolveDoTWithServer(ctx context.Context, domain string, serverIP string, s
 		return "", fmt.Errorf("failed to connect to DoT server: %w", err)
 	}
 	defer tcpConn.Close()
+
+	// Same reason as the UDP path: the handshake and reads below run on
+	// deadlines, so a loser of the hedged race needs the socket pulled out from
+	// under it to stop early.
+	go func() {
+		<-ctx.Done()
+		tcpConn.Close()
+	}()
 
 	tlsConn := tls.Client(tcpConn, tlsConfig)
 	tlsConn.SetDeadline(time.Now().Add(dotTimeout))
@@ -413,9 +566,9 @@ func parseDNSResponse(response []byte, domain string) (string, error) {
 		}
 
 		qtype := binary.BigEndian.Uint16(response[offset : offset+2])
-		offset += 2      // TYPE
-		offset += 2      // CLASS
-		offset += 4      // TTL
+		offset += 2 // TYPE
+		offset += 2 // CLASS
+		offset += 4 // TTL
 		rdLength := binary.BigEndian.Uint16(response[offset : offset+2])
 		offset += 2
 

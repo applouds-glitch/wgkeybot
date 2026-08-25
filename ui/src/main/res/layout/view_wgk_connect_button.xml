@@ -2,62 +2,71 @@
 <layout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
+    <!-- Every diameter here is a dimen so the control can shrink on short
+         screens; the buckets live in values/dimens.xml (+ -h680dp / -h760dp) and
+         keep the ring proportions. The TV variant in layout-television keeps its
+         own literals — it is laid out beside the status column, not above it, so
+         it never competes for vertical space. -->
     <FrameLayout
-        android:layout_width="232dp"
-        android:layout_height="232dp">
+        android:layout_width="@dimen/wgk_connect_ring_outer"
+        android:layout_height="@dimen/wgk_connect_ring_outer">
 
         <!-- Alphas here are the resting set; renderConnectButton() raises them
              while the tunnel is coming up or connected. At rest the button carries
              its own outline, so a bright halo around it only adds noise. -->
         <View
             android:id="@+id/wgk_ring_outer"
-            android:layout_width="232dp"
-            android:layout_height="232dp"
+            android:layout_width="@dimen/wgk_connect_ring_outer"
+            android:layout_height="@dimen/wgk_connect_ring_outer"
             android:layout_gravity="center"
             android:alpha="0.10"
             android:background="@drawable/wgk_ring_outer" />
 
         <View
             android:id="@+id/wgk_ring_mid"
-            android:layout_width="204dp"
-            android:layout_height="204dp"
+            android:layout_width="@dimen/wgk_connect_ring_mid"
+            android:layout_height="@dimen/wgk_connect_ring_mid"
             android:layout_gravity="center"
             android:alpha="0.16"
             android:background="@drawable/wgk_ring_mid" />
 
         <View
             android:id="@+id/wgk_ring_inner"
-            android:layout_width="176dp"
-            android:layout_height="176dp"
+            android:layout_width="@dimen/wgk_connect_ring_inner"
+            android:layout_height="@dimen/wgk_connect_ring_inner"
             android:layout_gravity="center"
             android:alpha="0.24"
             android:background="@drawable/wgk_ring_inner" />
 
-        <!-- Busy arc during Connecting / Handshake. 178dp puts the arc centreline
-             exactly on the inner ring's stroke, so the sweep reads as that ring
-             animating rather than as a fourth circle; the transparent track lets
-             the static ring show through behind it. -->
+        <!-- Busy arc during Connecting / Handshake. Two dp wider than the inner
+             ring, which puts the arc centreline exactly on that ring's stroke, so
+             the sweep reads as that ring animating rather than as a fourth circle;
+             the transparent track lets the static ring show through behind it. -->
         <com.google.android.material.progressindicator.CircularProgressIndicator
             android:id="@+id/wgk_busy_arc"
-            android:layout_width="178dp"
-            android:layout_height="178dp"
+            android:layout_width="@dimen/wgk_connect_arc"
+            android:layout_height="@dimen/wgk_connect_arc"
             android:layout_gravity="center"
             android:indeterminate="true"
             android:visibility="gone"
             app:indicatorColor="@color/wgk_primary"
-            app:indicatorSize="178dp"
+            app:indicatorSize="@dimen/wgk_connect_arc"
             app:trackColor="@android:color/transparent"
             app:trackThickness="3dp"
             app:indeterminateAnimationType="disjoint" />
 
-        <!-- Connect / disconnect button -->
+        <!-- Connect / disconnect button. The size and icon size override the
+             style's defaults, which the TV variant still relies on. -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/wgk_connect_btn"
             style="@style/Widget.WGKeyBot.ConnectButton"
+            android:layout_width="@dimen/wgk_connect_btn"
+            android:layout_height="@dimen/wgk_connect_btn"
             android:layout_gravity="center"
             android:contentDescription="@string/wgk_headline_disconnected"
             app:backgroundTint="@color/wgk_connect_btn_background_tint"
             app:icon="@drawable/ic_power"
+            app:iconSize="@dimen/wgk_connect_icon"
             app:iconTint="@color/wgk_connect_btn_icon_tint" />
     </FrameLayout>
 </layout>

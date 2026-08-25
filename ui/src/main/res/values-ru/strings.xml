@@ -293,6 +293,8 @@
     <string name="vpn_alert_channel_name">Уведомления VPN</string>
     <string name="tunnel_connection_lost_title">VPN отключён</string>
     <string name="tunnel_connection_lost_text">Соединение потеряно, восстановить не удалось.</string>
+    <string name="turn_fatal_text">Не удалось получить данные для подключения: капча не решается или звонок больше недоступен. Попробуйте подключиться позже.</string>
+    <string name="turn_restart_failed_text">Не удалось восстановить подключение после смены сети. Попробуйте подключиться заново.</string>
 
     <!-- Captcha -->
     <string name="captcha_error">Не удалось решить капчу. Попробуйте снова.</string>
@@ -357,9 +359,9 @@
     <string name="wgk_paste_cd">Вставить из буфера</string>
     <string name="wgk_pasted_from_clipboard">Токен вставлен из буфера обмена</string>
     <string name="wgk_token_error_empty">Введите токен</string>
+    <string name="wgk_token_error_format">Это не похоже на токен подключения</string>
     <string name="wgk_clipboard_no_token">В буфере обмена нет токена</string>
     <string name="wgk_menu_cd">Меню</string>
-    <string name="wgk_theme_toggle_cd">Сменить тему</string>
     <string name="wgk_profile_name">Конфигурация</string>
     <string name="wgk_profile_loaded_at">Загружено в %1$s</string>
     <string name="wgk_profile_loaded_on">Загружено %1$s</string>
@@ -402,6 +404,19 @@
     <string name="wgk_status_sub_connected_time">В сети %1$s</string>
     <string name="wgk_status_sub_reconnecting">Сервер не отвечает — повторная попытка</string>
     <string name="wgk_status_sub_failed">Сервер недоступен — проверьте сеть</string>
+
+    <!-- Terminal failures the app can name. Each has to fit the status card's
+         single subtitle line, so they stay short and end in the one action that
+         helps. -->
+    <string name="wgk_status_sub_failed_call_gone">Ссылка на звонок мертва — обновите конфиг</string>
+    <string name="wgk_status_sub_failed_call_auth">Звонок требует входа — обновите конфиг</string>
+    <string name="wgk_status_sub_failed_captcha">Капча не пройдена — попробуйте позже</string>
+    <string name="wgk_status_sub_failed_creds">Нет данных для подключения — позже</string>
+    <string name="wgk_status_sub_failed_restart">Сеть сменилась — подключитесь заново</string>
+
+    <!-- Chip under the connect button while internet sharing is up. -->
+    <string name="wgk_tether_chip">Раздача · %1$d</string>
+    <string name="wgk_tether_chip_cd">Раздача интернета включена, устройств: %1$d. Открывает настройки раздачи.</string>
     <string name="wgk_stage_tunnel">Запуск</string>
     <string name="wgk_stage_handshake">Соединение</string>
     <string name="wgk_stage_routing">Готово</string>
@@ -420,6 +435,8 @@
     <string name="wgk_connection_mode_reserve_value">Резервный</string>
     <string name="wgk_connection_mode_standard_option">Основной — быстрее, рекомендуется</string>
     <string name="wgk_connection_mode_reserve_option">Резервный — медленнее, если основной не работает</string>
+    <string name="wgk_connection_mode_standard_desc">Быстрее, рекомендуется</string>
+    <string name="wgk_connection_mode_reserve_desc">Медленнее — включите, если основной не работает</string>
     <string name="wgk_connect_cd_connect">Подключить VPN</string>
     <string name="wgk_connect_cd_disconnect">Отключить VPN</string>
     <string name="wgk_connect_cd_cancel">Отменить подключение</string>
@@ -458,4 +475,47 @@
     <string name="wgk_upgrade_required_message">Версия приложения устарела и больше не поддерживается. Необходимо обновиться.</string>
     <string name="wgk_upgrade_required_action">Скачать</string>
     <string name="wgk_tv_kb_paste">Вставить</string>
+    <string name="wgk_tv_kb_case">Регистр букв</string>
+
+    <!-- Tethering / Internet sharing -->
+    <string name="wgk_settings_title">Настройки</string>
+    <string name="wgk_settings_section_connection">Подключение</string>
+    <string name="wgk_settings_section_appearance">Оформление</string>
+    <string name="wgk_theme_dark_label">Тёмная тема</string>
+    <string name="wgk_tether_title">Раздача интернета</string>
+    <string name="wgk_tether_switch_label">Раздавать через туннель</string>
+    <string name="wgk_tether_off_value">Выкл</string>
+    <string name="wgk_tether_starting_value">Запуск…</string>
+    <string name="wgk_tether_details_title">Данные сети и QR-код</string>
+    <string name="wgk_tether_needs_tunnel">Сначала подключитесь — раздача работает только через туннель.</string>
+    <string name="wgk_tether_ssid_label">Сеть</string>
+    <string name="wgk_tether_pass_label">Пароль</string>
+    <string name="wgk_tether_proxy_label">Прокси</string>
+    <string name="wgk_tether_pac_label">Автонастройка</string>
+    <string name="wgk_tether_copy_cd">Копировать</string>
+    <string name="wgk_tether_copied">Скопировано</string>
+    <string name="wgk_tether_qr_cd">QR-код для подключения к сети</string>
+    <string name="wgk_tether_qr_hint">Наведите камеру другого устройства на код, чтобы подключиться к сети.</string>
+    <string name="wgk_tether_counters">Устройств: %1$d · соединений: %2$d · отдано %3$s · принято %4$s</string>
+    <string name="wgk_tether_notification_channel">Раздача интернета</string>
+    <string name="wgk_tether_stop_action">Остановить</string>
+    <string name="wgk_tether_proxy_required">Пропишите прокси на клиенте. Без него у устройства не будет интернета вовсе — именно это и гарантирует, что мимо туннеля ничего не уйдёт.</string>
+    <string name="wgk_tether_howto">Android и iOS: настройки сети Wi-Fi → Прокси → Вручную (или Авто с адресом автонастройки).\nWindows и macOS: системные настройки прокси, HTTP и HTTPS.\nБраузеры и терминалы принимают этот же адрес как SOCKS5-прокси.\nИгры и Telegram обычно игнорируют системный прокси — впишите этот же адрес как SOCKS5 в настройках самого приложения, иначе они останутся без сети.</string>
+    <string name="wgk_tether_error_tunnel_down">Туннель отключился, раздача остановлена.</string>
+    <string name="wgk_tether_error_location">Включите геолокацию в настройках системы: без неё Android не поднимает точку доступа, даже когда разрешение выдано.</string>
+    <string name="wgk_tether_error_permission">Для раздачи нужно разрешение на управление устройствами Wi-Fi поблизости.</string>
+    <string name="wgk_tether_error_disallowed">Устройство не разрешает раздачу (запрет оператора или политики).</string>
+    <string name="wgk_tether_error_ap">Не удалось поднять точку доступа. Выключите системную точку доступа и попробуйте снова.</string>
+    <string name="wgk_tether_error_bind">Не удалось открыть порт прокси.</string>
+    <string name="wgk_tether_error_native">Не удалось запустить раздачу.</string>
+    <string name="wgk_tether_auto_off_label">Выключать без активности</string>
+    <string name="wgk_tether_auto_off_desc">Гасит раздачу через 30 минут, если на ней нет устройств</string>
+    <string name="wgk_tether_auto_off_notice">Раздача выключена</string>
+    <string name="wgk_tether_error_auto_off">30 минут раздачей никто не пользовался, поэтому она выключилась сама.</string>
+    <plurals name="wgk_tether_clients">
+        <item quantity="one">%d устройство</item>
+        <item quantity="few">%d устройства</item>
+        <item quantity="many">%d устройств</item>
+        <item quantity="other">%d устройства</item>
+    </plurals>
 </resources>

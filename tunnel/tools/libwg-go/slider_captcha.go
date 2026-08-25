@@ -32,14 +32,18 @@ const (
 )
 
 type captchaNotRobotSession struct {
-	ctx          context.Context
-	sessionToken string
-	hash         string
-	debugInfo    string
-	streamID     int
-	client       tlsclient.HttpClient
-	profile      Profile
-	browserFp    string
+	ctx             context.Context
+	sessionToken    string
+	endpoints       captchaEndpoints
+	hash            string
+	debugInfo       string
+	streamID        int
+	client          tlsclient.HttpClient
+	profile         Profile
+	browserFp       string
+	adFp            string
+	viewport        captchaViewport
+	componentDoneAt time.Time
 }
 
 type captchaSettingsResponse struct {
@@ -75,40 +79,54 @@ type captchaBootstrap struct {
 	Difficulty int
 	Settings   *captchaSettingsResponse
 	ScriptURL  string
+	// PowV2 marks the current page format, where the captcha page embeds an
+	// obfuscated inline PoW solver that receives the challenge as IIFE arguments
+	// and expects the check's hash param to be a "v2."-prefixed payload instead
+	// of the bare hex digest.
+	PowV2 bool
 }
 
 func newCaptchaNotRobotSession(
 	ctx context.Context,
 	sessionToken string,
+	endpoints captchaEndpoints,
 	hash string,
 	debugInfo string,
 	streamID int,
 	client tlsclient.HttpClient,
 	profile Profile,
 ) *captchaNotRobotSession {
+	// One viewport, one browser_fp and one adFp for the whole session — the
+	// old code called randomViewport() per request, so the device JSON could
+	// contradict the browser_fp derived from a different viewport.
+	vp := randomViewport()
+	browserFp := generateBrowserFp(profile, vp)
 	return &captchaNotRobotSession{
 		ctx:          ctx,
 		sessionToken: sessionToken,
+		endpoints:    endpoints,
 		hash:         hash,
 		debugInfo:    debugInfo,
 		streamID:     streamID,
 		client:       client,
 		profile:      profile,
-		browserFp:    generateBrowserFp(profile, randomViewport()),
+		browserFp:    browserFp,
+		adFp:         captchaAdFpFromBrowserFp(browserFp),
+		viewport:     vp,
 	}
 }
 
 func (s *captchaNotRobotSession) baseValues() neturl.Values {
 	values := neturl.Values{}
 	values.Set("session_token", s.sessionToken)
-	values.Set("domain", "vk.ru")
-	values.Set("adFp", "")
+	values.Set("domain", s.endpoints.Domain)
+	values.Set("adFp", s.adFp)
 	values.Set("access_token", "")
 	return values
 }
 
 func (s *captchaNotRobotSession) request(method string, values neturl.Values) (map[string]interface{}, error) {
-	reqURL := "https://api.vk.ru/method/" + method + "?v=" + captchaNotRobotAPIVersion
+	reqURL := s.endpoints.methodURL(method)
 
 	req, err := fhttp.NewRequestWithContext(s.ctx, "POST", reqURL, strings.NewReader(encodeCaptchaForm(method, values)))
 	if err != nil {
@@ -117,14 +135,14 @@ func (s *captchaNotRobotSession) request(method string, values neturl.Values) (m
 	applyCaptchaBrowserProfileFhttp(req, s.profile)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Origin", "https://id.vk.ru")
-	req.Header.Set("Referer", "https://id.vk.ru/")
+	req.Header.Set("Origin", s.endpoints.origin())
+	req.Header.Set("Referer", s.endpoints.referer())
 	req.Header.Set("Sec-Fetch-Site", "same-site")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Priority", "u=1, i")
-	req.Header[fhttp.HeaderOrderKey] = captchaHeaderOrder
-	req.Header[fhttp.PHeaderOrderKey] = captchaPHeaderOrder
+	req.Header[fhttp.HeaderOrderKey] = vkXHRHeaderOrder
+	req.Header[fhttp.PHeaderOrderKey] = vkPHeaderOrder
 
 	httpResp, err := s.client.Do(req)
 	if err != nil {
@@ -157,12 +175,14 @@ func (s *captchaNotRobotSession) requestSettings() (*captchaSettingsResponse, er
 func (s *captchaNotRobotSession) requestComponentDone() error {
 	values := s.baseValues()
 	values.Set("browser_fp", s.browserFp)
-	values.Set("device", buildCaptchaDeviceJSON(s.profile, randomViewport()))
+	values.Set("device", buildCaptchaDeviceJSON(s.profile, s.viewport))
 
 	resp, err := s.request("captchaNotRobot.componentDone", values)
 	if err != nil {
 		return fmt.Errorf("componentDone failed: %w", err)
 	}
+
+	s.componentDoneAt = time.Now()
 
 	respObj, ok := resp["response"].(map[string]interface{})
 	if ok {
@@ -213,7 +233,13 @@ func (s *captchaNotRobotSession) requestSliderCheck(activeSteps []int, candidate
 func (s *captchaNotRobotSession) requestCheck(cursor string, answer string) (*captchaCheckResult, error) {
 	// The WebView bridge advertised sensors but sent empty arrays in both live
 	// captures. Fabricated sensor noise was a stronger bot signal than absence.
-	connRtt, connDownlink := generateConnectionMetrics()
+	// Network samples: one per 200ms sensors_delay tick since componentDone,
+	// so the count stays honest for however long the slider stage took.
+	sampleCount := 1
+	if !s.componentDoneAt.IsZero() {
+		sampleCount = int(time.Since(s.componentDoneAt).Milliseconds() / 200)
+	}
+	connRtt, connDownlink := generateNetworkSamples(sampleCount)
 	values := s.baseValues()
 	values.Set("accelerometer", "[]")
 	values.Set("gyroscope", "[]")
@@ -250,8 +276,9 @@ func callCaptchaNotRobotWithSliderPOC(
 	client tlsclient.HttpClient,
 	profile Profile,
 	initialSettings *captchaSettingsResponse,
+	endpoints captchaEndpoints,
 ) (string, error) {
-	session := newCaptchaNotRobotSession(ctx, sessionToken, hash, debugInfo, streamID, client, profile)
+	session := newCaptchaNotRobotSession(ctx, sessionToken, endpoints, hash, debugInfo, streamID, client, profile)
 
 	turnLog("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
 	settingsResp, err := session.requestSettings()
@@ -267,7 +294,10 @@ func callCaptchaNotRobotWithSliderPOC(
 		return "", err
 	}
 
-	time.Sleep(time.Duration(500+mathrand.Intn(300)) * time.Millisecond)
+	// The browser keeps sampling sensors/network every 200ms between
+	// componentDone and check; the window must be long enough to look like a
+	// page settling before the checkbox click (verified in the probe).
+	time.Sleep(time.Duration(5500+mathrand.Intn(1500)) * time.Millisecond)
 
 	sliderSettings, hasSlider := settingsResp.SettingsByType[sliderCaptchaType]
 	turnLog("[STREAM %d] [Captcha] Settings: show_type=%q available_types=%s has_slider=%t",
@@ -379,22 +409,59 @@ func parseCaptchaSettingsResponse(resp map[string]interface{}) (*captchaSettings
 	return settings, nil
 }
 
+var (
+	// Legacy page format: the challenge was inlined as `const powInput = "..."`.
+	reLegacyPowInput = regexp.MustCompile(`const\s+powInput\s*=\s*"([^"]+)"`)
+	// Current page format: the challenge is passed to an obfuscated inline PoW
+	// solver as IIFE arguments at the very end of the script:
+	// }("71nXj0guqjgqJj9H", 2, "pow_timeout");
+	reInlineScript = regexp.MustCompile(`(?s)<script[^>]*>(.*?)</script>`)
+	rePowV2Args    = regexp.MustCompile(`\}\s*\(\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"[^"]*"\s*\){1,2}\s*;?\s*$`)
+)
+
 func parseCaptchaBootstrapHTML(html string) (*captchaBootstrap, error) {
-	powInputRe := regexp.MustCompile(`const\s+powInput\s*=\s*"([^"]+)"`)
-	powInputMatch := powInputRe.FindStringSubmatch(html)
-	if len(powInputMatch) < 2 {
+	bootstrap := &captchaBootstrap{Difficulty: 2}
+
+	// The v2 solver is the inline script that writes window.captchaPowResult.
+	for _, scriptMatch := range reInlineScript.FindAllStringSubmatch(html, -1) {
+		script := scriptMatch[1]
+		if !strings.Contains(script, "captchaPowResult") {
+			continue
+		}
+		if args := rePowV2Args.FindStringSubmatch(script); len(args) >= 3 {
+			bootstrap.PowInput = args[1]
+			bootstrap.PowV2 = true
+			if parsed, err := strconv.Atoi(args[2]); err == nil && parsed > 0 {
+				bootstrap.Difficulty = parsed
+			}
+		}
+		break
+	}
+
+	// Legacy format fallback: only pages without the v2 solver carry powInput
+	// as a plain const.
+	if !bootstrap.PowV2 {
+		if match := reLegacyPowInput.FindStringSubmatch(html); len(match) >= 2 {
+			bootstrap.PowInput = match[1]
+		}
+	}
+
+	if bootstrap.PowInput == "" {
 		return nil, fmt.Errorf("powInput not found in captcha HTML")
 	}
 
-	difficulty := 2
-	for _, expr := range []*regexp.Regexp{
-		regexp.MustCompile(`startsWith\('0'\.repeat\((\d+)\)\)`),
-		regexp.MustCompile(`const\s+difficulty\s*=\s*(\d+)`),
-	} {
-		if match := expr.FindStringSubmatch(html); len(match) >= 2 {
-			if parsed, err := strconv.Atoi(match[1]); err == nil {
-				difficulty = parsed
-				break
+	// Difficulty expressions only exist on legacy pages; the v2 difficulty comes
+	// from the IIFE arguments above.
+	if !bootstrap.PowV2 {
+		for _, expr := range []*regexp.Regexp{
+			regexp.MustCompile(`startsWith\('0'\.repeat\((\d+)\)\)`),
+			regexp.MustCompile(`const\s+difficulty\s*=\s*(\d+)`),
+		} {
+			if match := expr.FindStringSubmatch(html); len(match) >= 2 {
+				if parsed, err := strconv.Atoi(match[1]); err == nil {
+					bootstrap.Difficulty = parsed
+					break
+				}
 			}
 		}
 	}
@@ -403,18 +470,13 @@ func parseCaptchaBootstrapHTML(html string) (*captchaBootstrap, error) {
 	if err != nil {
 		return nil, err
 	}
+	bootstrap.Settings = settings
 
-	var scriptURL string
 	if m := reCaptchaScriptSrc.FindStringSubmatch(html); len(m) >= 2 {
-		scriptURL = m[1]
+		bootstrap.ScriptURL = m[1]
 	}
 
-	return &captchaBootstrap{
-		PowInput:   powInputMatch[1],
-		Difficulty: difficulty,
-		Settings:   settings,
-		ScriptURL:  scriptURL,
-	}, nil
+	return bootstrap, nil
 }
 
 func parseCaptchaSettingsFromHTML(html string) (*captchaSettingsResponse, error) {

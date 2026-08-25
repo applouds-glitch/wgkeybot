@@ -11,8 +11,8 @@ import (
 	"sync"
 )
 
-// Additive trust anchors for the VK/OK credential path (see
-// info/VK_TLS_TRUST_ANCHORS.md). Mirrors what the VK app does in its own
+// Additive trust anchors for the VK/OK credential path.
+// Mirrors what the VK app does in its own
 // KeyStore: it ADDS its trust anchors on top of the system CAs rather than
 // replacing them. We bundle the same set VK carries — the Минцифры ("Russian
 // Trusted") chain plus VK's self-signed CA — so TLS to api.vk.me / api.vk.com /

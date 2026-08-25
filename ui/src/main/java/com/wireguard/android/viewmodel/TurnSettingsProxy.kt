@@ -49,7 +49,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         }
 
     @get:Bindable
-    var useUdp: Boolean = false
+    var useUdp: Boolean = true
         set(value) {
             field = value
             notifyPropertyChanged(BR.useUdp)

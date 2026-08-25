@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Copyright © 2026.
+  ~ SPDX-License-Identifier: Apache-2.0
+  -->
+<resources>
+    <!-- Wide viewport: the column is already capped at wgk_settings_content_max,
+         so the extra room goes into breathing space around it rather than into
+         line length. -->
+    <dimen name="wgk_settings_gutter">24dp</dimen>
+    <dimen name="wgk_settings_section_gap">24dp</dimen>
+</resources>

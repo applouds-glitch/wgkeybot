@@ -19,5 +19,7 @@ gradlew.bat
 maint/
 CLAUDE.md
 .claude/
+/.codegraph/
 info/TURN_INTEGRATION_DETAILS.md
 info/VK_TLS_TRUST_ANCHORS.md
+docs/superpowers/

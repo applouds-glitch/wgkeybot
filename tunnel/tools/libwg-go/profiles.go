@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
+	"regexp"
+	"strconv"
 )
 
 type Profile struct {
@@ -96,4 +99,79 @@ var profile = []Profile{
 // getRandomProfile returns a paired User-Agent and Client Hints profile.
 func getRandomProfile() Profile {
 	return profile[rand.Intn(len(profile))]
+}
+
+// vkFallbackChromeMajor is the Chrome major a VK session claims when the
+// Android layer has no persona yet (non-Android builds, or a captcha firing
+// before the device-profile provider is registered). It is a major the TLS
+// fork ships a spec for, so the fallback identity is as internally consistent
+// as a persona-driven one.
+const vkFallbackChromeMajor = 146
+
+var reChromeMajorInUA = regexp.MustCompile(`Chrome/(\d+)\.`)
+
+// chromeMajorFromUA extracts the Chrome major version out of a User-Agent, or
+// 0 when the string carries none.
+func chromeMajorFromUA(ua string) int {
+	match := reChromeMajorInUA.FindStringSubmatch(ua)
+	if len(match) < 2 {
+		return 0
+	}
+	major, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0
+	}
+	return major
+}
+
+// vkSessionIdentity returns the browser identity every phase of one VK session
+// presents, together with the Chrome major it claims. The major is what selects
+// the ClientHello (vkChromeClientProfile), so both come from here and can never
+// drift apart: a UA saying one version over a JA3 saying another is exactly the
+// contradiction the bot detector is looking for.
+//
+// The trigger phase used to hardcode its own Android UA while the captcha phase
+// swapped in the persona's, so one session presented two identities to the same
+// detector. The persona wins whenever the Android layer has one, and its UA and
+// the client hints are taken together — a persona UA under the fallback's hints
+// would just relocate the contradiction.
+func vkSessionIdentity() (Profile, int) {
+	p := Profile{
+		UserAgent: fmt.Sprintf(
+			"Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%d.0.0.0 Mobile Safari/537.36",
+			vkFallbackChromeMajor),
+		SecChUa: fmt.Sprintf(
+			`"Not(A:Brand";v="99", "Google Chrome";v="%d", "Chromium";v="%d"`,
+			vkFallbackChromeMajor, vkFallbackChromeMajor),
+		SecChUaMobile:   "?1",
+		SecChUaPlatform: `"Android"`,
+		Platform:        "Linux armv8l",
+		AcceptLanguage:  "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+	}
+
+	m, ok := androidCaptchaProfile()
+	if !ok {
+		return p, vkFallbackChromeMajor
+	}
+	// The major moves only together with the UA that states it. A persona UA we
+	// cannot parse leaves the whole fallback identity in place rather than
+	// pairing the device's major with the fallback's UA string.
+	major := chromeMajorFromUA(m.UserAgent)
+	if major <= 0 {
+		return p, vkFallbackChromeMajor
+	}
+	p.UserAgent = m.UserAgent
+	if m.SecChUA != "" {
+		p.SecChUa = m.SecChUA
+	} else {
+		p.SecChUa = fmt.Sprintf(
+			`"Not;A=Brand";v="8", "Chromium";v="%d", "Android WebView";v="%d"`, major, major)
+	}
+	if m.SecChUAMobile != "" {
+		p.SecChUaMobile = m.SecChUAMobile
+	}
+	if m.SecChUAPlatform != "" {
+		p.SecChUaPlatform = m.SecChUAPlatform
+	}
+	return p, major
 }

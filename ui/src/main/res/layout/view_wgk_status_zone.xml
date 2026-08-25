@@ -96,17 +96,31 @@
 
                     <!-- Exactly one line, always. Reserving two (as iOS does) cost
                          16dp in every state; the subtitles are written to fit one
-                         instead. -->
+                         instead.
+
+                         Written to fit, but not guaranteed to: the longest Russian
+                         subtitles ("Сервер не отвечает — повторная попытка", and the
+                         named failure reasons) run out of card on a compact screen
+                         once the system font is turned up, and ellipsis is a poor
+                         way to deliver the one sentence that says what went wrong.
+                         So it shrinks a step or two instead — same trick the headline
+                         above uses — floored by a minHeight in sp so the card's
+                         height does not follow the text size down. -->
                     <TextView
                         android:id="@+id/wgk_status_sub"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="3dp"
                         android:ellipsize="end"
+                        android:gravity="center_vertical"
                         android:lines="1"
+                        android:minHeight="@dimen/wgk_status_sub_min_height"
                         android:text="@string/wgk_status_sub_disconnected"
                         android:textAppearance="?attr/textAppearanceBodySmall"
-                        android:textColor="@color/wgk_on_surface_variant" />
+                        android:textColor="@color/wgk_on_surface_variant"
+                        app:autoSizeMaxTextSize="12sp"
+                        app:autoSizeMinTextSize="10sp"
+                        app:autoSizeTextType="uniform" />
                 </LinearLayout>
 
                 <!-- wrap_content against the weighted column on the left, so a long

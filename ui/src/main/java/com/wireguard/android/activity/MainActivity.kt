@@ -14,6 +14,8 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.text.SpannableString
 import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import android.text.style.TypefaceSpan
 import android.view.Menu
 import android.view.MenuItem
@@ -22,18 +24,21 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.ActionBar
-import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.DrawableCompat
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
 import androidx.fragment.app.commit
 import androidx.lifecycle.lifecycleScope
+import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
 import com.wireguard.android.fragment.TunnelDetailFragment
 import com.wireguard.android.fragment.TunnelListFragment
 import com.wireguard.android.model.ObservableTunnel
+import com.wireguard.android.turn.ConnectionMode
 import com.wireguard.android.util.ApiClient
 import com.wireguard.android.util.AuthStore
+import com.wireguard.android.util.TokenFormat
 import com.wireguard.config.Config
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -64,8 +69,24 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         setContentView(R.layout.main_activity)
         actionBar = supportActionBar
         supportActionBar?.apply {
-            title = SpannableString("WGKEYBOT").also {
-                it.setSpan(TypefaceSpan("sans-serif-condensed"), 0, it.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+            // The build stamp rides on the title line instead of the subtitle it
+            // used to have: a subtitle makes the bar two lines tall, and the
+            // connect screen underneath is already height-bucketed
+            // (values-h680dp / -h760dp) to survive short viewports. Monospace at
+            // 0.55 of the title size and tinted a hair off the bar: a build stamp
+            // riding on the wordmark, not a second piece of type. The separating
+            // space sits inside the shrunk run, so the version stays tight
+            // against the wordmark rather than a title-sized gap away.
+            val wordmark = "WGKEYBOT"
+            val stamp = " v${BuildConfig.VERSION_NAME}"
+            title = SpannableString(wordmark + stamp).also {
+                it.setSpan(TypefaceSpan("sans-serif-condensed"), 0, wordmark.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                it.setSpan(TypefaceSpan("monospace"), wordmark.length, it.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                it.setSpan(RelativeSizeSpan(0.55f), wordmark.length, it.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                it.setSpan(
+                    ForegroundColorSpan(ContextCompat.getColor(this@MainActivity, R.color.wgk_version_stamp)),
+                    wordmark.length, it.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
             }
         }
         supportFragmentManager.addOnBackStackChangedListener(this)
@@ -77,13 +98,22 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.main_activity, menu)
-        val item = menu.findItem(R.id.menu_theme_toggle) ?: return true
-        val iconRes = if (isEffectivelyDark()) R.drawable.ic_theme_dark else R.drawable.ic_theme_light
-        val drawable = androidx.core.content.ContextCompat.getDrawable(this, iconRes)?.mutate() ?: return true
-        val tintColor = if (isEffectivelyDark()) android.graphics.Color.WHITE else android.graphics.Color.BLACK
-        DrawableCompat.setTint(DrawableCompat.wrap(drawable), tintColor)
-        item.icon = drawable
+        val barColor = if (isEffectivelyDark()) android.graphics.Color.WHITE else android.graphics.Color.BLACK
+
+        // The reserve transport used to tint a value on the connect screen, and
+        // that signal has to survive the move into the settings screen: a
+        // non-default transport shows as a warning-coloured gear.
+        val settingsColor =
+            if (ConnectionMode.isReserve(this)) ContextCompat.getColor(this, R.color.wgk_warning)
+            else barColor
+        menu.findItem(R.id.menu_app_settings)?.setTintedIcon(R.drawable.ic_settings, settingsColor)
         return true
+    }
+
+    private fun MenuItem.setTintedIcon(iconRes: Int, tintColor: Int) {
+        val drawable = ContextCompat.getDrawable(this@MainActivity, iconRes)?.mutate() ?: return
+        DrawableCompat.setTint(DrawableCompat.wrap(drawable), tintColor)
+        icon = drawable
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
@@ -92,20 +122,22 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
                 supportFragmentManager.popBackStack()
                 true
             }
-            R.id.menu_theme_toggle -> {
-                val auth = AuthStore.getInstance(this)
-                val next = if (isEffectivelyDark()) "light" else "dark"
-                auth.setThemeMode(next)
-                AppCompatDelegate.setDefaultNightMode(
-                    if (next == "dark") AppCompatDelegate.MODE_NIGHT_YES
-                    else AppCompatDelegate.MODE_NIGHT_NO
-                )
+            R.id.menu_app_settings -> {
+                startActivity(Intent(this, AppSettingsActivity::class.java))
                 true
             }
             else -> super.onOptionsItemSelected(item)
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // The settings screen can flip the transport, and the gear carries that
+        // state — rebuild the bar rather than let a stale tint stand.
+        invalidateOptionsMenu()
+    }
+
+    /** Drives the tint of the bar's icons; the theme itself is set from the settings screen. */
     private fun isEffectivelyDark(): Boolean {
         return when (AuthStore.getInstance(this).getThemeMode()) {
             "dark"  -> true
@@ -115,17 +147,27 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         }
     }
 
+    /**
+     * Asks to be exempt from battery optimisation — once, ever. The tunnel wants
+     * the exemption (a doze-killed proxy is a dead VPN), but the request is a
+     * system modal that lands on top of the first frame, and asking on every cold
+     * start until the user gives in is not how to earn it. A refusal is recorded
+     * just like a grant; the exemption can still be given later from the system
+     * settings.
+     */
     private fun checkBatteryOptimization() {
+        val auth = AuthStore.getInstance(this)
+        if (auth.isBatteryPromptShown()) return
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-            try {
-                batteryOptLauncher.launch(
-                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                        data = Uri.parse("package:$packageName")
-                    }
-                )
-            } catch (_: Exception) { }
-        }
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+        try {
+            batteryOptLauncher.launch(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+            )
+            auth.setBatteryPromptShown()
+        } catch (_: Exception) { }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -137,8 +179,12 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         val uri = intent.data ?: return
         if (uri.scheme != "wgkeybot" || uri.host != "config") return
 
-        val oneTimeToken = uri.getQueryParameter("token")?.takeIf { it.isNotBlank() } ?: run {
+        val rawToken = uri.getQueryParameter("token")?.takeIf { it.isNotBlank() } ?: run {
             Toast.makeText(this, getString(R.string.wgk_deeplink_missing_token), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val oneTimeToken = TokenFormat.extract(rawToken) ?: run {
+            Toast.makeText(this, getString(R.string.wgk_token_error_format), Toast.LENGTH_SHORT).show()
             return
         }
         // Consume the intent so a configuration change (rotation) doesn't replay

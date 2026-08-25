@@ -313,6 +313,44 @@
     <string name="captcha_error">Failed to solve captcha. Please try again.</string>
     <string name="captcha_instructions">Please complete the verification to continue</string>
     <string name="excluded_applications">Split tunneling</string>
+    <string name="wgk_settings_title">Settings</string>
+    <string name="wgk_settings_section_connection">Connection</string>
+    <string name="wgk_settings_section_appearance">Appearance</string>
+    <string name="wgk_theme_dark_label">Dark theme</string>
+    <string name="wgk_tether_title">Internet sharing</string>
+    <string name="wgk_tether_switch_label">Share through the tunnel</string>
+    <string name="wgk_tether_off_value">Off</string>
+    <string name="wgk_tether_starting_value">Starting…</string>
+    <string name="wgk_tether_details_title">Network details and QR code</string>
+    <string name="wgk_tether_needs_tunnel">Connect first — sharing works only through the tunnel.</string>
+    <string name="wgk_tether_ssid_label">Network</string>
+    <string name="wgk_tether_pass_label">Password</string>
+    <string name="wgk_tether_proxy_label">Proxy</string>
+    <string name="wgk_tether_pac_label">Auto-config</string>
+    <string name="wgk_tether_copy_cd">Copy</string>
+    <string name="wgk_tether_copied">Copied</string>
+    <string name="wgk_tether_qr_cd">QR code for joining the network</string>
+    <string name="wgk_tether_qr_hint">Point the other device\'s camera at the code to join the network.</string>
+    <string name="wgk_tether_counters">Devices: %1$d · connections: %2$d · sent %3$s · received %4$s</string>
+    <string name="wgk_tether_notification_channel">Internet sharing</string>
+    <string name="wgk_tether_stop_action">Stop</string>
+    <string name="wgk_tether_proxy_required">Set the proxy on the client. Without it the device has no internet at all — that is what guarantees nothing slips past the tunnel.</string>
+    <string name="wgk_tether_howto">Android and iOS: Wi-Fi network settings → Proxy → Manual (or Auto with the config URL).\nWindows and macOS: system proxy settings, HTTP and HTTPS.\nBrowsers and terminals also accept the address as a SOCKS5 proxy.\nGames and Telegram usually ignore the system proxy — set the same address as a SOCKS5 proxy in the app\'s own settings, or they stay offline.</string>
+    <string name="wgk_tether_error_tunnel_down">The tunnel went down, so sharing stopped.</string>
+    <string name="wgk_tether_error_location">Turn on location in system settings: without it Android refuses to raise the access point, even with the permission granted.</string>
+    <string name="wgk_tether_error_permission">Sharing needs permission to manage nearby Wi-Fi devices.</string>
+    <string name="wgk_tether_error_disallowed">This device does not allow sharing (blocked by the carrier or by policy).</string>
+    <string name="wgk_tether_error_ap">Could not start the access point. Turn off the system hotspot and try again.</string>
+    <string name="wgk_tether_error_bind">Could not open the proxy port.</string>
+    <string name="wgk_tether_error_native">Sharing failed to start.</string>
+    <string name="wgk_tether_auto_off_label">Turn off when unused</string>
+    <string name="wgk_tether_auto_off_desc">Switches sharing off after 30 minutes with no devices on it</string>
+    <string name="wgk_tether_auto_off_notice">Sharing switched off</string>
+    <string name="wgk_tether_error_auto_off">Nothing used sharing for 30 minutes, so it switched itself off.</string>
+    <plurals name="wgk_tether_clients">
+        <item quantity="one">%d device</item>
+        <item quantity="other">%d devices</item>
+    </plurals>
 
     <!-- WGKeyBot Connect screen -->
     <string name="wgk_state_idle">IDLE</string>
@@ -350,6 +388,19 @@
     <string name="wgk_status_sub_reconnecting">Server not responding — retrying</string>
     <string name="wgk_status_sub_failed">Server unreachable — check your network</string>
 
+    <!-- Terminal failures the app can name. Each has to fit the status card's
+         single subtitle line, so they stay short and end in the one action that
+         helps. -->
+    <string name="wgk_status_sub_failed_call_gone">Call link is gone — refresh the config</string>
+    <string name="wgk_status_sub_failed_call_auth">Call needs an account — refresh the config</string>
+    <string name="wgk_status_sub_failed_captcha">Captcha could not be solved — try later</string>
+    <string name="wgk_status_sub_failed_creds">Could not get credentials — try later</string>
+    <string name="wgk_status_sub_failed_restart">Network changed — connect again</string>
+
+    <!-- Chip under the connect button while internet sharing is up. -->
+    <string name="wgk_tether_chip">Sharing · %1$d</string>
+    <string name="wgk_tether_chip_cd">Internet sharing is on, %1$d connected. Opens sharing settings.</string>
+
     <string name="wgk_rxtx_label">TRAFFIC</string>
     <string name="wgk_wireguard_label">WIREGUARD</string>
     <string name="wgk_rxtx_value">%1$.1f↓ / %2$.1f↑</string>
@@ -366,6 +417,8 @@
     <string name="wgk_connection_mode_reserve_value">Fallback</string>
     <string name="wgk_connection_mode_standard_option">Standard — faster, recommended</string>
     <string name="wgk_connection_mode_reserve_option">Fallback — slower, use if standard mode fails</string>
+    <string name="wgk_connection_mode_standard_desc">Faster, recommended</string>
+    <string name="wgk_connection_mode_reserve_desc">Slower — turn it on if the standard mode does not work</string>
     <string name="wgk_split_search_hint">Search apps</string>
     <string name="wgk_split_show_system">System apps</string>
     <string name="wgk_split_exclude_hint">Selected apps will bypass the VPN. Everything else goes through the tunnel.</string>
@@ -383,13 +436,14 @@
     <string name="wgk_auto_refresh_cd">Config auto-refresh</string>
     <string name="wgk_auto_refresh_enabled_cd">Config auto-refresh is on. Tap to turn it off</string>
     <string name="wgk_auto_refresh_disabled_cd">Config auto-refresh is off. Tap to turn it on</string>
-    <string name="wgk_theme_toggle_cd">Switch theme</string>
     <string name="wgk_auto_refresh_enabled">Config auto-refresh every 12 hours enabled</string>
     <string name="wgk_auto_refresh_disabled">Config auto-refresh every 12 hours disabled</string>
     <string name="tv_keyboard_clear">Clear</string>
     <string name="wgk_tv_kb_paste">Paste</string>
+    <string name="wgk_tv_kb_case">Letter case</string>
     <string name="wgk_token_hint">Connection token</string>
     <string name="wgk_token_error_empty">Enter a token</string>
+    <string name="wgk_token_error_format">This does not look like a connection token</string>
     <string name="wgk_paste_cd">Paste from clipboard</string>
     <string name="wgk_pasted_from_clipboard">Token pasted from clipboard</string>
     <string name="wgk_clipboard_no_token">No token in clipboard</string>
@@ -438,4 +492,6 @@
     <string name="vpn_alert_channel_name">VPN alerts</string>
     <string name="tunnel_connection_lost_title">VPN disconnected</string>
     <string name="tunnel_connection_lost_text">The connection was lost and could not be restored.</string>
+    <string name="turn_fatal_text">Could not obtain connection credentials — the captcha could not be solved or the call is no longer available. Try connecting again later.</string>
+    <string name="turn_restart_failed_text">The connection could not be re-established after the network changed. Try connecting again.</string>
 </resources>

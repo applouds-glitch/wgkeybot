@@ -14,6 +14,7 @@ import androidx.databinding.ObservableList
 import com.wireguard.android.Application
 import com.wireguard.android.BR
 import com.wireguard.android.backend.Tunnel
+import com.wireguard.android.fragment.TunnelFailure
 import com.wireguard.android.fragment.TunnelState
 import com.wireguard.android.fragment.TunnelUiState
 import com.wireguard.android.util.ScreenStateMonitor
@@ -50,6 +51,15 @@ class TunnelStateTracker(private val context: Context) {
     private var pollingStartedMs = 0L
     private var lastEmittedState: TunnelState = TunnelState.Disconnected
 
+    /**
+     * A terminal failure that outlives the tunnel it killed. The teardown that
+     * follows [signalFatalFailure] flips the tunnel to DOWN, and every idle path
+     * here would otherwise emit a plain Disconnected over the reason a moment
+     * after showing it — leaving the user with a screen that says nothing
+     * happened. It is cleared by the next user-initiated connect or disconnect.
+     */
+    @Volatile private var pendingFailure: TunnelFailure? = null
+
     private val tunnelStateCallback = object : Observable.OnPropertyChangedCallback() {
         override fun onPropertyChanged(sender: Observable, propertyId: Int) {
             if (sender != trackedTunnel) {
@@ -79,15 +89,40 @@ class TunnelStateTracker(private val context: Context) {
 
     /** Immediately reflect a user-initiated connect tap before tunnel.state has changed. */
     fun signalUserConnect() {
+        pendingFailure = null
         if (_uiState.value.state != TunnelState.Connecting) {
-            emit(_uiState.value.copy(state = TunnelState.Connecting))
+            emit(_uiState.value.copy(state = TunnelState.Connecting, failure = null))
         }
     }
 
     /** Immediately reflect a user-initiated disconnect, stopping polling and resetting counters. */
     fun signalUserDisconnect() {
+        pendingFailure = null
         stopPolling()
-        emit(TunnelUiState(configLoadedAt = _uiState.value.configLoadedAt))
+        emit(idleState())
+    }
+
+    /**
+     * Records a session that no retry can save, as reported by the native TURN
+     * layer (every worker gave up) or by the proxy's own restart loop. Shows the
+     * reason at once and makes it stick through the teardown that follows.
+     */
+    fun signalFatalFailure(failure: TunnelFailure) {
+        pendingFailure = failure
+        emit(_uiState.value.copy(state = TunnelState.Failed, failure = failure))
+    }
+
+    /**
+     * The state to fall back to whenever the tunnel is not up: Disconnected, or
+     * the terminal failure that took it down if one was reported.
+     */
+    private fun idleState(): TunnelUiState {
+        val failure = pendingFailure
+        return TunnelUiState(
+            state = if (failure != null) TunnelState.Failed else TunnelState.Disconnected,
+            failure = failure,
+            configLoadedAt = _uiState.value.configLoadedAt,
+        )
     }
 
     fun setConfigLoadedAt(ts: Long) {
@@ -110,9 +145,9 @@ class TunnelStateTracker(private val context: Context) {
         val tunnel = trackedTunnel
         if (tunnel == null || tunnel.state != Tunnel.State.UP) {
             // Tunnel was deleted, never imported, or just turned DOWN.
-            if (pollingJob?.isActive == true || _uiState.value.state != TunnelState.Disconnected) {
+            if (pollingJob?.isActive == true || _uiState.value != idleState()) {
                 stopPolling()
-                emit(TunnelUiState(configLoadedAt = _uiState.value.configLoadedAt))
+                emit(idleState())
             }
             return
         }
@@ -122,6 +157,9 @@ class TunnelStateTracker(private val context: Context) {
 
     private fun startPolling(tunnel: ObservableTunnel) {
         stopPolling()
+        // A tunnel that is up again starts a fresh session, whoever asked for it
+        // (the button clears this itself, the widget and the tile do not).
+        pendingFailure = null
         firstHandshakeMs = 0L
         pollingStartedMs = System.currentTimeMillis()
 
@@ -135,7 +173,7 @@ class TunnelStateTracker(private val context: Context) {
                 // turns on; a tunnel-down while parked cancels this job as usual.
                 ScreenStateMonitor.screenOn.first { it }
                 if (tunnel.state != Tunnel.State.UP) {
-                    emit(TunnelUiState(configLoadedAt = _uiState.value.configLoadedAt))
+                    emit(idleState())
                     break
                 }
                 try {
@@ -158,7 +196,7 @@ class TunnelStateTracker(private val context: Context) {
                         }
                         else -> TunnelState.Connected
                     }
-                    emit(_uiState.value.copy(state = newState, rxBytes = rx, txBytes = tx))
+                    emit(_uiState.value.copy(state = newState, rxBytes = rx, txBytes = tx, failure = null))
                 } catch (_: Exception) {
                     // Backend transient error — keep polling.
                 }

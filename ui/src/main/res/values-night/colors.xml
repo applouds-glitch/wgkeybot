@@ -19,6 +19,7 @@
     <color name="wgk_warning">#FFFFB870</color>
     <color name="wgk_error">#FFFFB4AB</color>
     <color name="wgk_top_bar">#FF191B20</color>
+    <color name="wgk_version_stamp">#FF3B3E45</color>
 
     <!-- Darker widget background for the system dark theme. -->
     <color name="widget_bg">#E60A0C10</color>

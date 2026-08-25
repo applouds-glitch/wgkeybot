@@ -10,15 +10,18 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.databinding.BaseObservable
 import androidx.databinding.Bindable
 import com.wireguard.android.Application.Companion.get
 import com.wireguard.android.Application.Companion.getBackend
 import com.wireguard.android.Application.Companion.getTunnelManager
+import com.wireguard.android.Application.Companion.getTetherManager
 import com.wireguard.android.Application.Companion.getTunnelStateTracker
 import com.wireguard.android.Application.Companion.getTurnProxyManager
 import com.wireguard.android.BR
@@ -28,6 +31,7 @@ import com.wireguard.android.backend.Statistics
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.configStore.ConfigStore
 import com.wireguard.android.databinding.ObservableSortedKeyedArrayList
+import com.wireguard.android.fragment.TunnelFailure
 import com.wireguard.android.turn.TurnConfigProcessor
 import com.wireguard.android.turn.TurnSettings
 import com.wireguard.android.turn.TurnSettingsStore
@@ -47,6 +51,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
@@ -66,6 +72,18 @@ class TunnelManager(
     // Per-tunnel background watchdog jobs. A watchdog tears the tunnel down if it
     // stays UP without a working WireGuard handshake (mid-session DPI/network death).
     private val handshakeWatchdogs = ConcurrentHashMap<String, Job>()
+
+    // Serializes the whole connect/disconnect path. tunnel.state is only updated at
+    // the very end, so a request arriving during the ~25s handshake window used to
+    // see a stale DOWN and run a second full connect — restarting TURN under the
+    // first attempt's feet (widget/tile TOGGLE, AlwaysOn restoreState).
+    private val stateMutex = Mutex()
+
+    /** Name of the tunnel whose connect is currently in flight, or null. */
+    @Volatile private var connectInFlight: String? = null
+
+    /** Set when a queued request wants the in-flight connect to stop waiting. */
+    @Volatile private var abortConnect = false
 
     private fun addToList(name: String, config: Config?, state: Tunnel.State): ObservableTunnel {
         val tunnel = ObservableTunnel(this, name, config, state)
@@ -159,6 +177,79 @@ class TunnelManager(
             } catch (e: Throwable) {
                 Log.e(TAG, Log.getStackTraceString(e))
             }
+        }
+        registerPackageInstallReceiver()
+    }
+
+    // ── Split tunneling vs. newly installed apps ───────────────────────────────
+    //
+    // The per-app rules are baked into the VPN interface by VpnService.Builder at
+    // establish() time and cannot be changed on a live interface. An app installed
+    // afterwards is therefore absent from those rules, which breaks "only these apps"
+    // mode: everything outside the include list is disallowed by enumerating the
+    // installed packages (see GoBackend), so a package that did not exist at connect
+    // time is not disallowed and its traffic silently goes through the tunnel.
+    // The only fix is to re-establish the interface, which is what this does.
+
+    /** Packages installed since the last re-apply, drained by [reapplySplitTunnel]. */
+    private val pendingInstalledPackages = mutableSetOf<String>()
+
+    /** Debounce for [pendingInstalledPackages]; a device restore installs apps in bulk. */
+    private var splitTunnelReapplyJob: Job? = null
+
+    private fun registerPackageInstallReceiver() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                // An update keeps both the package name and the UID, so the rules of a
+                // running tunnel still apply — only genuinely new packages matter here.
+                if (intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)) return
+                val packageName = intent.data?.schemeSpecificPart ?: return
+                if (packageName == context.packageName) return
+                onPackageInstalled(packageName)
+            }
+        }
+        val filter = IntentFilter(Intent.ACTION_PACKAGE_ADDED).apply { addDataScheme("package") }
+        ContextCompat.registerReceiver(
+            context.applicationContext, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+    }
+
+    private fun onPackageInstalled(packageName: String) {
+        pendingInstalledPackages.add(packageName)
+        scheduleSplitTunnelReapply()
+    }
+
+    private fun scheduleSplitTunnelReapply() {
+        splitTunnelReapplyJob?.cancel()
+        splitTunnelReapplyJob = applicationScope.launch {
+            delay(PACKAGE_INSTALL_DEBOUNCE_MS)
+            try {
+                reapplySplitTunnel()
+            } catch (e: Throwable) {
+                Log.e(TAG, Log.getStackTraceString(e))
+            }
+        }
+    }
+
+    private suspend fun reapplySplitTunnel() = withContext(Dispatchers.Main.immediate) {
+        // Keep the packages queued while a connect is in flight. Its VpnService
+        // rules may already have been built, and the connect completion path below
+        // schedules this work again once it is safe to bounce the interface.
+        if (connectInFlight != null) return@withContext
+        val installed = pendingInstalledPackages.toSet()
+        pendingInstalledPackages.clear()
+        if (installed.isEmpty()) return@withContext
+        for (tunnel in tunnelMap.filter { it.state == Tunnel.State.UP }) {
+            val iface = getTunnelConfig(tunnel).`interface`
+            // Include mode: any new package is missing from the disallow list. Exclude
+            // mode: only a reinstall of an excluded app matters — same package name, but
+            // a new UID that the live interface's rules were never built against.
+            val stale = iface.includedApplications.isNotEmpty() ||
+                    installed.any { iface.excludedApplications.contains(it) }
+            if (!stale) continue
+            Log.i(TAG, "Re-applying split tunneling on ${tunnel.name} after install of $installed")
+            setTunnelState(tunnel, Tunnel.State.DOWN)
+            setTunnelState(tunnel, Tunnel.State.UP)
         }
     }
 
@@ -288,8 +379,47 @@ class TunnelManager(
         state: Tunnel.State,
         restore: Boolean = false,
     ): Tunnel.State = withContext(Dispatchers.Main.immediate) {
+        // Resolve TOGGLE against the request in flight rather than the model state:
+        // during a connect tunnel.state is still DOWN, so a widget/tile toggle meant
+        // as "cancel" would otherwise be read as "connect" and start a second attempt.
+        val requested = if (state != Tunnel.State.TOGGLE) state else when {
+            connectInFlight == tunnel.name || tunnel.state == Tunnel.State.UP -> Tunnel.State.DOWN
+            else -> Tunnel.State.UP
+        }
+
+        // Don't make the user wait out a 25s handshake to cancel: tell the in-flight
+        // connect to give up and inhibit the TURN auto-restart before queueing.
+        if (requested == Tunnel.State.DOWN && connectInFlight == tunnel.name) {
+            Log.d(TAG, "Disconnect requested during connect — aborting ${tunnel.name}")
+            abortConnect = true
+            getTurnProxyManager().beginUserStop()
+        }
+
+        stateMutex.withLock {
+            if (requested == Tunnel.State.UP) {
+                connectInFlight = tunnel.name
+                abortConnect = false
+            }
+            try {
+                setTunnelStateSerialized(tunnel, requested, restore)
+            } finally {
+                if (requested == Tunnel.State.UP) {
+                    connectInFlight = null
+                    if (pendingInstalledPackages.isNotEmpty()) {
+                        scheduleSplitTunnelReapply()
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun setTunnelStateSerialized(
+        tunnel: ObservableTunnel,
+        state: Tunnel.State,
+        restore: Boolean,
+    ): Tunnel.State = withContext(Dispatchers.Main.immediate) {
         if (state == tunnel.state) return@withContext state
-        
+
         // If we are already UP and someone (like AlwaysOnCallback) requests UP again,
         // double check with backend if it is really running.
         if (state == Tunnel.State.UP && tunnel.state == Tunnel.State.UP) {
@@ -303,8 +433,8 @@ class TunnelManager(
         // Hoisted above the try so the post-failure cleanup block can read them.
         val turn = tunnel.turnSettings
         val turnEnabled = turn != null && turn.enabled
-        // TURN starts when explicitly requesting UP, or on TOGGLE from DOWN.
-        val shouldStartTurn = state == Tunnel.State.UP || (state == Tunnel.State.TOGGLE && tunnel.state == Tunnel.State.DOWN)
+        // TOGGLE is resolved by the caller, so state is UP or DOWN here.
+        val shouldStartTurn = state == Tunnel.State.UP
 
         var newState = tunnel.state
         var throwable: Throwable? = null
@@ -312,14 +442,27 @@ class TunnelManager(
             var configToUse = tunnel.getConfigAsync()
 
             // Stop TURN when tunnel goes DOWN
-            val shouldStopTurn = state == Tunnel.State.DOWN || (state == Tunnel.State.TOGGLE && tunnel.state == Tunnel.State.UP)
+            val shouldStopTurn = state == Tunnel.State.DOWN
 
-            // Pre-emptively persist "tunnel going DOWN" before backend teardown.
-            // getBackend().setState(DOWN) calls stopSelf() asynchronously — if Android
-            // restarts the VPN service (AlwaysOn) before saveState() runs at the end,
-            // restoreState() would read stale runningTunnels and auto-reconnect.
-            // Writing {} here (after DataStore edit() commits) eliminates that race window.
             if (shouldStopTurn) {
+                // ADDED step, not a reordering: everything below keeps the exact
+                // sequence documented for this method. Sharing simply has to be
+                // torn down before WireGuard, because its upstream sockets are
+                // deliberately unprotected — after the tunnel is gone a tethered
+                // client's next request would egress straight out of the carrier
+                // with the user's real IP. TetherManager also watches the tunnel
+                // state flow, but that only fires once WireGuard is already down,
+                // which is exactly the window this closes; the collector remains
+                // the backstop for teardowns that do not come through here.
+                // Bounded wait: TetherManager.start() now times its access point
+                // out, so this cannot park the teardown indefinitely.
+                getTetherManager().stopAndAwait()
+
+                // Pre-emptively persist "tunnel going DOWN" before backend teardown.
+                // getBackend().setState(DOWN) calls stopSelf() asynchronously — if Android
+                // restarts the VPN service (AlwaysOn) before saveState() runs at the end,
+                // restoreState() would read stale runningTunnels and auto-reconnect.
+                // Writing {} here (after DataStore edit() commits) eliminates that race window.
                 UserKnobs.setRunningTunnels(runningTunnelNamesExcluding(tunnel.name))
                 // Inhibit TURN auto-restart before backend teardown. Bringing
                 // WireGuard down re-evaluates the physical network, which can
@@ -366,7 +509,16 @@ class TunnelManager(
                 val handshakeOk = withContext(Dispatchers.IO) { awaitFirstHandshake(tunnel) }
                 if (!handshakeOk) {
                     val stillUp = withContext(Dispatchers.IO) { getBackend().getState(tunnel) } == Tunnel.State.UP
-                    if (stillUp) {
+                    if (stillUp && abortConnect) {
+                        // A disconnect is queued behind this connect. Tear the
+                        // half-connected tunnel down quietly and let it run — the user
+                        // asked for this, so it must not surface as a connect error.
+                        Log.d(TAG, "Connect aborted — bringing ${tunnel.name} down for the queued request")
+                        UserKnobs.setRunningTunnels(runningTunnelNamesExcluding(tunnel.name))
+                        newState = withContext(Dispatchers.IO) { getBackend().setState(tunnel, Tunnel.State.DOWN, null) }
+                        if (turnEnabled)
+                            withContext(Dispatchers.IO) { getTurnProxyManager().stopForTunnel(tunnel.name) }
+                    } else if (stillUp) {
                         Log.w(TAG, "No WireGuard handshake within ${HANDSHAKE_TIMEOUT_MS}ms — aborting ${tunnel.name}")
                         // Persist DOWN before teardown so an AlwaysOn restart can't read
                         // stale runningTunnels and immediately reconnect into the same fail.
@@ -433,6 +585,9 @@ class TunnelManager(
         val deadline = System.currentTimeMillis() + HANDSHAKE_TIMEOUT_MS
         while (System.currentTimeMillis() < deadline) {
             delay(HANDSHAKE_POLL_INTERVAL_MS)
+            // A disconnect request is waiting behind this connect — stop waiting.
+            if (abortConnect)
+                return false
             // Tunnel torn down concurrently — stop waiting.
             if (getBackend().getState(tunnel) != Tunnel.State.UP)
                 return false
@@ -531,8 +686,85 @@ class TunnelManager(
         handshakeWatchdogs.remove(name)?.cancel()
     }
 
+    /**
+     * Called from the native TURN layer when the session has failed terminally:
+     * every worker gave up because retrying cannot fix the cause (an unsolvable
+     * captcha, a call that has ended). Nothing will restore the transport, so the
+     * tunnel is taken down with a user-visible reason instead of being left UP
+     * over a dead route while the native side retries forever.
+     */
+    fun onTurnFatal(reason: String) {
+        Log.e(TAG, "TURN reported terminal failure: $reason")
+        val activeName = getTurnProxyManager().activeTunnel
+        if (activeName != null)
+            getTurnProxyManager().appendLogLine(activeName, "TURN terminal failure ($reason) — disconnecting")
+        tearDownForTurnFailure(
+            activeName,
+            context.getString(R.string.turn_fatal_text),
+            // Every give-up on this path is a credential one; the reason string
+            // only says which kind.
+            TunnelFailure.fromTurnReason(reason) ?: TunnelFailure.Credentials,
+        )
+    }
+
+    /**
+     * Called from [com.wireguard.android.turn.TurnProxyManager] when its own restart
+     * loop concludes the proxy cannot be brought back: a fatal start code, or repeated
+     * failures on a network the system reports as validated.
+     *
+     * This is the Android-side twin of [onTurnFatal]. The native terminal-failure
+     * accounting only fires once workers have been launched and have all given up, so
+     * a proxy that never starts — JNI registration timeout, a failing wgTurnProxyStart,
+     * a captcha lockout during startup — reaches no worker and would otherwise leave
+     * the tunnel UP over a dead 127.0.0.1 route until the handshake watchdog noticed,
+     * three to nine minutes later.
+     */
+    fun onTurnUnrecoverable(tunnelName: String, reason: String) {
+        Log.e(TAG, "TURN proxy unrecoverable on $tunnelName: $reason")
+        tearDownForTurnFailure(
+            tunnelName,
+            context.getString(R.string.turn_restart_failed_text),
+            // The restart loop can also lose to a credential failure it saw on the
+            // way, so let an explicit reason win over the generic restart verdict.
+            TunnelFailure.fromTurnReason(reason) ?: TunnelFailure.ProxyRestart,
+        )
+    }
+
+    /**
+     * Notifies the user and brings down the tunnel TURN was carrying. [tunnelName]
+     * narrows the choice when known; the session may already have been cleared by the
+     * reporter, in which case the single UP tunnel is the one that lost its transport.
+     */
+    private fun tearDownForTurnFailure(tunnelName: String?, text: String, failure: TunnelFailure) {
+        applicationScope.launch {
+            notifyAlert(context.getString(R.string.tunnel_connection_lost_title), text)
+            val tunnel = withContext(Dispatchers.Main.immediate) {
+                tunnelMap.firstOrNull {
+                    it.state == Tunnel.State.UP && (tunnelName == null || it.name == tunnelName)
+                }
+            } ?: return@launch
+            // After the lookup, and before the teardown. After, because a report
+            // that finds nothing to take down must not leave a failure sitting on a
+            // screen the user had already stopped themselves; before, because the
+            // tracker has to be holding the reason by the time the tunnel flips to
+            // DOWN, or the down edge emits a plain Disconnected over it.
+            getTunnelStateTracker().signalFatalFailure(failure)
+            try {
+                setTunnelState(tunnel, Tunnel.State.DOWN)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Teardown after TURN failure failed: ${Log.getStackTraceString(e)}")
+            }
+        }
+    }
+
     /** Posts a user-visible notification that the VPN was disconnected due to a dead connection. */
-    private fun notifyConnectionLost() {
+    private fun notifyConnectionLost() = notifyAlert(
+        context.getString(R.string.tunnel_connection_lost_title),
+        context.getString(R.string.tunnel_connection_lost_text),
+    )
+
+    /** Posts a VPN-alert notification with the given title and text. */
+    private fun notifyAlert(title: String, text: String) {
         try {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -551,8 +783,9 @@ class TunnelManager(
             )
             val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_warning)
-                .setContentTitle(context.getString(R.string.tunnel_connection_lost_title))
-                .setContentText(context.getString(R.string.tunnel_connection_lost_text))
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                 .setAutoCancel(true)
                 .setContentIntent(contentIntent)
                 .build()
@@ -629,6 +862,10 @@ class TunnelManager(
         private const val WATCHDOG_NEVER_CONNECTED_MS = 150_000L
         // Consecutive bad polls required before tearing down (debounce).
         private const val WATCHDOG_DEAD_CHECKS = 2
+
+        // Coalescing window for package installs, so a device restore that installs
+        // dozens of apps back to back costs one reconnect instead of dozens.
+        private const val PACKAGE_INSTALL_DEBOUNCE_MS = 5_000L
 
         private const val ALERT_CHANNEL_ID = "vpn_alerts"
         private const val ALERT_NOTIFICATION_ID = 2

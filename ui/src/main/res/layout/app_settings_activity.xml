@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <!-- The screen is a scroll view around a capped column, not a fixed stack.
+         Two reasons it cannot be the plain LinearLayout it used to be: the rows
+         grow with the system font scale, and edge-to-edge is mandatory from
+         Android 15 on, so the bottom of the list would otherwise sit under the
+         navigation bar. Insets are applied in AppSettingsActivity — the toolbar
+         takes the top, the scroll view takes the bottom and the sides. -->
+    <LinearLayout
+        android:id="@+id/wgk_settings_root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/wgk_background"
+        android:orientation="vertical">
+
+        <!-- wrap_content over a minHeight, not a fixed actionBarSize: the status
+             bar inset is added as top padding, and a fixed height would eat it
+             out of the title row instead of growing the bar. -->
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/wgk_settings_toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="?attr/actionBarSize"
+            app:navigationIcon="@drawable/ic_arrow_back"
+            app:title="@string/wgk_settings_title"
+            app:titleTextColor="@color/wgk_on_surface" />
+
+        <androidx.core.widget.NestedScrollView
+            android:id="@+id/wgk_settings_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:fillViewport="true"
+            android:overScrollMode="ifContentScrolls">
+
+            <androidx.constraintlayout.widget.ConstraintLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <!-- 0dp against both sides with a max width: the column fills a
+                     phone and stays a centred column on anything wider, instead
+                     of stretching a two-line row across a tablet. -->
+                <LinearLayout
+                    android:id="@+id/wgk_settings_column"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="@dimen/wgk_settings_gutter"
+                    android:paddingTop="12dp"
+                    android:paddingEnd="@dimen/wgk_settings_gutter"
+                    android:paddingBottom="24dp"
+                    app:layout_constraintEnd_toEndOf="parent"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintTop_toTopOf="parent"
+                    app:layout_constraintWidth_max="@dimen/wgk_settings_content_max">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:text="@string/wgk_settings_section_connection"
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/Widget.WGKeyBot.Card"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        app:cardCornerRadius="16dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical">
+
+                            <include
+                                android:id="@+id/wgk_choice_standard"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+
+                            <View
+                                android:layout_width="match_parent"
+                                android:layout_height="1dp"
+                                android:layout_marginStart="16dp"
+                                android:background="@color/wgk_outline_variant" />
+
+                            <include
+                                android:id="@+id/wgk_choice_reserve"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <!-- Appearance. This was an unlabelled icon in the connect
+                         screen's toolbar — a control you had to tap to find out
+                         what it did, next to the gear that leads here. As a row
+                         it carries a name and its own state. -->
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
+                        android:layout_marginBottom="8dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:text="@string/wgk_settings_section_appearance"
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/Widget.WGKeyBot.Card"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        app:cardCornerRadius="16dp">
+
+                        <include
+                            android:id="@+id/wgk_theme_row"
+                            layout="@layout/view_wgk_settings_switch_row"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content" />
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <!-- Sharing needs API 26 for startLocalOnlyHotspot; below that
+                         there is no way to raise an access point at all, so the
+                         whole section — header, card and status line — is absent
+                         rather than shown disabled. -->
+                    <LinearLayout
+                        android:id="@+id/wgk_tether_section"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="8dp"
+                            android:paddingStart="4dp"
+                            android:paddingEnd="4dp"
+                            android:text="@string/wgk_tether_title"
+                            android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+
+                        <com.google.android.material.card.MaterialCardView
+                            style="@style/Widget.WGKeyBot.Card"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            app:cardCornerRadius="16dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="vertical">
+
+                                <include
+                                    android:id="@+id/wgk_tether_switch_row"
+                                    layout="@layout/view_wgk_settings_switch_row"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content" />
+
+                                <View
+                                    android:layout_width="match_parent"
+                                    android:layout_height="1dp"
+                                    android:layout_marginStart="16dp"
+                                    android:background="@color/wgk_outline_variant" />
+
+                                <!-- A preference and not session state, so it is
+                                     always here — above the details row rather
+                                     than below it, because that one comes and
+                                     goes with the access point and a card that
+                                     reorders itself is harder to aim at. -->
+                                <include
+                                    android:id="@+id/wgk_tether_auto_off_row"
+                                    layout="@layout/view_wgk_settings_switch_row"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content" />
+
+                                <!-- The credentials only exist while an access
+                                     point is up, so the row that shows them —
+                                     and its divider — appear with it. -->
+                                <View
+                                    android:id="@+id/wgk_tether_details_divider"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="1dp"
+                                    android:layout_marginStart="16dp"
+                                    android:background="@color/wgk_outline_variant"
+                                    android:visibility="gone" />
+
+                                <include
+                                    android:id="@+id/wgk_tether_details_row"
+                                    layout="@layout/view_wgk_settings_row"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:visibility="gone" />
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
+
+                        <!-- Carries both the "connect first" hint and any failure
+                             reason; gone when there is nothing to say. -->
+                        <TextView
+                            android:id="@+id/wgk_tether_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:paddingStart="4dp"
+                            android:paddingEnd="4dp"
+                            android:textAppearance="?attr/textAppearanceBodySmall"
+                            android:textColor="@color/wgk_on_surface_variant"
+                            android:visibility="gone" />
+                    </LinearLayout>
+                </LinearLayout>
+            </androidx.constraintlayout.widget.ConstraintLayout>
+        </androidx.core.widget.NestedScrollView>
+    </LinearLayout>
+</layout>

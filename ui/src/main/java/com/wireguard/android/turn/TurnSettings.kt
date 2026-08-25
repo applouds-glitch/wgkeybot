@@ -15,7 +15,7 @@ data class TurnSettings(
     val vkLink: String = "",
     val mode: String = "vk_link",
     val streams: Int = 4,
-    val useUdp: Boolean = false,
+    val useUdp: Boolean = true,
     val localPort: Int = 9000,
     val turnIp: String = "",
     val turnPort: Int = 0,
@@ -54,7 +54,7 @@ data class TurnSettings(
             var vkLink = ""
             var mode = "vk_link"
             var streams = 4
-            var useUdp = false
+            var useUdp = true
             var localPort = 9000
             var turnIp = ""
             var turnPort = 0

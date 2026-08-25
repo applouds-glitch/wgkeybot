@@ -14,6 +14,24 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Internet sharing: a local-only hotspot needs to change Wi-Fi state, and
+         the platform gates it behind location until API 33, then behind the
+         nearby-devices permission. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+    <!-- API 26..28 gate startLocalOnlyHotspot on COARSE, not FINE, and before
+         Android 10 a runtime grant only spreads across the location group for the
+         permissions a package actually declares. Without this line the call throws
+         SecurityException on Android 8.0/8.1/9 over a permission the user can see
+         is granted. -->
+    <uses-permission
+        android:name="android.permission.ACCESS_COARSE_LOCATION"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- FIX: обязательно для foreground service на API 28+ -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -27,6 +45,9 @@
 
     <uses-feature
         android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.leanback"
         android:required="false" />
     <uses-feature
         android:name="android.hardware.camera.any"
@@ -107,6 +128,13 @@
             android:parentActivityName=".activity.MainActivity" />
 
         <activity
+            android:name=".activity.AppSettingsActivity"
+            android:screenOrientation="portrait"
+            android:label="@string/wgk_settings_title"
+            android:theme="@style/AppTheme.NoActionBar"
+            android:parentActivityName=".activity.MainActivity" />
+
+        <activity
             android:name="com.journeyapps.barcodescanner.CaptureActivity"
             android:screenOrientation="portrait"
             tools:replace="screenOrientation" />
@@ -152,6 +180,16 @@
                 <action android:name="com.wireguard.android.action.REFRESH_TUNNEL_STATES" />
                 <action android:name="com.wireguard.android.action.SET_TUNNEL_UP" />
                 <action android:name="com.wireguard.android.action.SET_TUNNEL_DOWN" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Backs the Stop action on the sharing notification. Not exported: only
+             our own PendingIntent fires it. -->
+        <receiver
+            android:name=".tether.TetherStopReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.wgkeybot.android.action.TETHER_STOP" />
             </intent-filter>
         </receiver>
 

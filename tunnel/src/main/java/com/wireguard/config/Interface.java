@@ -14,6 +14,7 @@ import com.wireguard.crypto.KeyPair;
 import com.wireguard.util.NonNullForAll;
 
 import java.net.InetAddress;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -368,11 +369,11 @@ public final class Interface {
         }
 
         public Builder parseExcludedApplications(final CharSequence apps) {
-            return excludeApplications(List.of(Attribute.split(apps)));
+            return excludeApplications(Arrays.asList(Attribute.split(apps)));
         }
 
         public Builder parseIncludedApplications(final CharSequence apps) {
-            return includeApplications(List.of(Attribute.split(apps)));
+            return includeApplications(Arrays.asList(Attribute.split(apps)));
         }
 
         public Builder parseListenPort(final String listenPort) throws BadConfigException {

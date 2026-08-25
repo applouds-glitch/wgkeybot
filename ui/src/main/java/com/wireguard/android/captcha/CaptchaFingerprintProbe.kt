@@ -3,6 +3,7 @@ package com.wireguard.android.captcha
 import android.annotation.SuppressLint
 import android.content.Context
 import android.hardware.display.DisplayManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -32,14 +33,21 @@ object CaptchaFingerprintProbe {
     private const val KEY_CACHE_KEY = "cache_key"
     private const val KEY_SNAPSHOT = "snapshot"
     private const val SCHEMA_VERSION = 3
+    // The probe's own layout size. It only has to be a plausible mobile viewport
+    // for the measurement to run; the viewport actually reported to VK comes from
+    // CaptchaPersona and overwrites the innerWidth/innerHeight captured here (see
+    // CaptchaDeviceProfile.buildJson).
     private const val PROBE_WIDTH_PX = 360
     private const val PROBE_HEIGHT_PX = 382
     private const val PROVIDER_WAIT_TIMEOUT_MS = 1_500L
     private const val PROBE_RUN_TIMEOUT_MS = 3_000L
 
-    // Must stay identical to the UA the real captcha solver WebView sets
-    // (CaptchaActivity), so the mirrored fingerprint matches what VK actually
-    // sees during the interactive captcha.
+    // The UA the probe itself runs under. It is deliberately fixed and NOT the
+    // one the captcha surfaces use — that one is per-persona (CaptchaPersona) and
+    // rotates, while this value is part of the probe's cache key, so varying it
+    // would re-run the probe for nothing. What the probe is actually capturing is
+    // the client hints and device metrics Chromium reports from its own build;
+    // those do not depend on the UA string we set here.
     const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
@@ -218,7 +226,11 @@ object CaptchaFingerprintProbe {
 
     private fun buildCacheKey(context: Context): String {
         val configuration = context.resources.configuration
-        val webViewPackage = WebView.getCurrentWebViewPackage()
+        val webViewPackage = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WebView.getCurrentWebViewPackage()
+        } else {
+            null
+        }
         val locale = configuration.locales.get(0)?.toLanguageTag()
             ?: Locale.getDefault().toLanguageTag()
         val raw = listOf(

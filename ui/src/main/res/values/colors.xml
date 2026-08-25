@@ -96,6 +96,12 @@
          artifact rather than a deliberate bar. Dark value in values-night. -->
     <color name="wgk_top_bar">#FFF7F9FC</color>
 
+    <!-- Build stamp next to the wordmark. Deliberately a hair off the bar it
+         sits on (~1.5:1, checked on device): it is there for a support
+         screenshot, not for daily reading, so it must not compete with the
+         wordmark. Dark value in values-night. -->
+    <color name="wgk_version_stamp">#FFC7D0DC</color>
+
     <!-- Home-screen widget background. Slightly translucent so it blends with the launcher. -->
     <color name="widget_bg">#E62A3142</color>
 </resources>

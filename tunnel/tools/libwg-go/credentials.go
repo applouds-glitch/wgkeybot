@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,11 +57,28 @@ const (
 
 // streamsPerCred — number of streams sharing one credential cache slot.
 // Also used as StreamsPerGroup in StartTunnelGroups.
-var streamsPerCred = 4
+//
+// Stored atomically because wgTurnProxyStart writes it for the session it is
+// starting while workers of the previous session — cancelled, but not yet
+// drained — are still reading it through getCacheID/fetchCreds. As a plain int
+// that is a data race, and a torn or stale read sends a departing worker to the
+// wrong cache slot.
+var streamsPerCred atomic.Int64
+
+func init() { streamsPerCred.Store(4) }
+
+func streamsPerCredValue() int { return int(streamsPerCred.Load()) }
+
+func setStreamsPerCred(n int) {
+	if n < 1 {
+		n = 1
+	}
+	streamsPerCred.Store(int64(n))
+}
 
 // getCacheID maps a stream ID to its shared credential cache slot.
 func getCacheID(streamID int) int {
-	return streamID / streamsPerCred
+	return streamID / streamsPerCredValue()
 }
 
 var credentialsStore = struct {
@@ -95,7 +113,7 @@ func invalidateAllCaches() {
 	credentialsStore.mu.Lock()
 	defer credentialsStore.mu.Unlock()
 	credentialsStore.caches = make(map[int]*StreamCredentialsCache)
-	turnLog("[Auth] All credential caches cleared (streamsPerCred=%d)", streamsPerCred)
+	turnLog("[Auth] All credential caches cleared (streamsPerCred=%d)", streamsPerCredValue())
 }
 
 // invalidateGroupCreds force-expires the cached credential for a single group so
@@ -106,7 +124,7 @@ func invalidateAllCaches() {
 // (the first re-fetches, the rest get a cache hit). Called when the TURN server
 // rejects allocations for this credential (stale/401/486).
 func invalidateGroupCreds(groupID int) {
-	cache := getStreamCache(groupID * streamsPerCred)
+	cache := getStreamCache(groupID * streamsPerCredValue())
 	cache.mutex.Lock()
 	var lived time.Duration
 	if !cache.creds.FetchedAt.IsZero() {
@@ -123,7 +141,7 @@ func invalidateGroupCreds(groupID int) {
 // reuse the credential the first worker's next getCredsCached fetches. Throttle
 // state lives behind refreshMu so the decision is independent of the creds lock.
 func refreshGroupCreds(groupID int) {
-	cache := getStreamCache(groupID * streamsPerCred)
+	cache := getStreamCache(groupID * streamsPerCredValue())
 
 	cache.refreshMu.Lock()
 	if !cache.lastRefresh.IsZero() && time.Since(cache.lastRefresh) < credRefreshThrottle {

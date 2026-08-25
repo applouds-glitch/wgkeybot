@@ -53,21 +53,11 @@ object CaptchaWebViewManager {
     private const val WV_CREATE_TIMEOUT_MS = 3000L
     const val ERROR_SLIDER_DETECTED = "slider_detected"
 
-    private val VIEWPORT_WIDTHS = intArrayOf(356, 358, 360, 362, 364, 366, 368)
-    private val VIEWPORT_HEIGHTS = intArrayOf(376, 378, 380, 382, 384, 386, 388)
-
-    // Randomize within the mobile Android family only. A Windows/desktop UA on a
-    // real phone WebView contradicts the phone screen, touch points and
-    // navigator.userAgentData (mobile=true, platform=Android) that VK's captcha
-    // JS reads on-page. Same "real Chrome on Android, no wv" masquerade as
-    // CaptchaActivity / CaptchaFingerprintProbe so all captcha modes agree.
-    private val ANDROID_VERSIONS = arrayOf("12", "13", "14", "15")
-
-    private val CHROME_BUILDS = arrayOf(
-        "146.0.0.0", "145.0.6422.60", "145.0.6422.53",
-        "144.0.6367.78", "144.0.6367.61", "143.0.6312.99"
-    )
-
+    // UA и размер разметки приходят из CaptchaPersona — рандомизированные, но
+    // общие для всех ступеней одной попытки. Раньше они разыгрывались прямо
+    // здесь и независимо от HTTP-пути в Go, так что внутри одной лестницы
+    // решения VK видел два разных устройства с одним browser_fp. Персона держит
+    // набор неизменным до конца попытки и ротирует его по бюджету.
     private val mainHandler = Handler(Looper.getMainLooper())
     private val captchaMutex = Mutex()
 
@@ -148,6 +138,16 @@ object CaptchaWebViewManager {
         appContext = context.applicationContext
         isTunnelActive = true
         Log.d(TAG, "Туннель активен")
+    }
+
+    /**
+     * Прерывает решение капчи, идущее прямо сейчас: нативный слой останавливает
+     * прокси, и токен уже некому отдать. Только освобождает ожидающий
+     * [solveCaptchaAsync] — WebView уничтожит его собственный finally, поэтому
+     * вызов не блокирует поток остановки.
+     */
+    fun cancelActive() {
+        cancelPendingResult("captcha cancelled by proxy stop")
     }
 
     fun onTunnelStop() {
@@ -258,13 +258,12 @@ object CaptchaWebViewManager {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun createWebViewSync(context: Context, onStep: (String) -> Unit): WebView? {
-        val vw = VIEWPORT_WIDTHS[Random.Default.nextInt(VIEWPORT_WIDTHS.size)]
-        val vh = VIEWPORT_HEIGHTS[Random.Default.nextInt(VIEWPORT_HEIGHTS.size)]
-        val androidVer = ANDROID_VERSIONS[Random.Default.nextInt(ANDROID_VERSIONS.size)]
-        val chromeBuild = CHROME_BUILDS[Random.Default.nextInt(CHROME_BUILDS.size)]
-        val ua = "Mozilla/5.0 (Linux; Android $androidVer) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$chromeBuild Mobile Safari/537.36"
+        val persona = CaptchaPersona.current(context)
+        val vw = persona.layoutWidthPx
+        val vh = persona.layoutHeightPx
+        val ua = persona.userAgent
 
-        Log.d(TAG, "Fingerprint: ${vw}x${vh}, Android $androidVer, Chrome/$chromeBuild")
+        Log.d(TAG, "Персона: ${vw}x${vh}, fp=${persona.browserFp.take(8)}")
 
         val latch = CountDownLatch(1)
         var webView: WebView? = null

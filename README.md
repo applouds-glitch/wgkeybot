@@ -1,12 +1,3 @@
-## Donations / Поддержать разработчика
-
-<img width="16" height="16" alt="USDT" src="https://github.com/user-attachments/assets/9f88aa41-fcfd-48ea-ae5a-c0bef933666d" />
-
-**USDT TRON (TRC20)**
-
-```text
-TSvhhuf8bu6naY9DS69R6xz1GFhKMMEcmf
-```
 
 <img src="assets/screenshot.png" width="400"/>
 

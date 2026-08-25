@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <!-- One option of a mutually exclusive choice, picked in place instead of in
+         a dialog: with two options a dialog costs a tap and hides the very text
+         that explains the difference. The whole row is the target, the radio is
+         inert and only reports state — a 20dp circle is not a touch target. -->
+    <LinearLayout
+        android:id="@+id/wgk_choice_root"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center_vertical"
+        android:minHeight="@dimen/wgk_settings_row_min"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="12dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/wgk_choice_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textAppearance="?attr/textAppearanceTitleSmall"
+                android:textColor="@color/wgk_on_surface" />
+
+            <!-- Wraps freely: this line is the only place the difference between
+                 the two transports is explained, so it must never be clipped —
+                 not on a 320dp screen and not at a 200% font scale. -->
+            <TextView
+                android:id="@+id/wgk_choice_desc"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="@color/wgk_on_surface_variant" />
+        </LinearLayout>
+
+        <!-- saveEnabled=false for the same reason as the switch in
+             view_wgk_settings_switch_row: both options of the choice come from
+             this one file, so both radios share this id, and restoring one into
+             the other after a recreation left the card with neither option
+             checked. The checked option is re-read from storage on every
+             bind. -->
+        <com.google.android.material.radiobutton.MaterialRadioButton
+            android:id="@+id/wgk_choice_radio"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:clickable="false"
+            android:focusable="false"
+            android:saveEnabled="false"
+            app:useMaterialThemeColors="false" />
+    </LinearLayout>
+</layout>

@@ -36,21 +36,30 @@ func TestCaptchaFormMatchesCapturedCheckboxOrder(t *testing.T) {
 	}
 }
 
-func TestConnectionMetricsMatchCapturedShape(t *testing.T) {
-	rtt, downlink := generateConnectionMetrics()
-	if rtt != "[]" {
-		t.Fatalf("captured WebView sent empty RTT samples, got %s", rtt)
-	}
-	var samples []float64
-	if err := json.Unmarshal([]byte(downlink), &samples); err != nil {
-		t.Fatalf("invalid downlink JSON: %v", err)
-	}
-	if len(samples) < 22 || len(samples) > 30 {
-		t.Fatalf("unexpected downlink sample count: %d", len(samples))
-	}
-	for _, sample := range samples[1:] {
-		if sample != samples[0] {
-			t.Fatalf("captured WebView repeated one downlink value, got %v", samples)
+func TestNetworkSamplesMatchCapturedShape(t *testing.T) {
+	// The captured browser sent one constant rtt and one constant downlink
+	// value, one sample per 200ms tick of the componentDone→check window.
+	for _, n := range []int{27, 28, 34} {
+		rtt, downlink := generateNetworkSamples(n)
+		var rttSamples, dlSamples []float64
+		if err := json.Unmarshal([]byte(rtt), &rttSamples); err != nil {
+			t.Fatalf("invalid rtt JSON: %v", err)
+		}
+		if err := json.Unmarshal([]byte(downlink), &dlSamples); err != nil {
+			t.Fatalf("invalid downlink JSON: %v", err)
+		}
+		if len(rttSamples) != n || len(dlSamples) != n {
+			t.Fatalf("sample count mismatch: rtt=%d downlink=%d want %d", len(rttSamples), len(dlSamples), n)
+		}
+		for _, sample := range rttSamples[1:] {
+			if sample != rttSamples[0] {
+				t.Fatalf("rtt must be one constant value, got %v", rttSamples)
+			}
+		}
+		for _, sample := range dlSamples[1:] {
+			if sample != dlSamples[0] {
+				t.Fatalf("downlink must be one constant value, got %v", dlSamples)
+			}
 		}
 	}
 }

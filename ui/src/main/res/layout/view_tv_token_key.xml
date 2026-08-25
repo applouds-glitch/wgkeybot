@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ One character key of the TV keyboard grid. Inflated per character by
+  ~ TvTokenKeyboard so the grid follows TokenFormat.KEYBOARD_CHARS instead of a
+  ~ hand-written list of buttons.
+  -->
+<com.google.android.material.button.MaterialButton
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/TvKeyButton"
+    android:layout_width="0dp"
+    android:layout_height="@dimen/wgk_tv_key_height"
+    android:layout_weight="1" />
