@@ -17,6 +17,7 @@ import com.wireguard.android.fragment.TunnelListFragment
 import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.util.ApiClient
 import com.wireguard.android.util.AuthStore
+import com.wireguard.android.util.TokenFormat
 import com.wireguard.config.Config
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -55,8 +56,12 @@ class TvMainActivity : AppCompatActivity() {
         val uri = intent.data ?: return
         if (uri.scheme != "wgkeybot" || uri.host != "config") return
 
-        val oneTimeToken = uri.getQueryParameter("token")?.takeIf { it.isNotBlank() } ?: run {
+        val rawToken = uri.getQueryParameter("token")?.takeIf { it.isNotBlank() } ?: run {
             Toast.makeText(this, getString(R.string.wgk_deeplink_missing_token), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val oneTimeToken = TokenFormat.extract(rawToken) ?: run {
+            Toast.makeText(this, getString(R.string.wgk_token_error_format), Toast.LENGTH_SHORT).show()
             return
         }
         intent.data = null

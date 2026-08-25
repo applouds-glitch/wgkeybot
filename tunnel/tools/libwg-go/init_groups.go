@@ -12,8 +12,30 @@ import (
 	"math/rand"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// dispatchDropCount counts WireGuard packets the dispatcher could not hand to
+// any stream because every ready stream's queue was full. Dropping here is
+// indistinguishable from loss on the far side, so it is logged — sparsely,
+// since a saturated pool would otherwise flood the log at line rate.
+var dispatchDropCount atomic.Uint64
+
+// anyReady separates the two causes: a saturated pool (every ready stream's
+// queue full) from a pool with nothing ready at all, which is the normal state
+// for the first moments after start.
+func noteDispatchDrop(anyReady bool) {
+	n := dispatchDropCount.Add(1)
+	if n != 1 && n%1000 != 0 {
+		return
+	}
+	if anyReady {
+		turnLog("[DISPATCH] Every ready stream's queue was full — %d packets dropped this session", n)
+	} else {
+		turnLog("[DISPATCH] No stream ready yet — %d packets dropped this session", n)
+	}
+}
 
 // TunnelGroupsConfig — configuration for launching multiple WorkerGroups.
 type TunnelGroupsConfig struct {
@@ -48,9 +70,10 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	}
 	n := cfg.StreamsPerGroup
 	if n <= 0 {
-		n = streamsPerCred
+		n = streamsPerCredValue()
 	}
 	wd := cfg.WatchdogTimeout
+	dispatchDropCount.Store(0)
 
 	gCtx, gCancel := context.WithCancel(ctx)
 
@@ -71,6 +94,10 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	if totalStreams <= 0 || totalStreams > len(cfg.Links)*n {
 		totalStreams = len(cfg.Links) * n
 	}
+	// Terminal-failure accounting: the session is only reported as dead once every
+	// one of these workers has given up for good (see turn_fatal.go).
+	resetWorkerFatalState(totalStreams)
+
 	allStreams := make([]*stream, totalStreams)
 	for i := range allStreams {
 		allStreams[i] = &stream{
@@ -86,53 +113,72 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			// Slice the keepalive window by the actual stream count, so every
 			// stream gets its own slot whatever the configured fan-out.
 			kaPhase:           keepalivePhase(i, totalStreams),
-			ssrc:              randU32(), // per-stream RTP SSRC → distinct ChaCha nonce
+			wrapTx:            newWrapTxState(), // per-stream RTP SSRC + counter → distinct ChaCha nonce
 			networkGeneration: cfg.NetworkGeneration,
 		}
 	}
 
 	var groupsWg sync.WaitGroup
-	for gi, link := range cfg.Links {
-		// The last group is short whenever TotalStreams isn't a multiple of n.
-		// Checked before the cascade sleep so a group with nothing to run
-		// doesn't cost 2s on startup.
-		start := gi * n
-		if start >= totalStreams {
-			break
-		}
-		end := start + n
-		if end > totalStreams {
-			end = totalStreams
-		}
+	// The cascade below sleeps ~2s per group, so it is launched in its own
+	// goroutine: run inline it delayed everything after it — including the packet
+	// dispatcher — by 2s × (groups-1), which at four groups meant ~7s during which
+	// 127.0.0.1:9000 was bound but nobody drained it. Stream 0 is typically ready
+	// within a second, so those were WireGuard handshakes sitting in the socket
+	// buffer (or dropped) while a working path was already available.
+	//
+	// The extra Add(1) is held by the launcher itself: without it groupsWg could
+	// reach zero — and close done — before the first group had been added.
+	groupsWg.Add(1)
+	go func() {
+		defer groupsWg.Done()
+		for gi, link := range cfg.Links {
+			// The last group is short whenever TotalStreams isn't a multiple of n.
+			// Checked before the cascade sleep so a group with nothing to run
+			// doesn't cost 2s on startup.
+			start := gi * n
+			if start >= totalStreams {
+				break
+			}
+			end := start + n
+			if end > totalStreams {
+				end = totalStreams
+			}
 
-		if gi > 0 {
-			// Cascading group launch: each group starts ~2s after the
-			// previous one so TURN allocations and VK credential fetches
-			// are staggered across groups instead of fanning out at once.
-			baseDelay := 2 * time.Second
-			jitter := time.Duration(rand.Intn(500)) * time.Millisecond
-			time.Sleep(baseDelay + jitter)
+			if gi > 0 {
+				// Cascading group launch: each group starts ~2s after the
+				// previous one so TURN allocations and VK credential fetches
+				// are staggered across groups instead of fanning out at once.
+				// Abandoned on cancellation so a stop during startup doesn't
+				// keep launching groups for a proxy that is already gone.
+				baseDelay := 2 * time.Second
+				jitter := time.Duration(rand.Intn(500)) * time.Millisecond
+				select {
+				case <-time.After(baseDelay + jitter):
+				case <-gCtx.Done():
+					return
+				}
+			}
+
+			groupStreams := allStreams[start:end]
+
+			groupCfg := WorkerGroupConfig{
+				GroupID:  gi,
+				Link:     link,
+				PeerAddr: cfg.PeerAddr,
+				UseUDP:   cfg.UseUDP,
+				PeerType: cfg.PeerType,
+				TurnIP:   cfg.TurnIP,
+				TurnPort: cfg.TurnPort,
+			}
+
+			groupsWg.Add(1)
+			go func() {
+				defer groupsWg.Done()
+				WorkerGroup(gCtx, groupCfg, groupStreams)
+			}()
+			turnLog("[INIT] Group %d started (link=%.12s, streams %d-%d)", gi, link, start, end-1)
 		}
-
-		groupStreams := allStreams[start:end]
-
-		groupCfg := WorkerGroupConfig{
-			GroupID:  gi,
-			Link:     link,
-			PeerAddr: cfg.PeerAddr,
-			UseUDP:   cfg.UseUDP,
-			PeerType: cfg.PeerType,
-			TurnIP:   cfg.TurnIP,
-			TurnPort: cfg.TurnPort,
-		}
-
-		groupsWg.Add(1)
-		go func() {
-			defer groupsWg.Done()
-			WorkerGroup(gCtx, groupCfg, groupStreams)
-		}()
-		turnLog("[INIT] Group %d started (link=%.12s, streams %d-%d)", gi, link, start, end-1)
-	}
+	}()
 
 	// done closes once every WorkerGroup has fully exited. Each WorkerGroup waits
 	// (via its WaitGroup) for its workers, whose runWithCreds defers
@@ -190,26 +236,37 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 				}
 			}
 
-			var s *stream
+			// Hand the packet to the first ready stream that can take it,
+			// starting at the current chunk's stream. A full s.in used to drop
+			// the packet outright, so one stream whose TX goroutine had stalled
+			// (a slow relay, a reconnect in progress) silently ate its whole
+			// 8-packet chunk even while every sibling sat idle. Spilling over
+			// costs nothing when the queues are empty — the first candidate
+			// accepts — and keeps the loss confined to a genuinely saturated
+			// pool.
+			sent := false
+			anyReady := false
 			for i := 0; i < totalStreams; i++ {
 				st := allStreams[(lastUsed+i)%totalStreams]
-				if st.ready.Load() {
-					s = st
-					break
+				if !st.ready.Load() {
+					continue
 				}
+				anyReady = true
+				select {
+				case st.in <- b[:nRead]:
+					sent = true
+				default:
+					continue
+				}
+				break
 			}
-			if s == nil {
+			if !sent {
 				packetPool.Put(b[:cap(b)])
+				noteDispatchDrop(anyReady)
 				continue
 			}
 
 			packetsInChunk++
-			select {
-			case s.in <- b[:nRead]:
-			default:
-				packetPool.Put(b[:cap(b)])
-			}
-
 			if packetsInChunk >= chunkSize {
 				lastUsed = (lastUsed + 1) % totalStreams
 				packetsInChunk = 0

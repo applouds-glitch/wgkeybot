@@ -40,7 +40,77 @@ const (
 	wrapDefaultMaxBody = 1280 + wgTransportOverhead
 )
 
+// wrapCounter is the legacy SHA keystream's counter. That keystream is derived
+// from (key, counter) alone — it ignores SSRC — so its counter must stay unique
+// across every stream of the process, or two streams would share a keystream at
+// the same counter. ChaCha senders fold their SSRC into the nonce and therefore
+// keep a per-stream counter instead (see wrapTxState).
 var wrapCounter atomic.Uint64
+
+func nextGlobalWrapCounter() uint64 {
+	return (wrapCounter.Add(1) - 1) % wrapCounterMod
+}
+
+// wrapTxState is one stream's outbound WRAP identity: the RTP SSRC written into
+// every header and the counter that feeds both the RTP seq/timestamp and the
+// ChaCha20 nonce.
+//
+// Per-stream rather than process-wide for two reasons. The counter drives
+// seq (counter&0xFFFF) and ts (counter*960) within a single SSRC, so a shared
+// counter made each stream's RTP sequence advance in steps of ~8 — a stream
+// that appears to be losing 87% of its packets, which is exactly what this
+// layer is trying not to look like. And a shared counter reached its wrap
+// point N times sooner with N streams. The server has kept a per-connection
+// ChaCha counter for the same reasons; this brings the client's uplink in line.
+//
+// SSRC and counter are packed into one word so a sender claims both in a single
+// atomic step: two goroutines per stream send WRAP packets (the TX loop and the
+// keepalive/cover loop), and a torn pair would reuse a keystream.
+type wrapTxState struct {
+	// state: SSRC in the high 32 bits, next counter in the low 32. The counter
+	// is < wrapCounterMod, so it never overflows into the SSRC half.
+	state atomic.Uint64
+}
+
+func newWrapTxState() *wrapTxState {
+	s := &wrapTxState{}
+	s.state.Store(uint64(randU32()) << 32)
+	return s
+}
+
+// next claims the (ssrc, counter) pair for one outbound packet.
+//
+// Reaching wrapCounterMod does not merely reset the counter: replaying the same
+// counter under the same SSRC would repeat the (ssrc, dir, counter) nonce and
+// with it the ChaCha20 keystream, and XORing two packets encrypted under one
+// keystream cancels it out. So a wrap opens a fresh nonce domain — new random
+// SSRC, counter back to zero. The server reads the SSRC out of every packet
+// header (it never pins the one it first saw), so the switch needs no
+// negotiation and no coordinated deploy. It also keeps the RTP story straight:
+// a timestamp jumping back to zero is impossible within one SSRC, but perfectly
+// ordinary for a newly started one.
+func (w *wrapTxState) next() (uint32, uint64) {
+	if clientCipher != cipherChaCha {
+		// Legacy SHA keystream: SSRC-independent, so the counter has to come
+		// from the process-wide sequence.
+		return w.ssrc(), nextGlobalWrapCounter()
+	}
+	for {
+		old := w.state.Load()
+		ssrc := uint32(old >> 32)
+		counter := old & 0xFFFFFFFF
+		next := old + 1
+		if counter+1 >= wrapCounterMod {
+			next = uint64(randU32()) << 32
+		}
+		if w.state.CompareAndSwap(old, next) {
+			return ssrc, counter
+		}
+	}
+}
+
+// ssrc reports the SSRC currently in use, without claiming a counter.
+func (w *wrapTxState) ssrc() uint32 { return uint32(w.state.Load() >> 32) }
 
 // wrapMaxBody caps payload+padding so the obfuscation jitter never inflates a
 // near-full WireGuard packet past the tuned tunnel MTU. Without this a full-size
@@ -259,11 +329,11 @@ const wrapMaxOverhead = wrapHdrLen + wrapMaxPad + wrapPadLen
 // wrapPacket for the per-packet TX paths, where the caller owns a scratch
 // buffer for the lifetime of its goroutine. dst must have room for
 // len(payload)+wrapMaxOverhead; dst and payload must not overlap.
-func wrapPacketInto(dst, key, payload []byte, ssrc uint32) (int, error) {
+func wrapPacketInto(dst, key, payload []byte, tx *wrapTxState) (int, error) {
 	if len(key) != wrapKeyLen {
 		return 0, fmt.Errorf("wrap: key must be %d bytes", wrapKeyLen)
 	}
-	counter := (wrapCounter.Add(1) - 1) % wrapCounterMod
+	ssrc, counter := tx.next()
 
 	padLen := randPadLen()
 	// MTU-safety: clamp padding so payload+padding never exceeds wrapMaxBody.
@@ -297,9 +367,9 @@ func wrapPacketInto(dst, key, payload []byte, ssrc uint32) (int, error) {
 // wrapPacket is the allocating form of wrapPacketInto, kept for the cold paths
 // (session handshake, keepalive, cover traffic) where a per-goroutine scratch
 // buffer would not pay for itself.
-func wrapPacket(key, payload []byte, ssrc uint32) ([]byte, error) {
+func wrapPacket(key, payload []byte, tx *wrapTxState) ([]byte, error) {
 	out := make([]byte, len(payload)+wrapMaxOverhead)
-	n, err := wrapPacketInto(out, key, payload, ssrc)
+	n, err := wrapPacketInto(out, key, payload, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -339,11 +409,11 @@ func unwrapPacket(key, wire, dst []byte) (int, error) {
 	return n, nil
 }
 
-func wrapCoverPacket(key []byte, ssrc uint32) ([]byte, error) {
+func wrapCoverPacket(key []byte, tx *wrapTxState) ([]byte, error) {
 	if len(key) != wrapKeyLen {
 		return nil, fmt.Errorf("wrap: key must be %d bytes", wrapKeyLen)
 	}
-	counter := (wrapCounter.Add(1) - 1) % wrapCounterMod
+	ssrc, counter := tx.next()
 
 	bodyLen := 30 + randPadLen()*4
 	plainLen := bodyLen + wrapPadLen
@@ -361,15 +431,15 @@ func wrapCoverPacket(key []byte, ssrc uint32) ([]byte, error) {
 type wrapPacketConn struct {
 	inner net.PacketConn
 	key   []byte
-	ssrc  uint32
+	tx    *wrapTxState
 }
 
 func wrapConn(inner net.PacketConn, key []byte) net.PacketConn {
-	return &wrapPacketConn{inner: inner, key: key, ssrc: randU32()}
+	return &wrapPacketConn{inner: inner, key: key, tx: newWrapTxState()}
 }
 
 func (w *wrapPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	enc, err := wrapPacket(w.key, p, w.ssrc)
+	enc, err := wrapPacket(w.key, p, w.tx)
 	if err != nil {
 		return 0, err
 	}

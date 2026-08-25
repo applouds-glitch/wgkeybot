@@ -92,6 +92,7 @@ dependencies {
     implementation(libs.zxing.android.embedded)
     implementation(libs.kotlinx.coroutines.android)
     coreLibraryDesugaring(libs.desugarJdkLibs)
+    testImplementation(libs.junit)
 }
 
 tasks.withType<JavaCompile>().configureEach {

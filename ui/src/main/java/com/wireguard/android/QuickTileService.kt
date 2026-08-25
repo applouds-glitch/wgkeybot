@@ -4,6 +4,7 @@
  */
 package com.wireguard.android
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.graphics.Bitmap
@@ -16,7 +17,6 @@ import android.provider.Settings
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
-import androidx.annotation.RequiresApi
 import androidx.databinding.Observable
 import androidx.databinding.Observable.OnPropertyChangedCallback
 import com.wireguard.android.activity.MainActivity
@@ -65,8 +65,7 @@ class QuickTileService : TileService() {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                         startActivityAndCollapse(PendingIntent.getActivity(this@QuickTileService, 0, intent, PendingIntent.FLAG_IMMUTABLE))
                     } else {
-                        @Suppress("DEPRECATION")
-                        startActivityAndCollapse(intent)
+                        startActivityAndCollapseCompat(intent)
                     }
                 }
 
@@ -105,6 +104,12 @@ class QuickTileService : TileService() {
                 }
             }
         }
+    }
+
+    @SuppressLint("StartActivityAndCollapseDeprecated")
+    @Suppress("DEPRECATION")
+    private fun startActivityAndCollapseCompat(intent: Intent) {
+        startActivityAndCollapse(intent)
     }
 
     override fun onCreate() {

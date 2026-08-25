@@ -29,6 +29,16 @@ jobs:
         java -version
         go version
 
+    # The host build of libwg-go is the only part of the native layer that can be
+    # checked without the NDK. Keeping it in CI is what catches a build tag or a
+    # stray import that silently drops files out of the host build.
+    - name: Check libwg-go (host build)
+      working-directory: tunnel/tools/libwg-go
+      run: |
+        test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+        go build ./...
+        go test ./...
+
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 

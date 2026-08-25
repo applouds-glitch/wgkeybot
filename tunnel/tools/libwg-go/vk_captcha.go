@@ -7,12 +7,15 @@ package main
 
 /*
 #include <stdlib.h>
-extern const char* requestCaptcha(const char* redirect_uri);
+extern const char* requestCaptcha(const char* redirect_uri, int visible);
+extern void cancelCaptcha();
+extern void burnCaptchaPersona(const char* reason);
 extern const char* getCaptchaDeviceProfile();
 */
 import "C"
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
@@ -30,6 +33,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -81,17 +85,97 @@ var (
 	reCaptchaDebugInfo = regexp.MustCompile(`debug_info:(?:[^"]*\|\|)?"([a-fA-F0-9]{64})"`)
 )
 
-// captchaHeaderOrder mirrors a real Chrome HTTP/2 header order so VK's bot
-// detector sees a plausible browser fingerprint.
-var captchaHeaderOrder = []string{
-	"host", "content-length", "sec-ch-ua-platform", "accept-language",
-	"sec-ch-ua", "content-type", "sec-ch-ua-mobile", "user-agent",
-	"accept", "origin", "sec-fetch-site", "sec-fetch-mode",
-	"sec-fetch-dest", "referer", "accept-encoding", "priority",
+// vkXHRHeaderOrder / vkPHeaderOrder are wire-verified against the reference
+// Chrome 151 capture (tls.peet.ws) — VK's bot detector accepts requests in this
+// exact order; the old pseudo-header order (:method, :path, :authority,
+// :scheme) was one of the transport signals behind the BOT verdict. They are
+// not captcha-specific: every browser-shaped request the app makes (the trigger
+// chain in vk.go included) has to present the same transport, or the phase that
+// hands out the captcha contradicts the phase that solves it.
+var vkXHRHeaderOrder = []string{
+	"host", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+	"user-agent", "accept", "content-type", "origin",
+	"sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "referer",
+	"accept-encoding", "accept-language", "priority", "content-length",
 }
-var captchaPHeaderOrder = []string{":method", ":path", ":authority", ":scheme"}
+
+// vkNavHeaderOrder is the document-navigation variant: Chrome sends
+// upgrade-insecure-requests and sec-fetch-user only when loading a document,
+// and orders the sec-fetch-* block differently than on XHR. The captcha
+// bootstrap GET is a navigation and used to go out with fhttp's default order,
+// which made the very first request of the session the odd one out.
+var vkNavHeaderOrder = []string{
+	"host", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+	"upgrade-insecure-requests", "user-agent", "accept",
+	"sec-fetch-site", "sec-fetch-mode", "sec-fetch-user", "sec-fetch-dest",
+	"accept-encoding", "accept-language", "priority",
+}
+
+var vkPHeaderOrder = []string{":method", ":authority", ":scheme", ":path"}
 
 const captchaNotRobotAPIVersion = "5.131"
+
+// captchaEndpoints ties every host one captcha session talks about to the
+// session VK actually handed us. The page derives all of them from its own URL:
+// `domain` comes from the query string, Origin/Referer are the page's own host,
+// and the captchaNotRobot calls go to api.<domain>. Hardcoding the vk.ru family
+// broke sessions issued on vk.com — and, worse, mixed both families inside one
+// session (domain=vk.com posted to api.vk.ru with Origin id.vk.ru), which is a
+// free inconsistency for the bot detector.
+type captchaEndpoints struct {
+	Domain   string // `domain` form field, e.g. "vk.com"
+	PageHost string // id.vk.com — Origin/Referer of every call, and telemetry referrer.domain
+	APIHost  string // api.vk.com
+}
+
+func captchaEndpointsFromRedirectURI(redirectURI string) captchaEndpoints {
+	ep := captchaEndpoints{Domain: "vk.ru", PageHost: "id.vk.ru", APIHost: "api.vk.ru"}
+	parsed, err := neturl.Parse(redirectURI)
+	if err != nil {
+		return ep
+	}
+	if host := parsed.Hostname(); host != "" {
+		ep.PageHost = host
+	}
+	pageApex := hostApex(ep.PageHost)
+
+	// `domain` as the page reads it from its own query; with no query parameter
+	// the page's own family is the only honest answer — falling back to a
+	// hardcoded vk.ru would be the very mismatch this type exists to prevent.
+	if d := parsed.Query().Get("domain"); d != "" {
+		ep.Domain = d
+	} else if pageApex != "" {
+		ep.Domain = pageApex
+	}
+
+	// The captchaNotRobot calls go to api.<domain>; a `domain` that isn't a bare
+	// apex (a subdomain, or something unexpected) falls back to the page's.
+	apiBase := ep.Domain
+	if strings.Count(apiBase, ".") != 1 {
+		apiBase = pageApex
+	}
+	if apiBase != "" {
+		ep.APIHost = "api." + apiBase
+	}
+	return ep
+}
+
+// hostApex returns the registrable part of a host: id.vk.com → vk.com.
+func hostApex(host string) string {
+	parts := strings.Split(host, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	return strings.Join(parts[len(parts)-2:], ".")
+}
+
+func (ep captchaEndpoints) origin() string { return "https://" + ep.PageHost }
+
+func (ep captchaEndpoints) referer() string { return "https://" + ep.PageHost + "/" }
+
+func (ep captchaEndpoints) methodURL(method string) string {
+	return "https://" + ep.APIHost + "/method/" + method + "?v=" + captchaNotRobotAPIVersion
+}
 
 var captchaFormFieldOrder = map[string][]string{
 	"captchaNotRobot.settings": {
@@ -248,85 +332,79 @@ func (e *VkCaptchaError) IsCaptchaError() bool {
 // captchaMutex serializes captcha solving to avoid multiple concurrent attempts
 var captchaMutex sync.Mutex
 
-/*
-// solveVkCaptcha solves the VK Not Robot Captcha and returns success_token
-// First tries automatic solution, falls back to WebView if it fails
-func solveVkCaptcha(ctx context.Context, streamID int, client tlsclient.HttpClient, profile Profile, captchaErr *VkCaptchaError) (string, error) {
-	// Serialize captcha solving to avoid multiple concurrent attempts
+// captchaGeneration is bumped by abortPendingCaptcha every time the proxy is
+// stopped or restarted. solveCaptchaViaUI samples it before queueing on
+// captchaMutex and gives up if it moved while it waited, so a stop does not just
+// interrupt the captcha that is on screen — it also cancels the ones lined up
+// behind it, which would otherwise open a fresh dialog for a session that no
+// longer exists.
+var captchaGeneration atomic.Uint64
+
+// abortPendingCaptcha tells the Android layer to dismiss any captcha UI and
+// invalidates the queued solve attempts. Called from the proxy stop/restart
+// paths: requestCaptcha blocks its worker inside the Java handler for up to 120s
+// and neither ctx cancellation nor wgTurnProxyStop could reach it, so a user who
+// pressed disconnect kept the dialog on screen and the next connect blocked on
+// captchaMutex until the old solve timed out.
+func abortPendingCaptcha() {
+	captchaGeneration.Add(1)
+	C.cancelCaptcha()
+}
+
+// solveCaptchaViaUI runs the blocking Android captcha UI for one caller at a
+// time and reports whether the token came from the shared cache instead.
+// visible picks the UI: false = invisible auto-clicking WebView, true = the
+// full-screen CaptchaActivity dialog.
+//
+// The caller states the mode explicitly because Go owns the escalation ladder.
+// The Kotlin side used to decide by itself, alternating on its own boolean, and
+// the two drifted apart the moment Go deviated from the plain
+// invisible-then-visible order (slider POC failure skips the invisible round) or
+// resolved a captcha without calling in at all (POC success). The drift ran both
+// ways: a "visible dialog" round that silently ran the invisible WebView on a
+// slider it cannot solve, and a spurious full-screen dialog as the first UI of
+// the next captcha.
+//
+// Serialization is not optional here. vkSemaphore admits two credential fetches
+// at once, so two goroutines can hit a captcha simultaneously, while the Android
+// side keeps exactly one pending result (CaptchaActivity.pendingResult).
+// Concurrent callers therefore overwrote each other: the first blocked until its
+// 120s timeout, and the loser's Activity delivered an empty token into the
+// winner's future.
+//
+// Waiting costs little: the winner caches its success_token for the link (4 uses),
+// so a waiter normally finds one here and never opens a second WebView.
+func solveCaptchaViaUI(link, redirectURI string, visible bool) (token string, fromCache bool) {
+	gen := captchaGeneration.Load()
 	captchaMutex.Lock()
 	defer captchaMutex.Unlock()
 
-	turnLog("[Captcha] Solving Not Robot Captcha...")
-
-	// Step 1: Try automatic solution
-	turnLog("[Captcha] Attempting automatic solution...")
-	successToken, err := solveVkCaptchaAutomatic(ctx, streamID, client, profile, captchaErr)
-	if err == nil && successToken != "" {
-		turnLog("[Captcha] Automatic solution SUCCESS!")
-		return successToken, nil
+	// The proxy was stopped or restarted while this caller queued behind the
+	// mutex — the session it would have served is gone.
+	if captchaGeneration.Load() != gen {
+		turnLog("[Captcha] Solve abandoned: proxy stopped while waiting for the captcha lock")
+		return "", false
 	}
 
-	turnLog("[Captcha] Automatic solution FAILED: %v", err)
-	turnLog("[Captcha] Falling back to WebView...")
+	if cached := popCaptchaToken(link); cached != "" {
+		return cached, true
+	}
 
-	// Step 2: Fall back to WebView
-	turnLog("[Captcha] Opening WebView for manual solving...")
-	redirectURICStr := C.CString(captchaErr.RedirectUri)
+	redirectURICStr := C.CString(redirectURI)
 	defer C.free(unsafe.Pointer(redirectURICStr))
 
-	cToken := C.requestCaptcha(redirectURICStr)
+	visibleFlag := C.int(0)
+	if visible {
+		visibleFlag = 1
+	}
+	cToken := C.requestCaptcha(redirectURICStr, visibleFlag)
 	if cToken == nil {
-		return "", fmt.Errorf("WebView captcha solving failed: returned nil token")
+		return "", false
 	}
 	defer C.free(unsafe.Pointer(cToken))
 
-	successToken = C.GoString(cToken)
-	if successToken == "" {
-		return "", fmt.Errorf("WebView captcha solving failed: returned empty token")
-	}
-
-	turnLog("[Captcha] WebView solution SUCCESS! Got success_token")
-	return successToken, nil
+	return C.GoString(cToken), false
 }
-
-// solveVkCaptchaAutomatic performs the automatic captcha solving without UI
-func solveVkCaptchaAutomatic(ctx context.Context, streamID int, client tlsclient.HttpClient, profile Profile, captchaErr *VkCaptchaError) (string, error) {
-	sessionToken := captchaErr.SessionToken
-	if sessionToken == "" {
-		return "", fmt.Errorf("no session_token in redirect_uri")
-	}
-
-	// Step 1: Fetch the captcha HTML page to get powInput
-	bootstrap, err := fetchCaptchaBootstrap(ctx, captchaErr.RedirectUri, client, profile)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch captcha bootstrap: %w", err)
-	}
-
-	turnLog("[Captcha] PoW input: %s, difficulty: %d", bootstrap.PowInput, bootstrap.Difficulty)
-
-	// Step 2: Solve PoW
-	hash := solvePoW(bootstrap.PowInput, bootstrap.Difficulty)
-	turnLog("[Captcha] PoW solved: hash=%s", hash)
-
-	// Step 3: Call captchaNotRobot API with slider POC support
-	successToken, err := callCaptchaNotRobotWithSliderPOC(
-		ctx,
-		captchaErr.SessionToken,
-		hash,
-		streamID,
-		client,
-		profile,
-		bootstrap.Settings,
-	)
-
-	if err != nil {
-		return "", fmt.Errorf("callCaptchaNotRobotWithSliderPOC API failed: %w", err)
-	}
-
-	turnLog("[Captcha] Success! Got success_token")
-	return successToken, nil
-}
-*/
 
 func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID int, client tlsclient.HttpClient, profile Profile, useSliderPOC bool) (string, error) {
 	if captchaErr.SessionToken == "" {
@@ -348,9 +426,17 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID in
 		}
 		lastErr = err
 		turnLog("[STREAM %d] [Captcha] attempt %d/%d failed: %v", streamID, attempt, maxAttempts, err)
+		// Both verdicts judge the identity we presented rather than this
+		// particular request, so the persona is retired before anything else runs
+		// — every later step of this captcha, WebView included, would otherwise
+		// keep showing VK the device it has just refused.
+		if errors.Is(err, errCaptchaBot) {
+			burnCaptchaPersona("VK returned BOT for this device")
+		}
 		// VK has throttled this captcha session. Stop and let the caller fall
 		// back to the WebView.
 		if isCaptchaSessionExhausted(err) {
+			burnCaptchaPersona("VK rate-limited the captcha session")
 			turnLog("[STREAM %d] [Captcha] Session throttled (ERROR_LIMIT) — abandoning auto solve", streamID)
 			return "", err
 		}
@@ -376,19 +462,27 @@ func solveVkCaptchaOnce(ctx context.Context, captchaErr *VkCaptchaError, streamI
 		turnLog("[STREAM %d] [Captcha] Solving captcha...", streamID)
 	}
 
+	// Every host of this session — the `domain` form field, the Origin/Referer
+	// of each call, the API host and the referrer reported in the PoW telemetry
+	// — comes from the redirect_uri VK issued, so a vk.com session never mixes
+	// in a vk.ru host.
+	endpoints := captchaEndpointsFromRedirectURI(captchaErr.RedirectURI)
+	turnLog("[STREAM %d] [Captcha] Endpoints: domain=%s page=%s api=%s",
+		streamID, endpoints.Domain, endpoints.PageHost, endpoints.APIHost)
+
 	bootstrap, err := fetchCaptchaBootstrap(ctx, captchaErr.RedirectURI, client, profile)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch captcha bootstrap: %w", err)
 	}
 
-	turnLog("[STREAM %d] [Captcha] PoW difficulty: %d", streamID, bootstrap.Difficulty)
-	hash := solvePoW(ctx, bootstrap.PowInput, bootstrap.Difficulty)
+	turnLog("[STREAM %d] [Captcha] PoW difficulty: %d (v2=%t)", streamID, bootstrap.Difficulty, bootstrap.PowV2)
+	hash := solvePoW(ctx, bootstrap.PowInput, bootstrap.Difficulty, bootstrap.PowV2, profile, endpoints)
 	if hash == "" {
 		return "", fmt.Errorf("PoW solve failed or cancelled")
 	}
 	turnLog("[STREAM %d] [Captcha] PoW solved", streamID)
 
-	debugInfo, err := fetchDebugInfoFromScript(ctx, bootstrap.ScriptURL, client, profile)
+	debugInfo, err := fetchDebugInfoFromScript(ctx, bootstrap.ScriptURL, client, profile, endpoints)
 	if err != nil {
 		turnLog("[STREAM %d] [Captcha] Warning: could not fetch debug_info dynamically: %v — using fallback", streamID, err)
 		debugInfo = captchaDebugInfo
@@ -409,7 +503,7 @@ func solveVkCaptchaOnce(ctx context.Context, captchaErr *VkCaptchaError, streamI
 	// per-token rate limit (ERROR_LIMIT) before the slider image could load.
 	if useSliderPOC || bootstrapHasSlider {
 		successToken, err := callCaptchaNotRobotWithSliderPOC(
-			ctx, captchaErr.SessionToken, hash, debugInfo, streamID, client, profile, bootstrap.Settings,
+			ctx, captchaErr.SessionToken, hash, debugInfo, streamID, client, profile, bootstrap.Settings, endpoints,
 		)
 		if err != nil {
 			return "", fmt.Errorf("captchaNotRobot slider POC failed: %w", err)
@@ -421,7 +515,7 @@ func solveVkCaptchaOnce(ctx context.Context, captchaErr *VkCaptchaError, streamI
 	// No slider advertised — try the plain checkbox solver. If its own live
 	// settings reveal a slider it returns errSliderDetected, and the caller
 	// (vk.go) re-enters this with useSliderPOC=true for the unified path above.
-	successToken, err := callCaptchaNotRobot(ctx, captchaErr.SessionToken, hash, debugInfo, streamID, client, profile)
+	successToken, err := callCaptchaNotRobot(ctx, captchaErr.SessionToken, hash, debugInfo, streamID, client, profile, endpoints)
 	if err != nil {
 		return "", fmt.Errorf("captchaNotRobot API failed: %w", err)
 	}
@@ -435,12 +529,15 @@ func applyBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
 	req.Header.Set("sec-ch-ua-mobile", profile.SecChUaMobile)
 	req.Header.Set("sec-ch-ua-platform", profile.SecChUaPlatform)
 	req.Header.Set("Accept-Language", profileAcceptLanguage(profile))
-	req.Header.Set("DNT", "1")
+	// No DNT: Chrome dropped the setting, so a real Chrome 151 never sends the
+	// header. The captcha path used to strip it back off; sending it anywhere
+	// else was the same signal, just outside the phase we were measuring.
 }
 
-// Fallback only. Kept identical to CaptchaFingerprintProbe.USER_AGENT and the
-// captcha solver WebView UA (CaptchaActivity) so a fingerprint-probe failure
-// still yields the same Android mobile UA VK sees in the interactive captcha.
+// Fallback only, for when the Android device profile is unavailable (provider
+// not yet registered, or a non-Android build). Normally the UA comes from that
+// profile, where it is the current CaptchaPersona's — the same one both WebViews
+// set — so every step of one captcha presents a single Android mobile UA.
 const captchaWebViewUserAgent = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
 
 // applyCaptchaBrowserProfileFhttp matches the actual Android WebView requests
@@ -483,7 +580,6 @@ func applyCaptchaBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
 	} else {
 		req.Header.Set("sec-ch-ua-platform", `"Android"`)
 	}
-	req.Header.Del("DNT")
 }
 
 // profileAcceptLanguage returns the Accept-Language header for a profile,
@@ -545,6 +641,18 @@ func generateBrowserFp(_ Profile, _ captchaViewport) string {
 	return hex.EncodeToString(b)
 }
 
+// captchaAdFpFromBrowserFp derives the adFp (window.rb_sync.id) from the
+// persisted browser_fp: the same 16 random bytes in base64url. The reference
+// browser sent a stable adFp in every captchaNotRobot call — an empty adFp,
+// or a fresh one per solve, is an avoidable bot signal.
+func captchaAdFpFromBrowserFp(browserFp string) string {
+	raw, err := hex.DecodeString(browserFp)
+	if err != nil || len(raw) != 16 {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
 // androidDeviceMetrics is the real device fingerprint sourced from the Android
 // layer via JNI (TurnBackend.getCaptchaDeviceProfile). Feeding the captcha
 // solver the device's actual screen, pixel ratio and core/memory counts — plus
@@ -574,6 +682,11 @@ type androidDeviceMetrics struct {
 	NotificationsPermission string           `json:"notificationsPermission"`
 	WebViewMajor            int              `json:"webViewMajor"`
 	BrowserFp               string           `json:"browserFp"`
+	// PrefersDark is the device's real UI theme, reported for the PoW
+	// telemetry's match_media probe. A pointer so "the Android layer said
+	// nothing" stays distinguishable from "light theme": absent falls back to
+	// the reference capture's dark mode.
+	PrefersDark *bool `json:"prefersDark"`
 }
 
 type captchaUABrand struct {
@@ -582,40 +695,73 @@ type captchaUABrand struct {
 }
 
 var (
-	androidDevMu   sync.Mutex
-	androidDevVal  *androidDeviceMetrics
-	androidDevDone bool
+	androidDevMu  sync.Mutex
+	androidDevVal *androidDeviceMetrics
+	androidDevAt  time.Time
 )
 
+// androidProfileTTL bounds how long a fetched device profile is reused. The
+// identity inside it (UA, viewport, browser_fp) belongs to a persona the Android
+// side rotates on a budget, so caching the first fetch for the life of the
+// process — which is what this used to do — pinned the very first persona
+// forever and defeated the rotation. The TTL is comfortably shorter than the
+// Android side's attempt window, so a rotation is picked up promptly, and long
+// enough that every step of one solve reads the same persona.
+const androidProfileTTL = 60 * time.Second
+
 // androidCaptchaProfile returns the real device metrics from the Android layer,
-// caching the first successful fetch. An empty/invalid result is NOT cached, so
-// a captcha that fires before the provider is registered still picks up the
-// real profile on a later attempt. Callers fall back to synthetic values when
-// ok is false (non-Android builds, or provider not yet registered).
+// caching them for androidProfileTTL. An empty/invalid result does not overwrite
+// the last good profile — a captcha that fires before the provider is registered
+// still picks the real one up on a later attempt. Callers fall back to synthetic
+// values when ok is false (non-Android builds, or provider not yet registered).
 func androidCaptchaProfile() (*androidDeviceMetrics, bool) {
 	androidDevMu.Lock()
 	defer androidDevMu.Unlock()
-	if androidDevDone {
-		return androidDevVal, androidDevVal != nil
+	if androidDevVal != nil && time.Since(androidDevAt) < androidProfileTTL {
+		return androidDevVal, true
 	}
 	js := fetchAndroidDeviceProfileJSON()
 	if js == "" {
-		return nil, false
+		return androidDevVal, androidDevVal != nil
 	}
 	var m androidDeviceMetrics
 	if err := json.Unmarshal([]byte(js), &m); err != nil {
 		turnLog("[Captcha] device profile parse failed: %v", err)
-		return nil, false
+		return androidDevVal, androidDevVal != nil
 	}
 	if m.ScreenWidth <= 0 || m.ScreenHeight <= 0 || m.DevicePixelRatio <= 0 {
 		turnLog("[Captcha] device profile incomplete — using synthetic values")
-		return nil, false
+		return androidDevVal, androidDevVal != nil
 	}
 	androidDevVal = &m
-	androidDevDone = true
-	turnLog("[Captcha] device profile loaded: %dx%d dpr=%.3f cores=%d mem=%d fp=%.8s",
-		m.ScreenWidth, m.ScreenHeight, m.DevicePixelRatio, m.HardwareConcurrency, m.DeviceMemory, m.BrowserFp)
+	androidDevAt = time.Now()
+	turnLog("[Captcha] device profile loaded: %dx%d dpr=%.3f inner=%dx%d cores=%d mem=%d fp=%.8s",
+		m.ScreenWidth, m.ScreenHeight, m.DevicePixelRatio, m.InnerWidth, m.InnerHeight,
+		m.HardwareConcurrency, m.DeviceMemory, m.BrowserFp)
 	return androidDevVal, true
+}
+
+// invalidateAndroidCaptchaProfile drops the cached profile so the next call
+// fetches a fresh one. Used after burning a persona: the identity the cache
+// holds has just been retired.
+func invalidateAndroidCaptchaProfile() {
+	androidDevMu.Lock()
+	androidDevVal = nil
+	androidDevAt = time.Time{}
+	androidDevMu.Unlock()
+}
+
+// burnCaptchaPersona tells the Android side that VK rejected the identity it is
+// currently presenting — a rate limit, a BOT verdict, or a solve ladder that ran
+// out of modes — so the next captcha gets a freshly minted one instead of
+// spending the rest of the current persona's budget on an identity VK has
+// already refused. Safe to call when no persona exists; the Java side no-ops.
+func burnCaptchaPersona(reason string) {
+	turnLog("[Captcha] Burning device persona: %s", reason)
+	cReason := C.CString(reason)
+	C.burnCaptchaPersona(cReason)
+	C.free(unsafe.Pointer(cReason))
+	invalidateAndroidCaptchaProfile()
 }
 
 func fetchAndroidDeviceProfileJSON() string {
@@ -627,19 +773,32 @@ func fetchAndroidDeviceProfileJSON() string {
 	return C.GoString(c)
 }
 
-// generateConnectionMetrics mirrors the two captured WebView requests: RTT was
-// unavailable, while NetworkInformation.downlink was sampled repeatedly at a
-// fixed value during the page lifetime (22 and 30 samples respectively).
-func generateConnectionMetrics() (rtt string, downlink string) {
-	rtt = "[]"
-	dlValues := make([]string, 22+rand.Intn(9))
-	value := math.Round((8.0+rand.Float64()*2.5)*10) / 10
-	formatted := strconv.FormatFloat(value, 'f', -1, 64)
-	for i := range dlValues {
-		dlValues[i] = formatted
+// generateNetworkSamples mirrors the browser's connectionRtt/connectionDownlink
+// arrays: one constant value per session, one sample per 200ms sensors_delay
+// tick. The sample count must match the componentDone→check window — a random
+// count decoupled from the actual elapsed time is a bot signal VK checks.
+func generateNetworkSamples(n int) (rtt string, downlink string) {
+	if n < 1 {
+		n = 1
 	}
-	downlink = "[" + strings.Join(dlValues, ",") + "]"
-	return
+	rttVal := 40 + rand.Intn(61)
+	downlinkVal := math.Round((1.6+rand.Float64()*8)*10) / 10
+
+	rtts := make([]float64, 0, n)
+	downlinks := make([]float64, 0, n)
+	for i := 0; i < n; i++ {
+		rtts = append(rtts, float64(rttVal))
+		downlinks = append(downlinks, downlinkVal)
+	}
+
+	encode := func(v interface{}) string {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return "[]"
+		}
+		return string(raw)
+	}
+	return encode(rtts), encode(downlinks)
 }
 
 func fetchCaptchaBootstrap(ctx context.Context, redirectURI string, client tlsclient.HttpClient, profile Profile) (*captchaBootstrap, error) {
@@ -658,8 +817,13 @@ func fetchCaptchaBootstrap(ctx context.Context, redirectURI string, client tlscl
 	applyCaptchaBrowserProfileFhttp(req, profile)
 	req.Header.Set("Sec-Fetch-Site", "none")
 	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-User", "?1")
 	req.Header.Set("Sec-Fetch-Dest", "document")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+	req.Header.Set("Priority", "u=0, i")
+	req.Header[fhttp.HeaderOrderKey] = vkNavHeaderOrder
+	req.Header[fhttp.PHeaderOrderKey] = vkPHeaderOrder
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -700,7 +864,6 @@ func buildCaptchaDeviceJSON(profile Profile, vp captchaViewport) string {
 			DevicePixelRatio        float64  `json:"devicePixelRatio"`
 			Language                string   `json:"language"`
 			Languages               []string `json:"languages"`
-			Webdriver               bool     `json:"webdriver"`
 			HardwareConcurrency     int      `json:"hardwareConcurrency"`
 			DeviceMemory            int      `json:"deviceMemory"`
 			ConnectionEffectiveType string   `json:"connectionEffectiveType"`
@@ -711,7 +874,6 @@ func buildCaptchaDeviceJSON(profile Profile, vp captchaViewport) string {
 			InnerWidth: m.InnerWidth, InnerHeight: m.InnerHeight,
 			DevicePixelRatio: m.DevicePixelRatio,
 			Language:         m.Language, Languages: languages,
-			Webdriver:           false,
 			HardwareConcurrency: m.HardwareConcurrency, DeviceMemory: m.DeviceMemory,
 			ConnectionEffectiveType: effectiveType, NotificationsPermission: notifications,
 		}
@@ -727,22 +889,10 @@ func buildCaptchaDeviceJSON(profile Profile, vp captchaViewport) string {
 	innerHeight := int(math.Round(float64(376+rand.Intn(13)) / vp.DevicePixelRatio))
 	language, languages := captchaDeviceLanguages(profile)
 
-	// Prefer the device's real core/memory counts; fall back to plausible
-	// randomized values off-device or before the Android profile is available.
-	hardwareConcurrency := 6 + rand.Intn(3) // 6-8 cores
-	memChoices := []int{4, 6, 8}
-	deviceMemory := memChoices[rand.Intn(len(memChoices))]
-	if m, ok := androidCaptchaProfile(); ok {
-		if m.HardwareConcurrency > 0 {
-			hardwareConcurrency = m.HardwareConcurrency
-		}
-		if m.DeviceMemory > 0 {
-			deviceMemory = m.DeviceMemory
-		}
-	}
+	hardwareConcurrency, deviceMemory := captchaHardwareProfile()
 
 	return fmt.Sprintf(
-		`{"screenWidth":%d,"screenHeight":%d,"screenAvailWidth":%d,"screenAvailHeight":%d,"innerWidth":%d,"innerHeight":%d,"devicePixelRatio":%s,"language":"%s","languages":%s,"webdriver":false,"hardwareConcurrency":%d,"deviceMemory":%d,"connectionEffectiveType":"4g","notificationsPermission":"denied"}`,
+		`{"screenWidth":%d,"screenHeight":%d,"screenAvailWidth":%d,"screenAvailHeight":%d,"innerWidth":%d,"innerHeight":%d,"devicePixelRatio":%s,"language":"%s","languages":%s,"hardwareConcurrency":%d,"deviceMemory":%d,"connectionEffectiveType":"4g","notificationsPermission":"denied"}`,
 		vp.Width, vp.Height, vp.Width, vp.Height, innerWidth, innerHeight,
 		strconv.FormatFloat(vp.DevicePixelRatio, 'f', -1, 64),
 		language, languages,
@@ -751,12 +901,49 @@ func buildCaptchaDeviceJSON(profile Profile, vp captchaViewport) string {
 	)
 }
 
-func solvePoW(ctx context.Context, powInput string, difficulty int) string {
+// captchaHardwareProfile returns the navigator.hardwareConcurrency /
+// navigator.deviceMemory pair every part of one solve must agree on: the device
+// JSON of componentDone and the globals.hw/globals.mem of the PoW telemetry.
+// On-device both come from the real device. Off-device (probe builds, or before
+// the Android profile is registered) the fallback is randomized once per
+// process rather than per call — two random draws inside one solve is exactly
+// the self-contradiction VK looks for.
+func captchaHardwareProfile() (hardwareConcurrency int, deviceMemory int) {
+	fallbackHardwareOnce.Do(func() {
+		fallbackHardwareConcurrency = 6 + rand.Intn(3) // 6-8 cores
+		memChoices := []int{4, 6, 8}
+		fallbackDeviceMemory = memChoices[rand.Intn(len(memChoices))]
+	})
+	// A device that reports only one of the two still keeps its real value.
+	hardwareConcurrency, deviceMemory = fallbackHardwareConcurrency, fallbackDeviceMemory
+	if m, ok := androidCaptchaProfile(); ok {
+		if m.HardwareConcurrency > 0 {
+			hardwareConcurrency = m.HardwareConcurrency
+		}
+		if m.DeviceMemory > 0 {
+			deviceMemory = m.DeviceMemory
+		}
+	}
+	return hardwareConcurrency, deviceMemory
+}
+
+var (
+	fallbackHardwareOnce        sync.Once
+	fallbackHardwareConcurrency int
+	fallbackDeviceMemory        int
+)
+
+func solvePoW(ctx context.Context, powInput string, difficulty int, v2 bool, profile Profile, ep captchaEndpoints) string {
 	if powInput == "" || difficulty <= 0 {
 		return ""
 	}
+	// The real browser solved difficulty 2 with nonce 76 in duration_ms=2, so
+	// start from nonce 0 and keep the reported solve time small and honest —
+	// a duration_ms of hundreds of ms for a trivial hash is a bot signal.
+	start := time.Now()
+	time.Sleep(time.Duration(2+rand.Intn(4)) * time.Millisecond)
 	target := strings.Repeat("0", difficulty)
-	for nonce := 1; nonce <= 10000000; nonce++ {
+	for nonce := 0; nonce <= 10000000; nonce++ {
 		if nonce%4096 == 0 {
 			select {
 			case <-ctx.Done():
@@ -766,17 +953,158 @@ func solvePoW(ctx context.Context, powInput string, difficulty int) string {
 		}
 		hash := sha256.Sum256([]byte(powInput + strconv.Itoa(nonce)))
 		hexHash := hex.EncodeToString(hash[:])
-		if strings.HasPrefix(hexHash, target) {
+		if !strings.HasPrefix(hexHash, target) {
+			continue
+		}
+		if !v2 {
 			return hexHash
 		}
+		return encodePowResultV2(hexHash, nonce, time.Since(start), profile, ep)
 	}
 	return ""
+}
+
+// encodePowResultV2 mirrors the obfuscated inline PoW solver VK now ships on
+// the captcha page: the check's hash param is "v2." + base64(JSON payload)
+// carrying the digest, nonce, timing and a browser-environment snapshot, not
+// the bare hex digest the legacy pages used.
+func encodePowResultV2(hexHash string, nonce int, duration time.Duration, profile Profile, ep captchaEndpoints) string {
+	telemetry := buildPowTelemetry(profile, ep)
+
+	canonicalTelemetry, err := marshalLikeJSONStringify(telemetry)
+	if err != nil {
+		return ""
+	}
+	telHashBytes := sha256.Sum256(canonicalTelemetry)
+	telHash := hex.EncodeToString(telHashBytes[:])
+
+	payload := struct {
+		Hash       string      `json:"hash"`
+		Nonce      int         `json:"nonce"`
+		DurationMs int64       `json:"duration_ms"`
+		Telemetry  interface{} `json:"telemetry"`
+		TelHash    string      `json:"tel_hash"`
+	}{
+		Hash:       hexHash,
+		Nonce:      nonce,
+		DurationMs: duration.Milliseconds(),
+		Telemetry:  telemetry,
+		TelHash:    telHash,
+	}
+
+	raw, err := marshalLikeJSONStringify(payload)
+	if err != nil {
+		return ""
+	}
+	return "v2." + base64.StdEncoding.EncodeToString(raw)
+}
+
+// marshalLikeJSONStringify serializes v the way the solver's JSON.stringify
+// does. Go's json.Marshal rewrites <, > and & into their six-character unicode
+// escapes; JavaScript's leaves them as-is. Every byte of telemetry is hashed
+// into tel_hash, so one such character anywhere in it — a referrer carrying a
+// query string, a page host, any field VK adds later — makes our digest
+// disagree with the one their own code would have produced, and the check comes
+// back BOT with nothing in the logs to point at. The escaping is off by default
+// in JS and has to be turned off explicitly here; Encode also appends a newline
+// json.Marshal does not, so trim it.
+func marshalLikeJSONStringify(v interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+// buildPowTelemetry reproduces the environment snapshot the v2 solver embeds
+// in its result (globals/ua/frame/match_media/plugins/... from the browser).
+// Every field is wrapped as {ok: bool, result: ...} — a failed probe becomes
+// {ok: false, error: "exception"}. Values match a stock Android WebView; the
+// canonical form hashed into tel_hash is json.Marshal of these maps, whose
+// sorted key order matches the solver's sorted-key stringify.
+func buildPowTelemetry(profile Profile, ep captchaEndpoints) map[string]interface{} {
+	// Same source as the device JSON: telemetry claiming 8 cores while the
+	// device JSON of the same session claims 6 is the contradiction this whole
+	// path exists to avoid.
+	hardwareConcurrency, deviceMemory := captchaHardwareProfile()
+
+	// The UA embedded in the telemetry must match the UA the captcha-phase
+	// requests send (applyCaptchaBrowserProfileFhttp): the Android WebView
+	// persona's, falling back to the trigger-phase profile UA.
+	userAgent := profile.UserAgent
+	if m, ok := androidCaptchaProfile(); ok && m.UserAgent != "" {
+		userAgent = m.UserAgent
+	}
+	if userAgent == "" {
+		userAgent = captchaWebViewUserAgent
+	}
+
+	// The device's real theme when Android reports one; the reference capture's
+	// dark mode otherwise.
+	prefersDark := true
+	if m, ok := androidCaptchaProfile(); ok && m.PrefersDark != nil {
+		prefersDark = *m.PrefersDark
+	}
+
+	ok := func(result interface{}) map[string]interface{} {
+		return map[string]interface{}{"ok": true, "result": result}
+	}
+
+	return map[string]interface{}{
+		"globals": ok(map[string]interface{}{
+			"doc":       true,
+			"win":       true,
+			"nav":       true,
+			"webdriver": false,
+			"hw":        hardwareConcurrency,
+			"mem":       deviceMemory,
+		}),
+		"ua": ok(map[string]interface{}{"userAgent": userAgent}),
+		"frame": ok(map[string]interface{}{
+			// The solver runs in the top frame of the captcha page, so
+			// parentAccessible must be true — the page itself reports it that
+			// way and the reference capture confirmed it.
+			"frameElement":       nil,
+			"ancestorOriginsLen": 0,
+			"parentAccessible":   true,
+		}),
+		"match_media": ok(map[string]interface{}{
+			// The theme is the device's real one (the visible WebView fallback
+			// runs on the same device and would report it truthfully); the
+			// pointer is coarse on a phone. Reference capture: dark, coarse.
+			"prefersDark":   prefersDark,
+			"prefersLight":  !prefersDark,
+			"reducedMotion": false,
+			"pointerFine":   false,
+		}),
+		"plugins": ok(map[string]interface{}{
+			"length":   0,
+			"names":    []string{},
+			"isChrome": false,
+		}),
+		"nav_tamper": ok(map[string]interface{}{"tampered": false}),
+		"referrer": ok(map[string]interface{}{
+			"referrer": "",
+			"inIframe": false,
+			// The page the solver runs on — id.vk.ru or id.vk.com, whichever
+			// issued this session.
+			"domain": ep.PageHost,
+		}),
+		"devtools": ok(map[string]interface{}{"open": false}),
+		"css":      ok(map[string]interface{}{"expectedMissing": 0}),
+		"native_integrity": ok(map[string]interface{}{
+			"protoMatch": true,
+			"xhrNative":  true,
+		}),
+	}
 }
 
 // fetchDebugInfoFromScript downloads the captcha JS bundle and extracts the
 // debug_info hash embedded in it.  Results are cached by script URL so we only
 // pay the fetch cost once per unique script version.
-func fetchDebugInfoFromScript(ctx context.Context, scriptURL string, client tlsclient.HttpClient, profile Profile) (string, error) {
+func fetchDebugInfoFromScript(ctx context.Context, scriptURL string, client tlsclient.HttpClient, profile Profile, ep captchaEndpoints) (string, error) {
 	if scriptURL == "" {
 		return "", fmt.Errorf("empty script URL")
 	}
@@ -793,12 +1121,12 @@ func fetchDebugInfoFromScript(ctx context.Context, scriptURL string, client tlsc
 	}
 	applyCaptchaBrowserProfileFhttp(req, profile)
 	req.Header.Set("Accept", "text/javascript,*/*")
-	req.Header.Set("Referer", "https://id.vk.ru/")
+	req.Header.Set("Referer", ep.referer())
 	req.Header.Set("Sec-Fetch-Site", "same-site")
 	req.Header.Set("Sec-Fetch-Mode", "no-cors")
 	req.Header.Set("Sec-Fetch-Dest", "script")
-	req.Header[fhttp.HeaderOrderKey] = captchaHeaderOrder
-	req.Header[fhttp.PHeaderOrderKey] = captchaPHeaderOrder
+	req.Header[fhttp.HeaderOrderKey] = vkXHRHeaderOrder
+	req.Header[fhttp.PHeaderOrderKey] = vkPHeaderOrder
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -821,9 +1149,9 @@ func fetchDebugInfoFromScript(ctx context.Context, scriptURL string, client tlsc
 	return v, nil
 }
 
-func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo string, streamID int, client tlsclient.HttpClient, profile Profile) (string, error) {
+func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo string, streamID int, client tlsclient.HttpClient, profile Profile, ep captchaEndpoints) (string, error) {
 	vkReq := func(method string, values neturl.Values) (map[string]interface{}, error) {
-		reqURL := "https://api.vk.ru/method/" + method + "?v=" + captchaNotRobotAPIVersion
+		reqURL := ep.methodURL(method)
 		req, err := fhttp.NewRequestWithContext(ctx, "POST", reqURL, strings.NewReader(encodeCaptchaForm(method, values)))
 		if err != nil {
 			return nil, err
@@ -831,14 +1159,14 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 		applyCaptchaBrowserProfileFhttp(req, profile)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "*/*")
-		req.Header.Set("Origin", "https://id.vk.ru")
-		req.Header.Set("Referer", "https://id.vk.ru/")
+		req.Header.Set("Origin", ep.origin())
+		req.Header.Set("Referer", ep.referer())
 		req.Header.Set("Sec-Fetch-Site", "same-site")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
 		req.Header.Set("Priority", "u=1, i")
-		req.Header[fhttp.HeaderOrderKey] = captchaHeaderOrder
-		req.Header[fhttp.PHeaderOrderKey] = captchaPHeaderOrder
+		req.Header[fhttp.HeaderOrderKey] = vkXHRHeaderOrder
+		req.Header[fhttp.PHeaderOrderKey] = vkPHeaderOrder
 
 		httpResp, err := client.Do(req)
 		if err != nil {
@@ -858,11 +1186,13 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 	}
 
 	vp := randomViewport()
+	browserFp := generateBrowserFp(profile, vp)
+	adFp := captchaAdFpFromBrowserFp(browserFp)
 	baseValues := func() neturl.Values {
 		values := neturl.Values{}
 		values.Set("session_token", sessionToken)
-		values.Set("domain", "vk.ru")
-		values.Set("adFp", "")
+		values.Set("domain", ep.Domain)
+		values.Set("adFp", adFp)
 		values.Set("access_token", "")
 		return values
 	}
@@ -882,7 +1212,6 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 	time.Sleep(time.Duration(500+rand.Intn(300)) * time.Millisecond)
 
 	turnLog("[STREAM %d] [Captcha] Step 2/4: componentDone (viewport=%dx%d)", streamID, vp.Width, vp.Height)
-	browserFp := generateBrowserFp(profile, vp)
 	deviceJSON := buildCaptchaDeviceJSON(profile, vp)
 	componentDoneData := baseValues()
 	componentDoneData.Set("browser_fp", browserFp)
@@ -892,12 +1221,17 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 		return "", fmt.Errorf("componentDone failed: %w", err)
 	}
 
-	time.Sleep(time.Duration(500+rand.Intn(300)) * time.Millisecond)
+	// The browser collects sensor/network samples every 200ms (sensors_delay)
+	// between componentDone and check; the rtt/downlink sample count must
+	// match that window.
+	checkWindowStart := time.Now()
+	time.Sleep(time.Duration(5500+rand.Intn(1500)) * time.Millisecond)
 
 	turnLog("[STREAM %d] [Captcha] Step 3/4: check", streamID)
 	answer := base64.StdEncoding.EncodeToString([]byte("{}"))
 
-	connRtt, connDownlink := generateConnectionMetrics()
+	sampleCount := int(time.Since(checkWindowStart).Milliseconds() / 200)
+	connRtt, connDownlink := generateNetworkSamples(sampleCount)
 	checkData := baseValues()
 	checkData.Set("accelerometer", "[]")
 	checkData.Set("gyroscope", "[]")

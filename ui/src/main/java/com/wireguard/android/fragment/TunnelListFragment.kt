@@ -4,7 +4,10 @@
  */
 package com.wireguard.android.fragment
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -16,10 +19,12 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
 import androidx.core.view.isVisible
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.Lifecycle
@@ -32,27 +37,32 @@ import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.databinding.TunnelListFragmentBinding
+import com.wireguard.android.databinding.ViewWgkConnectButtonBinding
 import com.wireguard.android.model.ObservableTunnel
+import com.wireguard.android.tether.TetherState
+import com.wireguard.android.turn.ConnectionMode
 import com.wireguard.android.util.ApiClient
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.ErrorMessages
 import com.wireguard.android.viewmodel.ConfigProxy
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.wireguard.android.activity.AppSettingsActivity
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.turn.TurnConfigProcessor
-import com.wireguard.android.widget.TvHexKeyboard
+import com.wireguard.android.util.TokenFormat
+import com.wireguard.android.widget.TvTokenKeyboard
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 private const val TUNNEL_NAME = "wgkeybot"
-private const val PREFS_TURN_MODE = "turn_mode"
-private const val KEY_STABILITY_MODE = "stability_mode"
 private const val PREFS_CONFIG_LOAD = "config_load_prefs"          // legacy (migration only)
 private const val PREFS_CONFIG_LOAD_SECURE = "config_load_secure"  // encrypted
 private const val KEY_CONFIG_LOADED_AT = "config_loaded_at"
@@ -62,13 +72,30 @@ class TunnelListFragment : BaseFragment() {
     private var binding: TunnelListFragmentBinding? = null
     private val vm: TunnelListViewModel by viewModels()
     private var pendingTunnel: ObservableTunnel? = null
-    private var tvKeyboard: TvHexKeyboard? = null
+    private var tvKeyboard: TvTokenKeyboard? = null
     private var refreshAnim: ObjectAnimator? = null
+    private var buttonAnim: ValueAnimator? = null
     private var _prefs: SharedPreferences? = null
 
     private var currentSplitProxy: ConfigProxy? = null
     private var updateShownThisSession = false
     private var wizardLaunchedThisSession = false
+
+    /**
+     * The last state rendered into the current view tree, for the render diff.
+     * [render] runs on every poll tick — every two seconds while the screen is on
+     * — and all but the traffic figures change only when the state does, so the
+     * chrome (icons, colours, stage bars, the animated ring alphas) is rendered
+     * off this comparison rather than unconditionally. Null whenever the views
+     * have just been created and nothing is on them yet.
+     */
+    private var rendered: TunnelUiState? = null
+
+    /** Clients on the access point, or -1 when sharing is not up. */
+    private var tetherClients = -1
+
+    /** What the action slot is currently showing, same idea as [rendered]. */
+    private var renderedSlotKey: Pair<TunnelState, Int>? = null
 
     private var logTapCount = 0
     private var logTapLastMs = 0L
@@ -111,8 +138,19 @@ class TunnelListFragment : BaseFragment() {
         binding?.apply {
             wgkConnectButtonView.wgkConnectBtn.setOnClickListener { toggleWgKeybot() }
             wgkFooterRow.wgkSplitBtn.setOnClickListener { openSplitTunnelDialog() }
-            wgkFooterRow.wgkConnectionModeBtn.setOnClickListener { showConnectionModeDialog() }
+            // TV only: the phone screen moved this row to the settings screen, so
+            // on a phone this view is absent and the binding field is null.
+            wgkFooterRow.wgkConnectionModeBtn?.setOnClickListener {
+                ConnectionMode.showDialog(requireContext()) { updateConnectionModeButton() }
+            }
             updateConnectionModeButton()
+            // Phone only: the TV layout has no action slot and no sharing.
+            wgkTetherChip?.setOnClickListener {
+                startActivity(
+                    Intent(requireContext(), AppSettingsActivity::class.java)
+                        .putExtra(AppSettingsActivity.EXTRA_OPEN_TETHER, true)
+                )
+            }
             wgkProfileCard.wgkRefreshBtn.setOnClickListener { refreshConfig() }
             wgkProfileCard.wgkAutoRefreshBtn.setOnClickListener { toggleAutoRefresh() }
             wgkProfileCard.wgkProfileIcon.setOnClickListener { onLogIconTap() }
@@ -144,6 +182,23 @@ class TunnelListFragment : BaseFragment() {
 
         syncConfigLoadedAt()
 
+        // Only the client count moves the chip, and the sharing state flow also
+        // ticks for the byte counters — collapse it to the one number rendered.
+        if (Application.getTetherManager().isSupported) {
+            lifecycleScope.launch {
+                repeatOnLifecycle(Lifecycle.State.STARTED) {
+                    Application.getTetherManager().state
+                        .map { (it as? TetherState.Active)?.clients ?: -1 }
+                        .distinctUntilChanged()
+                        .collect { clients ->
+                            tetherClients = clients
+                            val b = binding ?: return@collect
+                            renderActionSlot(b, vm.uiState.value.state)
+                        }
+                }
+            }
+        }
+
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 vm.uiState.collect {
@@ -164,11 +219,19 @@ class TunnelListFragment : BaseFragment() {
     override fun onResume() {
         super.onResume()
         refreshButtonState()
+        updateConnectionModeButton()
     }
 
     override fun onDestroyView() {
         refreshAnim?.cancel()
         refreshAnim = null
+        // Cleared first, same as in renderConnectButton: the cancel runs the end
+        // callback, which must see that it no longer owns the control.
+        buttonAnim.also { buttonAnim = null }?.cancel()
+        // The diff describes views that are about to go away; a stale entry would
+        // leave the next view tree unrendered until the state happened to change.
+        rendered = null
+        renderedSlotKey = null
         binding = null
         _prefs = null
         super.onDestroyView()
@@ -189,9 +252,17 @@ class TunnelListFragment : BaseFragment() {
                 }
 
                 // A single tap should reliably disconnect when the UI shows any non-idle
-                // state — Connecting/Handshake/Reconnecting/Failed all mean "user wants
-                // to stop", even if isConnecting was already cleared by notifyTunnelUp.
-                val uiBusy = vm.uiState.value.state != TunnelState.Disconnected
+                // state — Connecting/Handshake/Reconnecting all mean "user wants to
+                // stop", even if isConnecting was already cleared by notifyTunnelUp.
+                //
+                // Failed is deliberately not in that set. It covers two situations: the
+                // handshake watchdog gave up on a tunnel that is still UP — caught by
+                // the tunnel.state check below — and a terminal TURN failure that
+                // already took the tunnel down and left its reason on screen. In the
+                // second one the button says "tap to retry", and treating the tap as a
+                // stop would spend it on a tunnel that is already down.
+                val uiBusy = vm.uiState.value.state != TunnelState.Disconnected &&
+                        vm.uiState.value.state != TunnelState.Failed
                 val newState = if (tunnel.state == Tunnel.State.UP || vm.isConnecting || uiBusy)
                     Tunnel.State.DOWN else Tunnel.State.UP
 
@@ -273,7 +344,11 @@ class TunnelListFragment : BaseFragment() {
             b.wgkNoConfigContainer.isVisible = false
             b.wgkProfileCard.root.isVisible = true
             b.wgkConnectButtonView.root.isVisible = true
-            b.wgkHeadline.isVisible = true
+            // On a phone the hint lives inside the action slot and its visibility is
+            // the slot's business; on TV there is no slot and the hint is the band.
+            (b.wgkActionSlot ?: b.wgkHeadline).isVisible = true
+            renderedSlotKey = null
+            renderActionSlot(b, vm.uiState.value.state)
             b.wgkStatusZone.root.isVisible = true
             b.wgkFooterRow.root.isVisible = true
 
@@ -293,10 +368,15 @@ class TunnelListFragment : BaseFragment() {
             if (tunnel.state == Tunnel.State.UP && !vm.isConnecting) {
                 vm.ensurePollingActive()
             } else if (tunnel.state != Tunnel.State.UP && !vm.isConnecting &&
-                vm.uiState.value.state != TunnelState.Disconnected) {
+                vm.uiState.value.state != TunnelState.Disconnected &&
+                vm.uiState.value.failure == null) {
                 // Tunnel was stopped externally (widget, QS tile) while we were
                 // not visible — reset the UI so we don't show a stale Failed /
                 // Connecting state.
+                //
+                // A reported failure is exempt: it is a down tunnel by design, and
+                // this runs on every onResume — the reason would be wiped before
+                // the user who came to find out what happened could read it.
                 vm.notifyTunnelDown()
             }
 
@@ -350,7 +430,7 @@ class TunnelListFragment : BaseFragment() {
         b.wgkNoConfigContainer.isVisible = true
         b.wgkProfileCard.root.isVisible = false
         b.wgkConnectButtonView.root.isVisible = false
-        b.wgkHeadline.isVisible = false
+        (b.wgkActionSlot ?: b.wgkHeadline).isVisible = false
         b.wgkStatusZone.root.isVisible = false
         b.wgkFooterRow.root.isVisible = false
 
@@ -365,11 +445,11 @@ class TunnelListFragment : BaseFragment() {
         }
 
         if (isTv()) {
-            // TV: hide mobile input, show D-pad hex keyboard
+            // TV: hide mobile input, show D-pad keyboard
             b.wgkTokenInputWrapper.isVisible = false
             b.wgkConnectWithTokenBtn.isVisible = false
             if (tvKeyboard == null) {
-                tvKeyboard = TvHexKeyboard(requireContext()) { token ->
+                tvKeyboard = TvTokenKeyboard(requireContext()) { token ->
                     initWithToken(token)
                 }
             }
@@ -386,9 +466,13 @@ class TunnelListFragment : BaseFragment() {
                 pasteTokenFromClipboard(b)
             }
             b.wgkConnectWithTokenBtn.setOnClickListener {
-                val token = b.wgkTokenInput.text?.toString()?.trim() ?: ""
-                if (token.isBlank()) {
+                val token = TokenFormat.normalize(b.wgkTokenInput.text?.toString() ?: "")
+                if (token.isEmpty()) {
                     showSnackbar(getString(R.string.wgk_token_error_empty))
+                    return@setOnClickListener
+                }
+                if (!TokenFormat.isValid(token)) {
+                    showSnackbar(getString(R.string.wgk_token_error_format))
                     return@setOnClickListener
                 }
                 initWithToken(token)
@@ -403,7 +487,7 @@ class TunnelListFragment : BaseFragment() {
         }
     }
 
-    /** Forward physical keyboard events to the TV hex keyboard when it is visible. */
+    /** Forward physical keyboard events to the TV keyboard when it is visible. */
     fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean =
         tvKeyboard?.takeIf { it.rootView.isVisible }?.handleKey(event) == true
 
@@ -418,6 +502,8 @@ class TunnelListFragment : BaseFragment() {
                 auth.saveSubscriptionExpiresAt(resp.subscriptionExpiresAt)
                 val config = com.wireguard.config.Config.parse(resp.config.byteInputStream())
                 applyConfig(config)
+            } catch (_: ApiClient.InvalidTokenException) {
+                showSnackbar(getString(R.string.wgk_token_error_format))
             } catch (e: Exception) {
                 showSnackbar(getString(R.string.wgk_error_format, e.message ?: ""))
             } finally {
@@ -428,21 +514,65 @@ class TunnelListFragment : BaseFragment() {
 
     // ── Render ─────────────────────────────────────────────────────────────────
 
+    /**
+     * Renders [ui] onto the view tree, skipping whatever the tree already shows.
+     *
+     * The state flow ticks every couple of seconds for as long as the tunnel is up,
+     * and everything on this screen except the traffic figures is a function of the
+     * state alone. A full pass re-set six colours, an icon, three progress bars and
+     * three tinted dots to the values they already had — inside a container with
+     * animateLayoutChanges, so each of those ticks could also start a layout
+     * transition. Only the traffic readout is genuinely per-tick work.
+     */
     private fun render(ui: TunnelUiState) {
         val b = binding ?: return
-        renderProfile(b, ui)
-        renderConnectButton(b, ui)
-        renderHeadline(b, ui)
-        renderStatusZone(b, ui)
+        val prev = rendered
+        rendered = ui
+
+        if (prev == null || prev.configLoadedAt != ui.configLoadedAt) renderProfile(b, ui)
+
+        if (prev == null || prev.state != ui.state || prev.failure != ui.failure) {
+            // Nothing to cross-fade from on the first pass: the view tree has just
+            // arrived wearing the layout's resting values.
+            renderConnectButton(b, ui, animate = prev != null)
+            renderStatusChrome(b, ui)
+            renderActionSlot(b, ui.state)
+        }
+        renderTraffic(b, ui, prev)
     }
 
     private fun renderProfile(b: TunnelListFragmentBinding, ui: TunnelUiState) {
         b.wgkProfileCard.wgkProfileLoaded.text = formatLoadedAt(ui.configLoadedAt)
     }
 
-    private fun renderConnectButton(b: TunnelListFragmentBinding, ui: TunnelUiState) {
-        val btn = b.wgkConnectButtonView.wgkConnectBtn
-        val arc = b.wgkConnectButtonView.wgkBusyArc
+    /**
+     * Paints the connect control for [ui], cross-fading every part of it at once
+     * when [animate].
+     *
+     * The colours are driven by hand instead of being left to the two selectors in
+     * res/color, because a ColorStateList switches in a single frame by
+     * construction and cannot be animated at all. The selectors stay the source of
+     * truth for *which* colour belongs to each state — they are read here through
+     * getColorForState — while the fill, the icon, the three halo rings and the
+     * busy arc are blended by one animator so the control moves as one object.
+     *
+     * That is the whole point, and it is easy to undo by accident. An earlier
+     * version animated only the halo and let the fill snap, which in the dark
+     * theme read as a flash on disconnect: the resting fill (#222428) is darker
+     * than the halo it was leaving behind (wgk_outline #44474E at 0.7 over the
+     * background ≈ #34373C), so the button sat dark inside three rings brighter
+     * than itself until they caught up. Anything visual added to this control
+     * later has to join the animator too, or it will do the same thing.
+     */
+    private fun renderConnectButton(
+        b: TunnelListFragmentBinding,
+        ui: TunnelUiState,
+        animate: Boolean,
+    ) {
+        val cb = b.wgkConnectButtonView
+        val btn = cb.wgkConnectBtn
+        val arc = cb.wgkBusyArc
+
         btn.contentDescription = getString(when (ui.state) {
             TunnelState.Disconnected -> R.string.wgk_connect_cd_connect
             TunnelState.Connected    -> R.string.wgk_connect_cd_disconnect
@@ -451,26 +581,151 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Handshake,
             TunnelState.Reconnecting -> R.string.wgk_connect_cd_cancel
         })
+
+        val busy = ui.state == TunnelState.Connecting ||
+                ui.state == TunnelState.Handshake ||
+                ui.state == TunnelState.Reconnecting
         val atRest = ui.state == TunnelState.Disconnected || ui.state == TunnelState.Failed
-        when (ui.state) {
-            TunnelState.Disconnected,
-            TunnelState.Failed       -> { btn.isActivated = false; btn.isSelected = false; arc.hide() }
-            TunnelState.Connecting,
-            TunnelState.Handshake,
-            TunnelState.Reconnecting -> { btn.isActivated = true;  btn.isSelected = false; arc.show() }
-            TunnelState.Connected    -> { btn.isActivated = false; btn.isSelected = true;  arc.hide() }
-        }
+
+        // Kept in step with the state even though the fill no longer reads them:
+        // they are what the view reports to accessibility, and they keep the
+        // selectors meaningful for anyone who looks at res/color first.
+        btn.isActivated = busy
+        btn.isSelected = ui.state == TunnelState.Connected
+
         // At rest the button already reads on its own outline, so the halo stays
         // faint; it only comes up once the button is filled and the arc sweeps it.
-        val alphas = if (atRest) RING_ALPHA_REST else RING_ALPHA_ACTIVE
-        val cb = b.wgkConnectButtonView
-        listOf(cb.wgkRingOuter, cb.wgkRingMid, cb.wgkRingInner).forEachIndexed { i, ring ->
-            ring.alpha = alphas[i]
+        val stateSet = buttonStateSet(ui.state)
+        val targetBg = selectorColor(R.color.wgk_connect_btn_background_tint, stateSet)
+        val targetIcon = selectorColor(R.color.wgk_connect_btn_icon_tint, stateSet)
+        val targetRings = if (atRest) RING_ALPHA_REST else RING_ALPHA_ACTIVE
+        val targetArc = if (busy) 1f else 0f
+
+        // Cleared before the cancel, so the old animator's end callback can tell
+        // that it was superseded and must not run its own teardown.
+        val running = buttonAnim
+        buttonAnim = null
+        running?.cancel()
+
+        // The arc has to be on screen for the whole fade in both directions; only
+        // once it has faded out is it taken away. Its own show()/hide() are not
+        // used because they set visibility outright, which is precisely the kind of
+        // one-frame jump this method exists to avoid.
+        val arcWasVisible = arc.isVisible
+        if (busy) {
+            // Starting from zero only when it is genuinely arriving. An arc caught
+            // mid-fade-out already carries the alpha to resume from, and resetting
+            // it here would make it blink before fading back in.
+            if (!arcWasVisible) arc.alpha = 0f
+            arc.isVisible = true
         }
+
+        val fromBg = btn.backgroundTintList?.defaultColor
+        val fromIcon = btn.iconTint?.defaultColor
+        if (!animate || fromBg == null || fromIcon == null) {
+            applyConnectButtonLook(cb, targetBg, targetIcon, targetRings, targetArc)
+            arc.isVisible = busy
+            return
+        }
+
+        val fromRings = floatArrayOf(cb.wgkRingOuter.alpha, cb.wgkRingMid.alpha, cb.wgkRingInner.alpha)
+        val fromArc = arc.alpha
+        val anim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = BUTTON_FADE_MS
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener { a ->
+                val f = a.animatedFraction
+                applyConnectButtonLook(
+                    cb,
+                    ColorUtils.blendARGB(fromBg, targetBg, f),
+                    ColorUtils.blendARGB(fromIcon, targetIcon, f),
+                    FloatArray(3) { i -> fromRings[i] + (targetRings[i] - fromRings[i]) * f },
+                    fromArc + (targetArc - fromArc) * f,
+                )
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (buttonAnim !== animation) return
+                    buttonAnim = null
+                    if (!busy) arc.isVisible = false
+                }
+            })
+        }
+        buttonAnim = anim
+        anim.start()
     }
 
-    private fun renderHeadline(b: TunnelListFragmentBinding, ui: TunnelUiState) {
-        b.wgkHeadline.setText(when (ui.state) {
+    private fun applyConnectButtonLook(
+        cb: ViewWgkConnectButtonBinding,
+        bg: Int,
+        icon: Int,
+        ringAlphas: FloatArray,
+        arcAlpha: Float,
+    ) {
+        cb.wgkConnectBtn.backgroundTintList = ColorStateList.valueOf(bg)
+        cb.wgkConnectBtn.iconTint = ColorStateList.valueOf(icon)
+        cb.wgkRingOuter.alpha = ringAlphas[0]
+        cb.wgkRingMid.alpha = ringAlphas[1]
+        cb.wgkRingInner.alpha = ringAlphas[2]
+        cb.wgkBusyArc.alpha = arcAlpha
+    }
+
+    /** The view state the res/color selectors key on, for the given tunnel state. */
+    private fun buttonStateSet(state: TunnelState): IntArray = when (state) {
+        TunnelState.Connected -> intArrayOf(android.R.attr.state_selected)
+        TunnelState.Connecting,
+        TunnelState.Handshake,
+        TunnelState.Reconnecting -> intArrayOf(android.R.attr.state_activated)
+        TunnelState.Disconnected,
+        TunnelState.Failed -> IntArray(0)
+    }
+
+    private fun selectorColor(selectorRes: Int, stateSet: IntArray): Int {
+        val csl = ContextCompat.getColorStateList(requireContext(), selectorRes)
+            ?: return android.graphics.Color.TRANSPARENT
+        return csl.getColorForState(stateSet, csl.defaultColor)
+    }
+
+    /**
+     * The action slot under the button: the hint, the sharing chip, or nothing.
+     *
+     * The hint is shown only where a tap does something other than what the power
+     * icon suggests — cancel while connecting, retry after a failure. At rest and
+     * while connected it was the third line reporting one fact (the card below says
+     * "VPN off / ready to connect" on its own), so the slot goes to the chip there
+     * instead. Sharing needs a live tunnel, so the chip can only appear in Connected
+     * and the two never contend for the slot.
+     */
+    private fun renderActionSlot(b: TunnelListFragmentBinding, state: TunnelState) {
+        val key = state to tetherClients
+        if (renderedSlotKey == key) return
+        renderedSlotKey = key
+
+        val chip = b.wgkTetherChip
+        if (chip == null) {
+            // TV: no slot and no sharing — the hint is the whole band, and its
+            // visibility stays with refreshButtonState/showNoAuthContainer as it
+            // always was. Setting it here would put the hint back on top of the
+            // no-key screen, which renders on the same state flow.
+            renderHeadline(b, state)
+            return
+        }
+
+        val showChip = tetherClients >= 0 && state == TunnelState.Connected
+        chip.isVisible = showChip
+        if (showChip) {
+            b.wgkTetherChipLabel?.text = getString(R.string.wgk_tether_chip, tetherClients)
+            chip.contentDescription = getString(R.string.wgk_tether_chip_cd, tetherClients)
+        }
+
+        val showHint = !showChip &&
+                state != TunnelState.Connected && state != TunnelState.Disconnected
+        b.wgkHeadline.isVisible = showHint
+        if (showHint) renderHeadline(b, state)
+    }
+
+    private fun renderHeadline(b: TunnelListFragmentBinding, state: TunnelState) {
+        b.wgkHeadline.setText(when (state) {
             TunnelState.Disconnected -> R.string.wgk_headline_disconnected
             TunnelState.Connecting   -> R.string.wgk_headline_connecting
             TunnelState.Handshake    -> R.string.wgk_headline_handshake
@@ -478,7 +733,7 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Reconnecting -> R.string.wgk_headline_reconnecting
             TunnelState.Failed       -> R.string.wgk_headline_failed
         })
-        b.wgkHeadline.setTextColor(ContextCompat.getColor(requireContext(), when (ui.state) {
+        b.wgkHeadline.setTextColor(ContextCompat.getColor(requireContext(), when (state) {
             TunnelState.Connected    -> R.color.wgk_success
             TunnelState.Reconnecting -> R.color.wgk_warning
             TunnelState.Failed       -> R.color.wgk_error
@@ -486,7 +741,30 @@ class TunnelListFragment : BaseFragment() {
         }))
     }
 
-    private fun renderStatusZone(b: TunnelListFragmentBinding, ui: TunnelUiState) {
+    /**
+     * The subtitle for a failure. A terminal failure knows why it happened — the
+     * call is gone, the captcha gate stayed shut — and that sentence is the whole
+     * difference between "try again" and "stop trying and refresh the config". Only
+     * the watchdog's own verdict falls back to the generic network line.
+     */
+    private fun statusSubRes(ui: TunnelUiState): Int = when (ui.state) {
+        TunnelState.Disconnected -> R.string.wgk_status_sub_disconnected
+        TunnelState.Connecting   -> R.string.wgk_status_sub_connecting
+        TunnelState.Handshake    -> R.string.wgk_status_sub_handshake
+        TunnelState.Connected    -> R.string.wgk_status_sub_connected
+        TunnelState.Reconnecting -> R.string.wgk_status_sub_reconnecting
+        TunnelState.Failed       -> when (ui.failure) {
+            TunnelFailure.CallUnavailable  -> R.string.wgk_status_sub_failed_call_gone
+            TunnelFailure.CallRequiresAuth -> R.string.wgk_status_sub_failed_call_auth
+            TunnelFailure.CaptchaUnsolved  -> R.string.wgk_status_sub_failed_captcha
+            TunnelFailure.Credentials      -> R.string.wgk_status_sub_failed_creds
+            TunnelFailure.ProxyRestart     -> R.string.wgk_status_sub_failed_restart
+            null                           -> R.string.wgk_status_sub_failed
+        }
+    }
+
+    /** Everything in the status card that follows from the state, not from the tick. */
+    private fun renderStatusChrome(b: TunnelListFragmentBinding, ui: TunnelUiState) {
         val sz = b.wgkStatusZone
         val isConnected = ui.state == TunnelState.Connected
 
@@ -504,20 +782,7 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Failed       -> R.color.wgk_error
             else                     -> R.color.wgk_on_surface
         }))
-        sz.wgkStatusSub.setText(when (ui.state) {
-            TunnelState.Disconnected -> R.string.wgk_status_sub_disconnected
-            TunnelState.Connecting   -> R.string.wgk_status_sub_connecting
-            TunnelState.Handshake    -> R.string.wgk_status_sub_handshake
-            TunnelState.Connected    -> R.string.wgk_status_sub_connected
-            TunnelState.Reconnecting -> R.string.wgk_status_sub_reconnecting
-            TunnelState.Failed       -> R.string.wgk_status_sub_failed
-        })
-        if (isConnected && ui.uptimeSeconds > 0) {
-            sz.wgkStatusSub.text = getString(
-                R.string.wgk_status_sub_connected_time,
-                formatUptime(ui.uptimeSeconds)
-            )
-        }
+        sz.wgkStatusSub.setText(statusSubRes(ui))
 
         sz.wgkStatusIcon.setImageResource(when (ui.state) {
             TunnelState.Disconnected -> R.drawable.ic_status_lock_open
@@ -534,16 +799,6 @@ class TunnelListFragment : BaseFragment() {
         // lives in the eyebrow row, so it is toggled separately from the value.
         sz.wgkTrafficContainer.isVisible = isConnected
         sz.wgkRxtxLabel.isVisible = isConnected
-        if (isConnected) {
-            // One unit for both figures, chosen off the larger — mixing MB and GB
-            // across the two would misread, and "15734.2 MB" overflows the column.
-            val gb = maxOf(ui.rxBytes, ui.txBytes) >= 1_073_741_824L
-            val div = if (gb) 1_073_741_824.0 else 1_048_576.0
-            sz.wgkRxtxValue.text = getString(R.string.wgk_rxtx_value,
-                ui.rxBytes / div, ui.txBytes / div)
-            sz.wgkRxtxUnit.setText(
-                if (gb) R.string.wgk_rxtx_unit_gb else R.string.wgk_rxtx_unit_mb)
-        }
 
         val colorOutline = ContextCompat.getColor(requireContext(), R.color.wgk_outline)
         val colorPrimary = ContextCompat.getColor(requireContext(), R.color.wgk_primary)
@@ -578,9 +833,42 @@ class TunnelListFragment : BaseFragment() {
         for (i in 0..2) {
             segs[i].setIndicatorColor(colorFor(i))
             segs[i].setProgressCompat(progressFor(i), true)
-            dots[i].background.setTint(colorFor(i))
+            // mutate() is load-bearing: the three dots are inflated from one shape
+            // drawable and therefore share a ConstantState, and GradientDrawable
+            // writes its tint straight into that shared state. Without this, the
+            // last tint in the loop won all three dots — so Handshake showed three
+            // outlined dots instead of done/active/idle, and a failed Tunnel stage
+            // never went red.
+            dots[i].background.mutate().setTint(colorFor(i))
             lbls[i].setTextColor(colorFor(i))
         }
+    }
+
+    /** The only genuinely per-tick part of the card: the traffic readout. */
+    private fun renderTraffic(
+        b: TunnelListFragmentBinding,
+        ui: TunnelUiState,
+        prev: TunnelUiState?,
+    ) {
+        if (ui.state != TunnelState.Connected) return
+        val sz = b.wgkStatusZone
+
+        if (ui.uptimeSeconds > 0) {
+            sz.wgkStatusSub.text = getString(
+                R.string.wgk_status_sub_connected_time,
+                formatUptime(ui.uptimeSeconds)
+            )
+        }
+
+        if (prev != null && prev.state == ui.state &&
+            prev.rxBytes == ui.rxBytes && prev.txBytes == ui.txBytes) return
+
+        // One unit for both figures, chosen off the larger — mixing MB and GB
+        // across the two would misread, and "15734.2 MB" overflows the column.
+        val gb = maxOf(ui.rxBytes, ui.txBytes) >= 1_073_741_824L
+        val div = if (gb) 1_073_741_824.0 else 1_048_576.0
+        sz.wgkRxtxValue.text = getString(R.string.wgk_rxtx_value, ui.rxBytes / div, ui.txBytes / div)
+        sz.wgkRxtxUnit.setText(if (gb) R.string.wgk_rxtx_unit_gb else R.string.wgk_rxtx_unit_mb)
     }
 
     // ── Refresh config ─────────────────────────────────────────────────────────
@@ -942,8 +1230,8 @@ class TunnelListFragment : BaseFragment() {
         val cm = requireContext().getSystemService(android.content.ClipboardManager::class.java)
             ?: return null
         val text = cm.primaryClip?.getItemAt(0)?.coerceToText(requireContext())
-            ?.toString()?.trim() ?: return null
-        return if (TOKEN_REGEX.matches(text)) text else null
+            ?.toString() ?: return null
+        return TokenFormat.extract(text)
     }
 
     private fun pasteTokenFromClipboard(b: TunnelListFragmentBinding) {
@@ -984,46 +1272,21 @@ class TunnelListFragment : BaseFragment() {
         snackbar.show()
     }
 
-    private fun showConnectionModeDialog() {
-        val prefs = requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
-        val currentReserve = prefs.getBoolean(KEY_STABILITY_MODE, false)
-        val options = arrayOf(
-            getString(R.string.wgk_connection_mode_standard_option),
-            getString(R.string.wgk_connection_mode_reserve_option)
-        )
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.wgk_connection_mode_title)
-            .setSingleChoiceItems(options, if (currentReserve) 1 else 0) { dialog, which ->
-                dialog.dismiss()
-                setConnectionMode(which == 1)
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
-    }
-
-    private fun setConnectionMode(stability: Boolean) {
-        val prefs = requireContext().getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
-        prefs.edit().putBoolean(KEY_STABILITY_MODE, stability).apply()
-        updateConnectionModeButton()
-    }
-
+    // TV only: the phone screen moved this row to the settings screen, so on a
+    // phone every view here is absent and the binding fields are null.
     private fun updateConnectionModeButton() {
         val fr = binding?.wgkFooterRow ?: return
-        val isReserve = requireContext()
-            .getSharedPreferences(PREFS_TURN_MODE, android.content.Context.MODE_PRIVATE)
-            .getBoolean(KEY_STABILITY_MODE, false)
+        val isReserve = ConnectionMode.isReserve(requireContext())
         val activeColor = ContextCompat.getColor(requireContext(), R.color.wgk_warning)
-        // The label stays quiet; only the value carries the state, so switching to
-        // the fallback transport tints one word rather than the whole row.
-        fr.wgkConnectionModeValue.setText(
+        fr.wgkConnectionModeValue?.setText(
             if (isReserve) R.string.wgk_connection_mode_reserve_value
             else R.string.wgk_connection_mode_standard_value
         )
-        fr.wgkConnectionModeValue.setTextColor(
+        fr.wgkConnectionModeValue?.setTextColor(
             if (isReserve) activeColor
             else ContextCompat.getColor(requireContext(), R.color.wgk_on_surface)
         )
-        fr.wgkConnectionModeIcon.imageTintList = ColorStateList.valueOf(
+        fr.wgkConnectionModeIcon?.imageTintList = ColorStateList.valueOf(
             if (isReserve) activeColor
             else ContextCompat.getColor(requireContext(), R.color.wgk_on_surface_variant)
         )
@@ -1032,10 +1295,14 @@ class TunnelListFragment : BaseFragment() {
     companion object {
         private const val TAG = "WireGuard/TunnelListFragment"
         private const val TAG_SPLIT_WIZARD = "split_wizard"
-        private val TOKEN_REGEX = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
         // Halo alphas, outer → inner. The resting set matches the layout defaults.
         private val RING_ALPHA_REST = floatArrayOf(0.10f, 0.16f, 0.24f)
         private val RING_ALPHA_ACTIVE = floatArrayOf(0.28f, 0.45f, 0.70f)
+
+        /** Cross-fade of the whole connect control on a state change. Long enough
+         *  to read as a transition, short enough that the tap that caused it still
+         *  feels answered immediately. */
+        private const val BUTTON_FADE_MS = 180L
     }
 }

@@ -16,6 +16,10 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // InetEndpoint uses java.time, which is API 26 against this module's
+        // minSdk 24. Desugaring is what makes that legal — and declaring it here
+        // rather than only in :ui is what lets lint's NewApi check stay on.
+        isCoreLibraryDesugaringEnabled = true
     }
     namespace = "com.wireguard.android.tunnel"
     defaultConfig {
@@ -56,7 +60,10 @@ android {
     }
     lint {
         disable += "LongLogTag"
-        disable += "NewApi"
+        // NewApi stays on deliberately. compileSdk 36 lets the compiler accept any
+        // API against minSdk 24, so this check is the only thing that catches the
+        // gap: with it off, NotificationChannel sat unguarded in VpnService.onCreate
+        // and every Android 7.x connect died on NoClassDefFoundError.
     }
     publishing {
         singleVariant("release") {
@@ -71,6 +78,7 @@ dependencies {
     implementation(libs.androidx.collection)
     implementation(libs.androidx.core)
     compileOnly(libs.jsr305)
+    coreLibraryDesugaring(libs.desugarJdkLibs)
     testImplementation(libs.junit)
 }
 

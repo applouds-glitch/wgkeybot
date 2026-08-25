@@ -19,7 +19,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
 import com.wireguard.android.BuildConfig
+import com.wireguard.android.captcha.CaptchaPersona
 import com.wireguard.android.util.LocaleGuard
+import java.lang.ref.WeakReference
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
@@ -38,6 +40,8 @@ class CaptchaActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        liveActivity = WeakReference(this)
+
         val redirectUri = intent.getStringExtra(EXTRA_REDIRECT_URI)
         if (redirectUri.isNullOrEmpty()) {
             Log.e(TAG, "No redirect URI provided")
@@ -55,7 +59,11 @@ class CaptchaActivity : AppCompatActivity() {
         val webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
-            settings.userAgentString = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
+            // One UA per solve attempt, shared with the invisible WebView and the
+            // Go HTTP path through CaptchaPersona. Randomized between attempts —
+            // see CaptchaPersona — but never within one, where a differing UA
+            // would contradict the browser_fp the earlier steps already presented.
+            settings.userAgentString = CaptchaPersona.current(this@CaptchaActivity).userAgent
 
             addJavascriptInterface(CaptchaBridge(), "AndroidCaptcha")
 
@@ -198,6 +206,7 @@ class CaptchaActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (liveActivity?.get() === this) liveActivity = null
         restoreNetworkBinding()
         // WebView may have clobbered the locale during its lifetime (page load /
         // render), not just at construction — repair after it's torn down.
@@ -216,6 +225,25 @@ class CaptchaActivity : AppCompatActivity() {
 
         @Volatile
         private var pendingResult: CompletableFuture<String>? = null
+
+        /** The dialog currently on screen, so a native stop can dismiss it. */
+        @Volatile
+        private var liveActivity: WeakReference<CaptchaActivity>? = null
+
+        /**
+         * Aborts a captcha dialog that is still on screen because the native proxy
+         * is stopping or restarting. Unblocks [solveCaptcha] with an empty token
+         * right away instead of after [CAPTCHA_TIMEOUT_SECONDS], then dismisses the
+         * dialog. Called from a native thread, so it must not block.
+         */
+        fun cancelPending() {
+            Log.d(TAG, "Captcha cancelled by native stop")
+            pendingResult?.complete("")
+            val activity = liveActivity?.get() ?: return
+            activity.runOnUiThread {
+                if (!activity.isFinishing && !activity.isDestroyed) activity.finish()
+            }
+        }
 
         /**
          * JavaScript that intercepts XHR/fetch calls to captchaNotRobot.check

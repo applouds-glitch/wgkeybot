@@ -5,7 +5,7 @@
 
 package main
 
-// #cgo LDFLAGS: -llog
+// #cgo android LDFLAGS: -llog
 // #include <stdlib.h>
 // #include <android/log.h>
 import "C"
@@ -40,9 +40,10 @@ func (l AndroidLogger) Printf(format string, args ...interface{}) {
 }
 
 type TunnelHandle struct {
-	device *device.Device
-	uapi   net.Listener
-	tag    *C.char
+	device          *device.Device
+	uapi            net.Listener
+	tag             *C.char
+	keepaliveSender *wireGuardKeepaliveSender
 }
 
 var tunnelHandles map[int32]TunnelHandle
@@ -147,7 +148,15 @@ func wgTurnOn(interfaceName string, tunFd int32, settings string) int32 {
 		device.Close()
 		return -1
 	}
-	tunnelHandles[i] = TunnelHandle{device: device, uapi: uapi, tag: tag}
+	// TURN uses this hook to enqueue one encrypted WireGuard keepalive in the
+	// same 25s radio window as its per-stream STUN probes. The active TURN config
+	// therefore leaves WireGuard's independent PersistentKeepalive disabled. The
+	// one immediate call bootstraps the first handshake; waiting for the next
+	// wall-clock grid could consume the caller's entire 25s handshake timeout.
+	sendWireGuardKeepalive := newWireGuardKeepaliveSendFunc(device, settings)
+	keepaliveSender := installWireGuardKeepaliveSender(sendWireGuardKeepalive)
+	sendWireGuardKeepalive()
+	tunnelHandles[i] = TunnelHandle{device: device, uapi: uapi, tag: tag, keepaliveSender: keepaliveSender}
 	return i
 }
 
@@ -158,6 +167,7 @@ func wgTurnOff(tunnelHandle int32) {
 		return
 	}
 	delete(tunnelHandles, tunnelHandle)
+	clearWireGuardKeepaliveSender(handle.keepaliveSender)
 	if handle.uapi != nil {
 		handle.uapi.Close()
 	}

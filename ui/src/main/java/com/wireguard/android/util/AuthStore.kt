@@ -62,6 +62,15 @@ class AuthStore private constructor(context: Context) {
     fun isSplitWizardShown(): Boolean = prefs.getBoolean(KEY_SPLIT_WIZARD_SHOWN, false)
     fun setSplitWizardShown() = prefs.edit().putBoolean(KEY_SPLIT_WIZARD_SHOWN, true).apply()
 
+    /**
+     * Whether the battery-optimisation exemption has already been asked for. The
+     * request opens a system dialog, and it used to be fired from every single
+     * MainActivity.onCreate until it was granted — a modal over the first frame,
+     * on every cold start, for a user who had already said no.
+     */
+    fun isBatteryPromptShown(): Boolean = prefs.getBoolean(KEY_BATTERY_PROMPT_SHOWN, false)
+    fun setBatteryPromptShown() = prefs.edit().putBoolean(KEY_BATTERY_PROMPT_SHOWN, true).apply()
+
     fun clear() = prefs.edit().clear().apply()
 
     companion object {
@@ -73,6 +82,7 @@ class AuthStore private constructor(context: Context) {
         private const val KEY_LAST_CONFIG_HASH = "last_config_hash"
         private const val KEY_THEME = "theme_mode"
         private const val KEY_SPLIT_WIZARD_SHOWN = "split_wizard_shown"
+        private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
 
         @Volatile private var instance: AuthStore? = null
 

@@ -138,11 +138,16 @@ public final class GoBackend implements Backend {
 
     @Override
     public boolean isAlwaysOn() throws ExecutionException, InterruptedException, TimeoutException {
+        // VpnService.isAlwaysOn() is API 29. Neither always-on nor lockdown exists
+        // before Android 10, so false is the accurate answer there, not a fallback.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false;
         return vpnServiceRef.get().get(0, TimeUnit.NANOSECONDS).isAlwaysOn();
     }
 
     @Override
     public boolean isLockdownEnabled() throws ExecutionException, InterruptedException, TimeoutException {
+        // API 29, see isAlwaysOn above.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false;
         return vpnServiceRef.get().get(0, TimeUnit.NANOSECONDS).isLockdownEnabled();
     }
 
@@ -238,9 +243,19 @@ public final class GoBackend implements Backend {
                     }
                 }
             } else {
-                for (final String excludedApplication : config.getInterface().getExcludedApplications())
-                    if (!excludedApplication.equals(selfPackage))
+                for (final String excludedApplication : config.getInterface().getExcludedApplications()) {
+                    if (excludedApplication.equals(selfPackage))
+                        continue;
+                    try {
                         builder.addDisallowedApplication(excludedApplication);
+                    } catch (final PackageManager.NameNotFoundException e) {
+                        // The user uninstalled an app they had excluded. Skip it instead of
+                        // failing the whole tunnel: a package that isn't installed can't send
+                        // traffic anyway, and keeping it in the config means the exclusion
+                        // comes back by itself if the app is ever reinstalled.
+                        Log.d(TAG, "Skip addDisallowedApplication for " + excludedApplication + ": " + e);
+                    }
+                }
             }
             for (final InetNetwork addr : config.getInterface().getAddresses())
                 builder.addAddress(addr.getAddress(), addr.getMask());
@@ -316,6 +331,11 @@ public final class GoBackend implements Backend {
         public Builder getBuilder() { return new Builder(); }
 
         private void createNotificationChannel() {
+            // NotificationChannel is API 26 and this module's minSdk is 24, so on
+            // Android 7.x resolving it here threw NoClassDefFoundError out of
+            // onCreate() and the tunnel never came up. NotificationCompat below
+            // ignores the channel id on those releases, so skipping is enough.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
             final NotificationChannel channel = new NotificationChannel(
                     VPN_CHANNEL_ID, "VPN Running", NotificationManager.IMPORTANCE_LOW);
             channel.setDescription("Persistent VPN tunnel notification");
@@ -441,13 +461,16 @@ public final class GoBackend implements Backend {
 
         @Override
         public void onDestroy() {
-            TurnBackend.onVpnServiceCreated(null);
             // Release the TURN proxy's 127.0.0.1:9000 bind on every teardown path
             // (revoke, stopSelf, system kill). onDestroy previously only turned
             // WireGuard off (wgTurnOff) and left the proxy goroutine holding the
             // loopback port. Idempotent: a normal in-app disconnect already
             // stopped it via TurnProxyManager, so this is a no-op there.
             TurnBackend.wgTurnProxyStop();
+            // Keep protect()/bindSocket() available until native workers have
+            // cancelled and drained; clearing JNI first pulls those callbacks out
+            // from under reconnect/dial goroutines that are still unwinding.
+            TurnBackend.onVpnServiceCreated(null);
             Log.d(TAG, "VpnService.onDestroy()");
             stopForeground(STOP_FOREGROUND_REMOVE);
             releaseWakeLock();

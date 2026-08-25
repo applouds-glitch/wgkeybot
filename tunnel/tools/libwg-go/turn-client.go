@@ -17,6 +17,7 @@ import "C"
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -41,10 +42,24 @@ func turnLog(format string, args ...interface{}) {
 	l.Printf(format, args...)
 }
 
+// errSocketNotProtected aborts a dial whose socket VpnService.protect() refused.
+// This app is deliberately kept inside its own tunnel (GoBackend never excludes
+// its own package), and the WireGuard endpoint is the local TURN listener, so an
+// unprotected TURN/DNS/HTTP socket does not merely leak — its packets are routed
+// back into the tunnel and loop. Failing the dial is the safe outcome: every
+// caller propagates it into an existing retry/backoff path.
+var errSocketNotProtected = errors.New("VpnService.protect() failed; refusing to dial an unprotected socket")
+
 func protectControl(network, address string, c syscall.RawConn) error {
-	return c.Control(func(fd uintptr) {
-		C.wgProtectSocket(C.int(fd))
-	})
+	var protectErr error
+	if err := c.Control(func(fd uintptr) {
+		if C.wgProtectSocket(C.int(fd)) != 0 {
+			protectErr = errSocketNotProtected
+		}
+	}); err != nil {
+		return err
+	}
+	return protectErr
 }
 
 // listenUDP binds a UDP socket with SO_REUSEADDR so a quick tunnel restart can
@@ -119,11 +134,11 @@ type stream struct {
 	// keepaliveInterval.
 	kaPhase time.Duration
 
-	// ssrc is this stream's random RTP SSRC. It is written into every outbound
-	// WRAP header and folded into the ChaCha20 nonce, so each stream (and each
-	// device) uses a distinct keystream even at the same counter. Random per
-	// stream; set at creation in StartTunnelGroups.
-	ssrc uint32
+	// wrapTx carries this stream's outbound WRAP SSRC and counter. Both are
+	// per-stream, so each stream (and each device) uses a distinct keystream
+	// even at the same counter, and its RTP sequence advances one step per
+	// packet. Created in StartTunnelGroups; see wrapTxState.
+	wrapTx *wrapTxState
 
 	networkGeneration uint64
 }
@@ -191,6 +206,10 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 		if slept := now.Sub(before); slept > keepaliveInterval+freezeSlack {
 			turnLog("[STREAM %d] keepalive: slept %v (freeze) — resetting liveness clock", s.id, slept.Round(time.Second))
 			activity.resetLiveness(now)
+			// A thawed host must re-stimulate both layers in the same radio
+			// window: one WireGuard keepalive for this grid, then this stream's
+			// TURN liveness probe.
+			sendWireGuardKeepaliveOnSharedGrid(now)
 			err := send(tick)
 			tick++
 			if err != nil {
@@ -211,6 +230,12 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 		// deadline harmless. Recalculate instead of emitting an off-grid packet.
 		if wakeReason == keepaliveDeadCheckWake {
 			continue
+		}
+		if wakeReason == keepaliveGridWake {
+			// Every stream reaches this shared bucket within keepaliveSpread.
+			// The coordinator lets only the first one enqueue a WireGuard
+			// keepalive, coalescing it with the TURN/STUN burst below.
+			sendWireGuardKeepaliveOnSharedGrid(now)
 		}
 		err := send(tick)
 		tick++
@@ -234,7 +259,7 @@ func (s *stream) sendSessionHSBurst(relayConn net.PacketConn, peer net.Addr, ses
 	for i := 0; i < burstCount; i++ {
 		var payload []byte
 		if hasWrap {
-			enc, err := wrapPacket(s.wrapKey, sessionHS, s.ssrc)
+			enc, err := wrapPacket(s.wrapKey, sessionHS, s.wrapTx)
 			if err != nil {
 				return fmt.Errorf("session handshake wrap #%d: %w", i+1, err)
 			}
@@ -332,7 +357,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			case b := <-s.in:
 				var payload []byte
 				if hasWrap {
-					n, wrapErr := wrapPacketInto(txBuf, s.wrapKey, b, s.ssrc)
+					n, wrapErr := wrapPacketInto(txBuf, s.wrapKey, b, s.wrapTx)
 					if wrapErr != nil {
 						packetPool.Put(b[:cap(b)])
 						noDtlsTxDropCount.Add(1)
@@ -433,13 +458,13 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		s.runKeepalive(sCtx, activity, reportErr, func(tick int) error {
 			var sendErr error
 			if hasWrap {
-				if enc, err := wrapPacket(s.wrapKey, stunBindingIndication, s.ssrc); err == nil {
+				if enc, err := wrapPacket(s.wrapKey, stunBindingIndication, s.wrapTx); err == nil {
 					_, sendErr = relayConn.WriteTo(enc, peer)
 				} else {
 					sendErr = err
 				}
 				if tick%3 == 0 {
-					if cover, cErr := wrapCoverPacket(s.wrapKey, s.ssrc); cErr == nil {
+					if cover, cErr := wrapCoverPacket(s.wrapKey, s.wrapTx); cErr == nil {
 						relayConn.WriteTo(cover, peer)
 					}
 				}
@@ -448,7 +473,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			}
 			if sessionHS != nil {
 				if hasWrap {
-					if enc, wErr := wrapPacket(s.wrapKey, sessionHS, s.ssrc); wErr == nil {
+					if enc, wErr := wrapPacket(s.wrapKey, sessionHS, s.wrapTx); wErr == nil {
 						relayConn.WriteTo(enc, peer)
 					}
 				} else {
@@ -553,7 +578,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 
 			var payload []byte
 			if s.wrapKey != nil {
-				wrapped, wrapErr := wrapPacketInto(txBuf, s.wrapKey, buf[:n], s.ssrc)
+				wrapped, wrapErr := wrapPacketInto(txBuf, s.wrapKey, buf[:n], s.wrapTx)
 				if wrapErr != nil {
 					turnLog("[STREAM %d] WRAP TX error: %v", s.id, wrapErr)
 					relayTxErrorCount.Add(1)
@@ -928,8 +953,9 @@ func parseLinks(raw string, maxLinks int) []string {
 //export wgTurnProxyStart
 func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char, networkHandleC C.longlong) int32 {
 	networkGeneration := beginNetworkPathGeneration()
-	clearTransientState()         // flush DNS without clearing credential caches
-	globalCaptchaLockout.Store(0) // reset captcha lockout on fresh start
+	clearTransientState()    // flush DNS without clearing credential caches
+	resetServerHealth()      // new credentials, usually a new server list
+	resetWorkerFatalState(0) // re-armed with the real worker count in StartTunnelGroups
 
 	if networkHandleC != 0 {
 		if dnsStr := C.getNetworkDnsServers(C.longlong(networkHandleC)); dnsStr != nil {
@@ -946,7 +972,6 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	turnIp := C.GoString(turnIpC)
 	turnPort := int(turnPortC)
 	peerType := C.GoString(peerTypeC)
-	streamsPerCred = int(streamsPerCredC)
 	watchdogTimeout := int(watchdogTimeoutC)
 
 	// ── WRAP key parsing ──────────────────────────────────────────────────────
@@ -964,10 +989,19 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	turnMutex.Lock()
 	if currentTurnCancel != nil {
 		currentTurnCancel()
+		// A captcha belonging to the proxy we just cancelled must not stay on
+		// screen (nor keep holding captchaMutex) while this start runs.
+		abortPendingCaptcha()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	currentTurnCancel = cancel
 	turnMutex.Unlock()
+
+	// Reset the captcha lockout and its escalation only after the previous proxy
+	// has been cancelled: its workers unwind through the "solve ladder exhausted"
+	// path, and each such exit arms the lockout. Resetting before the cancel let
+	// a dying session hand its lockout to the session starting here.
+	resetCaptchaLockout()
 
 	// ── Credential mode setup ─────────────────────────────────────────────────
 	turnLog("[PROXY] VK Link credential mode")
@@ -995,18 +1029,25 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	//     not 9 + 9). A short trailing group needs no special handling
 	//     elsewhere: streamID/streamsPerCred — the credential cache key in
 	//     credentials.go:getCacheID — already maps streams 9-11 to slot 1.
-	// streamsPerCred must stay in sync with that division either way.
-	totalStreams := len(links) * streamsPerCred
+	// streamsPerCred must stay in sync with that division either way. The value is
+	// computed locally and published once, at the end: the global is read by the
+	// previous session's departing workers, so intermediate values must never be
+	// visible to them.
+	perCred := int(streamsPerCredC)
+	if perCred < 1 {
+		perCred = 1
+	}
+	totalStreams := len(links) * perCred
 	if maxTotal := int(n); maxTotal > 0 {
 		if maxTotal < totalStreams {
 			perGroup := maxTotal / len(links)
 			if perGroup < 1 {
 				perGroup = 1
 			}
-			streamsPerCred = perGroup
-			totalStreams = len(links) * streamsPerCred
+			perCred = perGroup
+			totalStreams = len(links) * perCred
 		} else if maxTotal > totalStreams {
-			numGroups := (maxTotal + streamsPerCred - 1) / streamsPerCred
+			numGroups := (maxTotal + perCred - 1) / perCred
 			origLinks := links
 			links = make([]string, numGroups)
 			for i := range links {
@@ -1015,9 +1056,10 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 			totalStreams = maxTotal
 		}
 	}
+	setStreamsPerCred(perCred)
 
 	turnLog("[PROXY] Starting: listen=%s StreamNum=%d streamsPerGroup=%d links=%d actualTotal=%d mode=%s peerType=%s watchdog=%ds",
-		listenAddr, int(n), streamsPerCred, len(links), totalStreams, mode, peerType, watchdogTimeout)
+		listenAddr, int(n), perCred, len(links), totalStreams, mode, peerType, watchdogTimeout)
 	turnLog("[PROXY] Identities (%d): %v", len(links), links)
 
 	// ── DNS resolution ────────────────────────────────────────────────────────
@@ -1111,7 +1153,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		UseUDP:            udp != 0,
 		TurnIP:            turnIp,
 		TurnPort:          turnPort,
-		StreamsPerGroup:   streamsPerCred,
+		StreamsPerGroup:   perCred,
 		TotalStreams:      totalStreams,
 		Cert:              &cert,
 		SessionID:         sessionID,
@@ -1163,6 +1205,13 @@ func wgTurnProxyStop() {
 	currentTurnCancel = nil
 	currentTurnDone = nil
 	turnMutex.Unlock()
+
+	// Unconditional: cancelling the context does not reach a worker parked inside
+	// the blocking Android captcha call, and the drain below would then wait out
+	// its whole timeout. Run it even when there is no cancel func left to call —
+	// a captcha can outlive the start that triggered it, and dismissing nothing
+	// costs one no-op JNI call.
+	abortPendingCaptcha()
 
 	if cancel != nil {
 		turnLog("[PROXY] Stopping TURN proxy")

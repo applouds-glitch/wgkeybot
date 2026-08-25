@@ -63,7 +63,8 @@ object TurnConfigProcessor {
 
     /**
      * Modifies the configuration for active TURN usage (replaces Endpoint with local loopback and sets the MTU).
-     * Also sets PersistentKeepalive=25 when DTLS is enabled to keep connection alive.
+     * The native TURN grid drives WireGuard keepalives too, so an independent
+     * PersistentKeepalive timer must stay disabled to avoid a second radio wake window.
      */
     fun modifyConfigForActiveTurn(config: Config, turnSettings: TurnSettings): Config {
         val iface = config.`interface`
@@ -91,8 +92,6 @@ object TurnConfigProcessor {
             builder.setInterface(iface)
         }
 
-        // Determine if we should set PersistentKeepalive (when not in wireguard mode)
-        val shouldSetKeepalive = turnSettings.peerType != "wireguard"
         val localPort = turnSettings.localPort
 
         for (peer in config.peers) {
@@ -101,13 +100,10 @@ object TurnConfigProcessor {
             peerBuilder.setPublicKey(peer.publicKey)
             peer.preSharedKey.ifPresent { peerBuilder.setPreSharedKey(it) }
 
-            // Set PersistentKeepalive=25 when DTLS is enabled (if not set or > 25)
-            if (shouldSetKeepalive) {
-                val originalKeepalive = peer.persistentKeepalive.orElse(25)
-                peerBuilder.setPersistentKeepalive(minOf(25, originalKeepalive))
-            } else {
-                peer.persistentKeepalive.ifPresent { peerBuilder.setPersistentKeepalive(it) }
-            }
+            // Deliberately omit PersistentKeepalive for every active TURN mode,
+            // including peerType="wireguard" (raw WireGuard over TURN/WRAP).
+            // Configurations without TURN never pass through this method and
+            // retain the user's original setting.
 
             // Replace endpoint with 127.0.0.1:localPort
             peerBuilder.parseEndpoint("127.0.0.1:$localPort")

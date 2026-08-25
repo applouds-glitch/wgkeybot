@@ -6,6 +6,8 @@
 package main
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -164,5 +166,58 @@ func TestSharedGridStaysWithinNatSafetyMargin(t *testing.T) {
 				t.Fatalf("unsafe shared grid: total=%d stream=%d now=%v deadline=%v", total, id, now, deadline)
 			}
 		}
+	}
+}
+
+func TestWireGuardKeepaliveRunsOncePerSharedGrid(t *testing.T) {
+	var calls atomic.Int64
+	sender := installWireGuardKeepaliveSender(func() { calls.Add(1) })
+	defer clearWireGuardKeepaliveSender(sender)
+
+	grid := time.Unix(1_700_000_000, 0).Truncate(keepaliveInterval)
+	var wg sync.WaitGroup
+	for id := 0; id < 40; id++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			sendWireGuardKeepaliveOnSharedGrid(grid.Add(keepalivePhase(id, 40)))
+		}(id)
+	}
+	wg.Wait()
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("same-grid WireGuard keepalive calls=%d, want 1", got)
+	}
+
+	if !sendWireGuardKeepaliveOnSharedGrid(grid.Add(keepaliveInterval)) {
+		t.Fatal("next shared grid did not send a WireGuard keepalive")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("two-grid WireGuard keepalive calls=%d, want 2", got)
+	}
+}
+
+func TestWireGuardKeepaliveSenderLifecycleDoesNotConsumeGrid(t *testing.T) {
+	grid := time.Unix(1_700_000_000, 0).Truncate(keepaliveInterval)
+	if sendWireGuardKeepaliveOnSharedGrid(grid) {
+		t.Fatal("keepalive sent without an installed WireGuard device")
+	}
+
+	var calls atomic.Int64
+	first := installWireGuardKeepaliveSender(func() { calls.Add(1) })
+	if !sendWireGuardKeepaliveOnSharedGrid(grid) {
+		t.Fatal("new sender did not send in the current grid")
+	}
+	clearWireGuardKeepaliveSender(first)
+	if sendWireGuardKeepaliveOnSharedGrid(grid.Add(keepaliveInterval)) {
+		t.Fatal("cleared sender still sent a keepalive")
+	}
+
+	second := installWireGuardKeepaliveSender(func() { calls.Add(1) })
+	defer clearWireGuardKeepaliveSender(second)
+	if !sendWireGuardKeepaliveOnSharedGrid(grid) {
+		t.Fatal("replacement sender inherited the previous sender's grid state")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("sender lifecycle calls=%d, want 2", got)
 	}
 }

@@ -62,11 +62,13 @@ class ObservableTunnel internal constructor(
         return state
     }
 
+    // Always delegate, even when the requested state matches: during a connect this
+    // state is still DOWN until the attempt finishes, so short-circuiting a DOWN
+    // request here hid the user's cancel from the manager, which then had no way to
+    // abort the in-flight connect. The manager early-returns when there is nothing
+    // to do, so the no-op case costs nothing.
     suspend fun setStateAsync(state: Tunnel.State): Tunnel.State = withContext(Dispatchers.Main.immediate) {
-        if (state != this@ObservableTunnel.state)
-            manager.setTunnelState(this@ObservableTunnel, state)
-        else
-            this@ObservableTunnel.state
+        manager.setTunnelState(this@ObservableTunnel, state)
     }
 
 

@@ -34,13 +34,17 @@
         <item name="android:windowIsFloating">false</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
+    <!-- Key height is a dimen because the grid is 6 rows tall (0-9 a-z): at the
+         old 52dp the keyboard no longer fits the height of a 1080p TV. -->
     <style name="TvKeyButton" parent="Widget.Material3.Button">
         <item name="android:layout_width">0dp</item>
-        <item name="android:layout_height">52dp</item>
+        <item name="android:layout_height">@dimen/wgk_tv_key_height</item>
         <item name="android:layout_weight">1</item>
-        <item name="android:layout_marginHorizontal">3dp</item>
+        <item name="android:layout_marginStart">3dp</item>
+        <item name="android:layout_marginEnd">3dp</item>
         <item name="android:focusable">true</item>
-        <item name="android:textSize">18sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textSize">17sp</item>
         <item name="android:textStyle">bold</item>
         <item name="android:fontFamily">monospace</item>
         <item name="cornerRadius">8dp</item>
@@ -71,6 +75,15 @@
     <style name="Widget.WGKeyBot.ConnectButton.Tv" parent="Widget.WGKeyBot.ConnectButton">
         <item name="strokeColor">@color/wgk_tv_connect_stroke</item>
         <item name="strokeWidth">5dp</item>
+    </style>
+
+    <!-- Экраны, которые рисуют собственный MaterialToolbar в разметке: AppTheme
+         унаследован от Theme.Material3.*, то есть с системной шапкой, и без
+         этого отключения над тулбаром висела бы вторая полоса с тем же
+         заголовком из android:label. -->
+    <style name="AppTheme.NoActionBar" parent="AppTheme">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
     </style>
 
     <style name="NoBackgroundTheme" parent="AppTheme">

@@ -4,15 +4,12 @@
  */
 package com.wireguard.android
 
-import android.content.Context
-import android.content.Intent
 import android.os.Build
 import android.os.StrictMode
 import android.os.StrictMode.ThreadPolicy
 import android.os.StrictMode.VmPolicy
 import android.util.Log
 import android.webkit.WebView
-import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
@@ -24,10 +21,12 @@ import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.TurnBackend
 import com.wireguard.android.activity.CaptchaActivity
 import com.wireguard.android.captcha.CaptchaDeviceProfile
+import com.wireguard.android.captcha.CaptchaPersona
 import com.wireguard.android.captcha.CaptchaWebViewManager
 import com.wireguard.android.configStore.FileConfigStore
 import com.wireguard.android.model.TunnelManager
 import com.wireguard.android.model.TunnelStateTracker
+import com.wireguard.android.tether.TetherManager
 import com.wireguard.android.turn.TurnProxyManager
 import com.wireguard.android.turn.TurnSettingsStore
 import com.wireguard.android.widget.WidgetStateObserver
@@ -35,9 +34,10 @@ import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.UserKnobs
 import com.wireguard.android.util.applicationScope
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -48,24 +48,22 @@ import java.util.Locale
 
 class Application : android.app.Application() {
     private val futureBackend = CompletableDeferred<Backend>()
-    private val coroutineScope = CoroutineScope(Job() + Dispatchers.Main.immediate)
+    // Same reasoning as TurnProxyManager's scope: this one is shared by the
+    // tunnel restore, the sharing manager and every applicationScope.launch in the
+    // app. Under a plain Job a single unhandled throw cancelled the parent, so one
+    // failing branch silently disabled every other feature on the scope — and,
+    // with no handler installed, went on to reach uncaughtExceptionHandler and
+    // kill the process. Now only the failing branch dies, and it dies logged.
+    private val coroutineScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Main.immediate +
+            CoroutineExceptionHandler { _, e -> Log.e(TAG, "Unhandled exception in application scope", e) }
+    )
     private var backend: Backend? = null
     private lateinit var preferencesDataStore: DataStore<Preferences>
     private lateinit var tunnelManager: TunnelManager
     private lateinit var turnProxyManager: TurnProxyManager
     private lateinit var tunnelStateTracker: TunnelStateTracker
-
-    override fun attachBaseContext(context: Context) {
-        super.attachBaseContext(context)
-        if (BuildConfig.MIN_SDK_VERSION > Build.VERSION.SDK_INT) {
-            val intent = Intent(Intent.ACTION_MAIN)
-            intent.addCategory(Intent.CATEGORY_HOME)
-            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
-            System.exit(0)
-        }
-    }
+    private lateinit var tetherManager: TetherManager
 
     private fun determineBackend(): Backend {
         val backend = GoBackend(applicationContext)
@@ -121,24 +119,31 @@ class Application : android.app.Application() {
         turnProxyManager = TurnProxyManager(applicationContext)
         CaptchaWebViewManager.onTunnelStart(applicationContext)
 
-        // Captcha strategy (matches Go mode order in vk.go):
+        // Captcha strategy (the ladder itself lives in vk.go):
         // 1. Go HTTP auto-solve (captchaSolveModeAuto)
         //    └─ if slider advertised in settings → Go slider POC (dynamic, not in queue)
         //         └─ if slider POC fails → skip invisible WebView, jump to visible dialog
-        // 2. Invisible WebView auto-click (captchaSolveModeManual)  ← Kotlin call #1
+        // 2. Invisible WebView auto-click (captchaSolveModeManual)     ← visible=false
         //    (skipped when slider POC failed — invisible WebView can't solve sliders)
-        // 3. Visible CaptchaActivity dialog (captchaSolveModeManualVisible) ← Kotlin call #2
-        var autoSolveAttempted = false
-        TurnBackend.setCaptchaHandler { redirectUri ->
-            Log.d(TAG, "Captcha handler invoked, autoSolveAttempted=$autoSolveAttempted")
-            if (!autoSolveAttempted) {
-                autoSolveAttempted = true
+        // 3. Visible CaptchaActivity dialog (captchaSolveModeManualVisible) ← visible=true
+        //
+        // Which UI to run is decided by Go and passed in. This side used to infer it
+        // from a local "have I run the invisible one yet" flag, which silently drifted
+        // out of step whenever Go deviated from the plain 2-then-3 order: a slider
+        // round that skipped step 2 got the invisible WebView anyway (on a captcha it
+        // cannot solve, and its slider sentinel was then taken for a token), and a
+        // captcha resolved by the POC left the flag set, so the next captcha opened
+        // with a full-screen dialog nobody asked for.
+        TurnBackend.setCaptchaHandler { redirectUri, visible ->
+            Log.d(TAG, "Captcha handler invoked, visible=$visible")
+            if (visible) {
+                CaptchaActivity.solveCaptcha(applicationContext, redirectUri)
+            } else {
                 try {
                     val token = kotlinx.coroutines.runBlocking {
                         CaptchaWebViewManager.solveCaptchaAsync(redirectUri)
                     }
                     Log.d(TAG, "Auto captcha solved, got token")
-                    autoSolveAttempted = false
                     token
                 } catch (e: Exception) {
                     val isSlider = e.message == CaptchaWebViewManager.ERROR_SLIDER_DETECTED
@@ -146,13 +151,45 @@ class Application : android.app.Application() {
                     Log.d(TAG, "Captcha failed ($reason), signalling Go for next mode")
                     // On slider: return a sentinel so Go runs the slider POC before
                     // falling back to the visible dialog. Otherwise empty → next mode.
-                    // autoSolveAttempted stays true so the next call goes to the dialog.
                     if (isSlider) CAPTCHA_SLIDER_SENTINEL else ""
                 }
-            } else {
-                autoSolveAttempted = false
-                CaptchaActivity.solveCaptcha(applicationContext, redirectUri)
             }
+        }
+
+        // The captcha handler above blocks its native worker until the user solves
+        // the challenge (or the 120s dialog timeout expires), and neither the Go
+        // context nor wgTurnProxyStop can reach a thread parked inside it. Native
+        // calls this when it tears the proxy down, so a user who pressed disconnect
+        // does not keep a dialog on screen — and the next connect does not queue
+        // behind a captcha belonging to a session that is already gone.
+        TurnBackend.setCaptchaCancelHandler {
+            Log.d(TAG, "Captcha cancel requested by native")
+            CaptchaWebViewManager.cancelActive()
+            CaptchaActivity.cancelPending()
+        }
+
+        // VK refused the device identity the captcha layer presents (rate limit,
+        // BOT verdict, exhausted solve ladder). Retire it so the next captcha is
+        // attempted under a freshly minted persona instead of spending the rest of
+        // this one's budget on an identity VK has already rejected.
+        TurnBackend.setCaptchaPersonaBurnHandler { reason ->
+            CaptchaPersona.burn(applicationContext, reason)
+        }
+
+        // Terminal TURN failure: every native worker gave up (an unsolvable captcha,
+        // a call that no longer exists), so the tunnel has no transport left and no
+        // retry will bring it back. Tell the user and take the tunnel down instead of
+        // leaving a connected-looking VPN with a dead route.
+        TurnBackend.setFatalHandler { reason ->
+            tunnelManager.onTurnFatal(reason)
+        }
+
+        // The same outcome reached on the Android side: the restart loop ran out of
+        // attempts, or hit a start code no retry can fix. Native worker accounting
+        // never sees this — those failures happen before a worker exists.
+        turnProxyManager.onUnrecoverableFailure = { tunnelName, reason ->
+            tetherManager.stop()
+            tunnelManager.onTurnUnrecoverable(tunnelName, reason)
         }
 
         // Feed the Go captcha solver real device metrics (screen, DPR, cores,
@@ -165,6 +202,17 @@ class Application : android.app.Application() {
         tunnelManager.onCreate()
         tunnelStateTracker = TunnelStateTracker(applicationContext)
         tunnelStateTracker.attach()
+        // TetherManager's constructor subscribes to tunnelStateTracker.uiState right
+        // away, so it must be created after tunnelStateTracker exists.
+        tetherManager = TetherManager(applicationContext)
+        // Pushed up from Go when the sharing proxy retires itself — a fatal accept
+        // error, or the egress guard catching traffic that would have left outside
+        // the tunnel. Without it the access point stands, SSID and password on
+        // display, until the next stats poll notices; with the screen off that is
+        // half a minute.
+        TurnBackend.setTetherStoppedHandler { reason ->
+            tetherManager.onNativeStopped(reason)
+        }
         WidgetStateObserver(applicationContext).attach()
         coroutineScope.launch(Dispatchers.IO) {
             backend = determineBackend()
@@ -205,6 +253,8 @@ class Application : android.app.Application() {
         fun getTurnProxyManager() = get().turnProxyManager
 
         fun getTunnelStateTracker() = get().tunnelStateTracker
+
+        fun getTetherManager() = get().tetherManager
 
         fun getCoroutineScope() = get().coroutineScope
     }

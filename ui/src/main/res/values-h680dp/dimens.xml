@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Copyright © 2017-2025 WireGuard LLC. All Rights Reserved.
+  ~ SPDX-License-Identifier: Apache-2.0
+  -->
+<!-- Mid bucket for the connect screen (~636dp of stack): enough height for a
+     larger ring, not enough for the full design. Typical inhabitant is a tall
+     phone turned up to the largest display-size setting. See values/dimens.xml
+     for the geometry rules and the height budget. -->
+<resources>
+    <dimen name="wgk_connect_ring_outer">200dp</dimen>
+    <dimen name="wgk_connect_ring_mid">176dp</dimen>
+    <dimen name="wgk_connect_ring_inner">152dp</dimen>
+    <dimen name="wgk_connect_arc">154dp</dimen>
+    <dimen name="wgk_connect_btn">134dp</dimen>
+    <dimen name="wgk_connect_icon">48dp</dimen>
+
+    <dimen name="wgk_screen_pad_top">14dp</dimen>
+    <dimen name="wgk_screen_pad_bottom">20dp</dimen>
+    <dimen name="wgk_connect_gap_min">12dp</dimen>
+    <dimen name="wgk_status_gap">20dp</dimen>
+    <dimen name="wgk_footer_gap">14dp</dimen>
+</resources>

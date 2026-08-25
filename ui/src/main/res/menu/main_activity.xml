@@ -4,10 +4,15 @@
   -->
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
+    <!-- The app's own settings screen, and the bar's only item: everything that
+         used to live here as an unlabelled icon — the theme among them — is a
+         named row on that screen now. The bar is the only chrome the connect
+         screen has; a gear inside the screen would duplicate the wordmark row
+         the bar already carries. -->
     <item
-        android:id="@+id/menu_theme_toggle"
-        android:icon="@drawable/ic_theme_dark"
-        android:orderInCategory="100"
-        android:title="@string/wgk_theme_toggle_cd"
+        android:id="@+id/menu_app_settings"
+        android:icon="@drawable/ic_settings"
+        android:orderInCategory="200"
+        android:title="@string/wgk_settings_title"
         app:showAsAction="always" />
 </menu>

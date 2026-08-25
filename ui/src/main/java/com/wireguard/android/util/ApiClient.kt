@@ -1,5 +1,6 @@
 package com.wireguard.android.util
 
+import android.net.Uri
 import com.wireguard.android.BuildConfig
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -14,6 +15,8 @@ object ApiClient {
     // ── Exceptions ─────────────────────────────────────────────────────────────
 
     class UnauthorizedException : Exception("Unauthorized")
+
+    class InvalidTokenException : Exception("Invalid token")
 
     class UpgradeRequiredException(val downloadUrl: String?) : Exception("Upgrade required")
 
@@ -36,9 +39,18 @@ object ApiClient {
 
     // ── API calls ──────────────────────────────────────────────────────────────
 
+    /**
+     * The token lands in the request path, so it is checked here as well as at
+     * every entry point: a token that slipped through unvalidated must not be
+     * able to reshape the URL. [Uri.encode] is belt-and-braces on top of that.
+     */
     @Throws(Exception::class)
     fun init(oneTimeToken: String): InitResponse {
-        val json = request("$BASE_URL/api/v1/init/$oneTimeToken", accessToken = null)
+        if (!TokenFormat.isValid(oneTimeToken)) throw InvalidTokenException()
+        val json = request(
+            "$BASE_URL/api/v1/init/${Uri.encode(oneTimeToken, "")}",
+            accessToken = null,
+        )
         return InitResponse(
             accessToken = json.getString("access_token"),
             subscriptionExpiresAt = json.getString("subscription_expires_at"),

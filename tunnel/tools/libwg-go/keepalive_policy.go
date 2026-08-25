@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -41,6 +42,60 @@ const (
 	// credential, tripping the TURN 486 quota → captcha.
 	freezeSlack = 20 * time.Second
 )
+
+// wireGuardKeepaliveSender couples WireGuard's encrypted keepalive to the
+// existing TURN keepalive grid. TURN still sends one STUN liveness probe per
+// relay stream, while WireGuard sends one peer keepalive per grid window; both
+// layers therefore use the same short radio-active window instead of running
+// unrelated 25s timers.
+//
+// The mutex is intentionally held while send runs. Clearing the active sender
+// during tunnel teardown then waits for an already-started send to finish
+// before the WireGuard device is closed.
+type wireGuardKeepaliveSender struct {
+	mu       sync.Mutex
+	send     func()
+	lastGrid int64
+}
+
+var activeWireGuardKeepaliveSender atomic.Pointer[wireGuardKeepaliveSender]
+
+func installWireGuardKeepaliveSender(send func()) *wireGuardKeepaliveSender {
+	sender := &wireGuardKeepaliveSender{send: send}
+	activeWireGuardKeepaliveSender.Store(sender)
+	return sender
+}
+
+func clearWireGuardKeepaliveSender(sender *wireGuardKeepaliveSender) {
+	if sender == nil {
+		return
+	}
+	activeWireGuardKeepaliveSender.CompareAndSwap(sender, nil)
+	sender.mu.Lock()
+	sender.send = nil
+	sender.mu.Unlock()
+}
+
+// sendWireGuardKeepaliveOnSharedGrid invokes the active WireGuard device at
+// most once for the wall-clock bucket containing now. All TURN stream phases
+// fall inside the first keepaliveSpread of that bucket, so whichever ready
+// stream arrives first performs the WireGuard send and every sibling skips it.
+func sendWireGuardKeepaliveOnSharedGrid(now time.Time) bool {
+	sender := activeWireGuardKeepaliveSender.Load()
+	if sender == nil {
+		return false
+	}
+	grid := now.Truncate(keepaliveInterval).UnixNano()
+
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	if sender.send == nil || sender.lastGrid == grid {
+		return false
+	}
+	sender.lastGrid = grid
+	sender.send()
+	return true
+}
 
 // keepalivePhase is the deterministic offset of a stream's keepalive within the
 // shared grid window. Streams stay coalesced into one radio wake but no longer
