@@ -509,9 +509,9 @@
     <string name="wgk_tether_error_bind">Не удалось открыть порт прокси.</string>
     <string name="wgk_tether_error_native">Не удалось запустить раздачу.</string>
     <string name="wgk_tether_auto_off_label">Выключать без активности</string>
-    <string name="wgk_tether_auto_off_desc">Гасит раздачу через 30 минут, если на ней нет устройств</string>
+    <string name="wgk_tether_auto_off_desc">Гасит раздачу через 2 часа, если ей никто не пользуется</string>
     <string name="wgk_tether_auto_off_notice">Раздача выключена</string>
-    <string name="wgk_tether_error_auto_off">30 минут раздачей никто не пользовался, поэтому она выключилась сама.</string>
+    <string name="wgk_tether_error_auto_off">2 часа раздачей никто не пользовался, поэтому она выключилась сама.</string>
     <plurals name="wgk_tether_clients">
         <item quantity="one">%d устройство</item>
         <item quantity="few">%d устройства</item>

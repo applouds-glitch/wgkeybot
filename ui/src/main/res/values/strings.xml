@@ -344,9 +344,9 @@
     <string name="wgk_tether_error_bind">Could not open the proxy port.</string>
     <string name="wgk_tether_error_native">Sharing failed to start.</string>
     <string name="wgk_tether_auto_off_label">Turn off when unused</string>
-    <string name="wgk_tether_auto_off_desc">Switches sharing off after 30 minutes with no devices on it</string>
+    <string name="wgk_tether_auto_off_desc">Switches sharing off after 2 hours if nothing is using it</string>
     <string name="wgk_tether_auto_off_notice">Sharing switched off</string>
-    <string name="wgk_tether_error_auto_off">Nothing used sharing for 30 minutes, so it switched itself off.</string>
+    <string name="wgk_tether_error_auto_off">Nothing used sharing for 2 hours, so it switched itself off.</string>
     <plurals name="wgk_tether_clients">
         <item quantity="one">%d device</item>
         <item quantity="other">%d devices</item>

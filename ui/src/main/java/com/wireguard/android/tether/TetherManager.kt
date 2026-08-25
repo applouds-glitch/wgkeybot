@@ -419,13 +419,23 @@ class TetherManager(private val context: Context) {
     /**
      * Switches an unused session off after [AUTO_OFF_IDLE_MS].
      *
-     * "Unused" is deliberately three conditions and not one. clients is the count
-     * of devices the native side saw within its five-minute TTL, so a laptop
-     * joined to the access point but sitting quiet reads as zero — on its own it
-     * would pull the hotspot out from under someone still using it. conns covers
-     * the device holding an idle connection open, and the byte totals cover the
-     * short request that began and ended entirely between two ticks, which with
-     * the screen off are thirty seconds apart.
+     * "Unused" means no traffic, not no associated stations. Asking the platform
+     * who is joined to the access point is not an option: the only API that answers
+     * that for a local-only hotspot is WifiManager.registerLocalOnlyHotspotSoftApCallback,
+     * which lives in system-current.txt and is unreachable from a normal app, and
+     * /proc/net/arp has been closed since Android 10. Traffic is a fair stand-in
+     * here precisely because sharing runs without NAT: our proxy is the client's
+     * only way out, so a client that sends nothing through it is a client that is
+     * not using the hotspot. What it cannot distinguish is a device joined and
+     * merely quiet, which is why AUTO_OFF_IDLE_MS is measured in hours.
+     *
+     * The three conditions are deliberate. clients is the count of devices the
+     * native side saw within its five-minute TTL, so a laptop joined to the access
+     * point but sitting quiet reads as zero — on its own it would pull the hotspot
+     * out from under someone still using it. conns covers the device holding an
+     * idle connection open, and the byte totals cover the short request that began
+     * and ended entirely between two ticks, which with the screen off are thirty
+     * seconds apart.
      *
      * Called with the lock held and only from [refreshStats], so it may tear the
      * session down in place.
@@ -566,12 +576,15 @@ class TetherManager(private val context: Context) {
         private const val ACTIVE_POLL_MS = 2_000L
         private const val IDLE_POLL_MS = 30_000L
 
-        // How long a session may go unused before it switches itself off. Half an
-        // hour is long enough that a user who set sharing up and then went to fetch
-        // the other device still finds it waiting, and short enough that a hotspot
-        // forgotten at bedtime is not still burning the radio in the morning. Only
-        // consulted while TetherSettings.isAutoOffEnabled(), which defaults to on.
-        private const val AUTO_OFF_IDLE_MS = 30 * 60 * 1000L
+        // How long a session may go unused before it switches itself off. Two hours
+        // rather than the half hour this started at, because "unused" is measured in
+        // traffic and not in associated stations — see checkIdleLocked. A window that
+        // short cut off a device that was joined and merely quiet; two hours is long
+        // enough that anything actually using the hotspot has emitted something, and
+        // still short enough that one forgotten at bedtime is not burning the radio
+        // in the morning. Only consulted while TetherSettings.isAutoOffEnabled(),
+        // which defaults to on.
+        private const val AUTO_OFF_IDLE_MS = 2 * 60 * 60 * 1000L
 
         const val DEFAULT_PORT = 8888
     }
