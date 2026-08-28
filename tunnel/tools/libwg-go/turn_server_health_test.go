@@ -71,3 +71,74 @@ func TestNoteServerFailureForgetsStaleStreak(t *testing.T) {
 		t.Fatal("a blip hours after two old strikes stood the server down")
 	}
 }
+
+const healthTestPeerAddr = "90.156.236.92:19302"
+
+// One relay whose data plane is dead, several that work: the failing host must
+// stand down on its first verdict instead of waiting out three strikes. What
+// makes that safe is the overlap — a sibling completed a handshake on another
+// server while this attempt was failing, so the uplink is provably fine and the
+// fault is this host's alone.
+func TestHandshakeFailureStandsServerDownWhileASiblingProvesAnotherServer(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	attemptStart := time.Now()
+	noteServerHandshakeOKAt(healthTestPeerAddr, attemptStart.Add(time.Second))
+	noteServerHandshakeFailureAt(healthTestAddr, attemptStart, attemptStart.Add(10*time.Second))
+
+	if !serverPenalized(healthTestAddr, attemptStart.Add(11*time.Second)) {
+		t.Fatal("a proven sibling did not authorise an immediate stand-down")
+	}
+	if serverPenalized(healthTestPeerAddr, attemptStart.Add(11*time.Second)) {
+		t.Fatal("the healthy server was stood down too")
+	}
+}
+
+// A lost uplink fails every handshake on every server at once. Nothing proves
+// the path in that window, so a single failure must decide nothing and the
+// ordinary streak has to run its course — otherwise one blip stands down the
+// whole list VK returned.
+func TestHandshakeFailureWithoutProofFallsBackToTheStreak(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	attemptStart := time.Now()
+	noteServerHandshakeFailureAt(healthTestAddr, attemptStart, attemptStart.Add(10*time.Second))
+
+	if serverPenalized(healthTestAddr, attemptStart.Add(11*time.Second)) {
+		t.Fatal("an unproven failure stood the server down on one strike")
+	}
+}
+
+// Proof from the failing server itself argues the opposite: another stream is
+// talking to that very host, so its data plane works and one stream's failure
+// is not the host's fault.
+func TestHandshakeFailureIgnoresProofFromTheSameServer(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	attemptStart := time.Now()
+	noteServerHandshakeOKAt(healthTestAddr, attemptStart.Add(time.Second))
+	noteServerHandshakeFailureAt(healthTestAddr, attemptStart, attemptStart.Add(10*time.Second))
+
+	if serverPenalized(healthTestAddr, attemptStart.Add(11*time.Second)) {
+		t.Fatal("a server proved healthy by its own sibling was stood down")
+	}
+}
+
+// Only proof that overlaps the failed attempt says anything about the uplink.
+// A success from before the attempt began is exactly what a dying uplink leaves
+// behind, and must not be read as "the network is fine, blame the host".
+func TestHandshakeFailureIgnoresProofOlderThanTheAttempt(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	attemptStart := time.Now()
+	noteServerHandshakeOKAt(healthTestPeerAddr, attemptStart.Add(-time.Second))
+	noteServerHandshakeFailureAt(healthTestAddr, attemptStart, attemptStart.Add(10*time.Second))
+
+	if serverPenalized(healthTestAddr, attemptStart.Add(11*time.Second)) {
+		t.Fatal("proof from before the attempt authorised a stand-down")
+	}
+}
