@@ -122,6 +122,12 @@ type stream struct {
 	cert            *tls.Certificate
 	watchdogTimeout int
 
+	// serverAddr is the TURN server this attempt runs on, set by runSession
+	// before the transport starts. The transports use it to report their own
+	// handshake verdict to turn_server_health.go; it is rewritten on every
+	// attempt and read only by the single goroutine driving this stream.
+	serverAddr string
+
 	// wrapKey is an optional 32-byte ChaCha20 key for WRAP obfuscation.
 	// When non-nil, raw UDP packets to/from the TURN relay are encrypted with
 	// wrapPacket / unwrapPacket before any DTLS processing.
@@ -297,6 +303,38 @@ var (
 // runNoDTLS — direct relay, no DTLS
 // ─────────────────────────────────────────────────────────────────────────────
 
+const (
+	// relayProofTimeout bounds the wait for the relay to answer (see runNoDTLS).
+	// Short enough that a bad relay is out of the way with room for WireGuard's
+	// own retries inside the 25s connect budget, long enough to survive a mobile
+	// RTT plus a lost probe — a full DTLS-SRTP handshake over these relays
+	// measures 130-220ms, so a single round trip has an order of magnitude of
+	// headroom here.
+	relayProofTimeout = 2 * time.Second
+
+	// relayProbeInterval re-sends the probe (and the session header with it, in
+	// case that is what was lost) while waiting. UDP loses packets; one silent
+	// drop must not read as a dead relay.
+	relayProbeInterval = 400 * time.Millisecond
+)
+
+// runNoDTLS carries WireGuard straight over the relay, optionally WRAP-obfuscated.
+//
+// Unlike DTLS and SRTP this transport has no handshake of its own — the server
+// answers the 17-byte session header with nothing — so readiness used to be a
+// blind 200ms sleep. That made a relay which allocates and then swallows
+// everything look exactly like a working one: the dispatcher kept feeding the
+// dead stream (init_groups.go sends eight consecutive packets through one
+// stream, and before the tunnel is up those eight are all of WireGuard's
+// handshake retries), and TunnelManager tore the tunnel down at its 25s
+// handshake deadline — long before the 90s dead-stream detector had said a word.
+// Allocate had succeeded, so nothing counted against the server either, and the
+// next attempt went back to the same dead host.
+//
+// The proof was already on the wire: the server echoes a STUN keepalive back
+// through the stream once it has registered the session header, and that echo is
+// a full round trip through the relay. So probe with one and wait for it, and
+// fail the stream if it never comes.
 func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr) error {
 	sCtx, sCancel := context.WithCancel(ctx)
 	defer sCancel()
@@ -314,6 +352,13 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	hasWrap := s.wrapKey != nil
 	turnLog("[STREAM %d] NoDTLS mode (wrap=%v) — %s", s.id, hasWrap, peer)
 
+	// Closed by the RX goroutine on the first packet the relay hands back that
+	// survives the peer and WRAP checks. That packet is the whole proof this
+	// transport gets that the relay round trip works.
+	proofCh := make(chan struct{})
+	var proofOnce sync.Once
+	proven := func() { proofOnce.Do(func() { close(proofCh) }) }
+
 	// Session handshake: 17-byte header (sessionID + streamID). Kept in
 	// sessionHS so the keepalive goroutine can re-announce it periodically.
 	// Sent in a small burst so a single UDP drop or server-side scheduling
@@ -324,7 +369,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		copy(sessionHS[:16], s.sessionID)
 		sessionHS[16] = byte(s.id)
 		if hErr := s.sendSessionHSBurst(relayConn, peer, sessionHS, hasWrap); hErr != nil {
-			return hErr
+			return fmt.Errorf("%w: %w", errDataPlaneHandshake, hErr)
 		}
 		turnLog("[STREAM %d] Session handshake burst sent", s.id)
 	}
@@ -409,6 +454,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				// that the relay path works in both directions.
 				activity.noteRx(time.Now())
 				markNetworkPathProven(s.networkGeneration)
+				proven()
 				if m == 0 {
 					continue
 				}
@@ -430,6 +476,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				}
 				activity.noteRx(time.Now())
 				markNetworkPathProven(s.networkGeneration)
+				proven()
 				if isStunKeepalive(wire[:n]) {
 					continue
 				}
@@ -484,11 +531,32 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		})
 	}()
 
-	// Give the server a moment to process the session handshake before
-	// we mark the stream as ready. Reduced from 300ms because the burst
-	// above already gives the server 3 chances spread across ~100ms; only
-	// a short tail wait is needed for the last burst packet to land.
-	time.Sleep(200 * time.Millisecond)
+	if sessionHS != nil {
+		if err := s.awaitRelayProof(sCtx, proofCh, func() error {
+			return s.probeRelay(relayConn, peer, sessionHS, hasWrap)
+		}); err != nil {
+			sCancel()
+			wg.Wait()
+			if ctx.Err() != nil {
+				// Our own teardown, not the relay's silence.
+				return err
+			}
+			// A goroutine that already failed knows better than the timeout why
+			// nothing came back; either way the stream never carried traffic.
+			select {
+			case cause := <-firstErr:
+				return fmt.Errorf("%w: %w", errDataPlaneHandshake, cause)
+			default:
+				return fmt.Errorf("%w: %w", errDataPlaneHandshake, err)
+			}
+		}
+		noteServerHandshakeOK(s.serverAddr)
+	} else {
+		// Without a session header the server never registers this stream and so
+		// never echoes: there is nothing to wait for. Keep the old optimistic
+		// readiness on that path rather than failing a stream we cannot judge.
+		time.Sleep(200 * time.Millisecond)
+	}
 
 	s.ready.Store(true)
 	s.okFunc()
@@ -500,6 +568,55 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		return nil
 	}
 }
+
+// probeRelay sends one liveness probe: the session header first, so a server
+// that lost the opening burst registers the stream before it sees the STUN it is
+// meant to echo, then the STUN itself.
+func (s *stream) probeRelay(relayConn net.PacketConn, peer net.Addr, sessionHS []byte, hasWrap bool) error {
+	if hasWrap {
+		if enc, err := wrapPacket(s.wrapKey, sessionHS, s.wrapTx); err == nil {
+			relayConn.WriteTo(enc, peer)
+		}
+		enc, err := wrapPacket(s.wrapKey, stunBindingIndication, s.wrapTx)
+		if err != nil {
+			return fmt.Errorf("WRAP probe: %w", err)
+		}
+		_, err = relayConn.WriteTo(enc, peer)
+		return err
+	}
+	relayConn.WriteTo(sessionHS, peer)
+	_, err := relayConn.WriteTo(stunBindingIndication, peer)
+	return err
+}
+
+// awaitRelayProof probes until the relay answers, the context dies, or
+// relayProofTimeout runs out. Returning an error means the stream never proved
+// its data path and must not be offered to the dispatcher.
+func (s *stream) awaitRelayProof(ctx context.Context, proof <-chan struct{}, probe func() error) error {
+	if err := probe(); err != nil {
+		return err
+	}
+	deadline := time.NewTimer(relayProofTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(relayProbeInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-proof:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("relay never answered in %v", relayProofTimeout)
+		case <-ticker.C:
+			if err := probe(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr, sendHandshake bool) error {
 	sCtx, sCancel := context.WithCancel(ctx)
 	defer sCancel()
@@ -644,10 +761,11 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	turnLog("[STREAM %d] DTLS handshake...", s.id)
 	dtlsConn.SetDeadline(time.Now().Add(30 * time.Second))
 	if err := dtlsConn.HandshakeContext(sCtx); err != nil {
-		return fmt.Errorf("DTLS handshake failed: %w", err)
+		return fmt.Errorf("%w: DTLS handshake failed: %w", errDataPlaneHandshake, err)
 	}
 	dtlsConn.SetDeadline(time.Time{})
 	turnLog("[STREAM %d] DTLS handshake OK", s.id)
+	noteServerHandshakeOK(s.serverAddr)
 	markNetworkPathProven(s.networkGeneration)
 
 	// Session + stream ID handshake (proxy_v2 only). Sent as a small burst
@@ -793,11 +911,12 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	srtpConn, err := srtpwrap.Client(hsCtx, relayConn, peer)
 	hsCancel()
 	if err != nil {
-		return fmt.Errorf("SRTP handshake failed: %w", err)
+		return fmt.Errorf("%w: SRTP handshake failed: %w", errDataPlaneHandshake, err)
 	}
 	defer srtpConn.Close()
 	context.AfterFunc(sCtx, func() { srtpConn.Close() })
 	turnLog("[STREAM %d] SRTP handshake OK", s.id)
+	noteServerHandshakeOK(s.serverAddr)
 	markNetworkPathProven(s.networkGeneration)
 
 	// Session + stream ID handshake (proxy_v2 model). Sent as a small burst

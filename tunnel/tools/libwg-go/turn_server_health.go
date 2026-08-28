@@ -70,6 +70,11 @@ type serverHealth struct {
 	failures     int
 	lastStrike   time.Time
 	penalizedTil time.Time
+
+	// lastGood is when this server last completed a data-plane handshake. It is
+	// the evidence noteServerHandshakeFailure weighs, so entries are cleared in
+	// place rather than deleted — dropping the entry would drop the proof.
+	lastGood time.Time
 }
 
 var serverHealthState = struct {
@@ -144,7 +149,101 @@ func noteServerSuccess(addr string) {
 	if !h.penalizedTil.IsZero() {
 		turnLog("[TURN HEALTH] %s carried a healthy session — penalty lifted", addr)
 	}
-	delete(serverHealthState.byAddr, addr)
+	h.failures = 0
+	h.lastStrike = time.Time{}
+	h.penalizedTil = time.Time{}
+}
+
+// noteServerHandshakeOK records that addr completed a data-plane handshake —
+// the transport's own handshake, not the TURN Allocate that precedes it. This
+// is the fast counterpart of noteServerSuccess: it says nothing about whether
+// the server will keep carrying traffic, only that at this instant its relay
+// carried an authenticated round trip. noteServerHandshakeFailure reads these
+// stamps; nothing else does.
+func noteServerHandshakeOK(addr string) {
+	noteServerHandshakeOKAt(addr, time.Now())
+}
+
+func noteServerHandshakeOKAt(addr string, now time.Time) {
+	if addr == "" {
+		return
+	}
+	serverHealthState.Lock()
+	defer serverHealthState.Unlock()
+
+	h := serverHealthState.byAddr[addr]
+	if h == nil {
+		h = &serverHealth{}
+		serverHealthState.byAddr[addr] = h
+	}
+	h.lastGood = now
+}
+
+// noteServerHandshakeFailure reports that addr allocated a relay and then failed
+// the data-plane handshake through it — the one verdict that is worth acting on
+// before the streak fills up, because it is the shape of the failure that used
+// to be invisible: Allocate succeeds, so nothing counts against the host, while
+// the relay quietly eats every packet.
+//
+// It stands the server down on a single strike, but only when the uplink is
+// provably innocent: some *other* server completed a handshake while this
+// attempt was failing. That overlap is the whole discriminator. A dead uplink
+// fails every server at once and proves nothing in the window, so it falls back
+// to the ordinary streak (see serverFailCoalesce) instead of standing down every
+// server VK returned; proof from addr itself argues the host is fine and one
+// stream was unlucky, so it does not count either.
+//
+// attemptStart is when the failed handshake began — proof older than that is
+// exactly what a dying uplink leaves behind and must not authorise anything.
+func noteServerHandshakeFailure(addr string, attemptStart time.Time) {
+	noteServerHandshakeFailureAt(addr, attemptStart, time.Now())
+}
+
+func noteServerHandshakeFailureAt(addr string, attemptStart, now time.Time) {
+	if addr == "" {
+		return
+	}
+	if !siblingProvedAnotherServer(addr, attemptStart, now) {
+		noteServerFailureAt(addr, now)
+		return
+	}
+
+	serverHealthState.Lock()
+	defer serverHealthState.Unlock()
+
+	h := serverHealthState.byAddr[addr]
+	if h == nil {
+		h = &serverHealth{}
+		serverHealthState.byAddr[addr] = h
+	}
+	h.lastStrike = now
+	h.failures++
+	// Every stream assigned to the bad host reports this within the same breath.
+	// Re-arming the window on each is harmless and correct; saying so ten times
+	// is not.
+	alreadyDown := now.Before(h.penalizedTil)
+	h.penalizedTil = now.Add(serverPenaltyWindow)
+	if !alreadyDown {
+		turnLog("[TURN HEALTH] %s allocated but failed its data-plane handshake while another server carried one — standing it down for %v",
+			addr, serverPenaltyWindow)
+	}
+}
+
+// siblingProvedAnotherServer reports whether a server other than addr completed
+// a data-plane handshake between attemptStart and now.
+func siblingProvedAnotherServer(addr string, attemptStart, now time.Time) bool {
+	serverHealthState.Lock()
+	defer serverHealthState.Unlock()
+
+	for other, h := range serverHealthState.byAddr {
+		if other == addr || h.lastGood.IsZero() {
+			continue
+		}
+		if h.lastGood.After(attemptStart) && !h.lastGood.After(now) {
+			return true
+		}
+	}
+	return false
 }
 
 // serverPenalized reports whether addr is currently stood down.
@@ -159,9 +258,11 @@ func serverPenalized(addr string, now time.Time) bool {
 	if now.Before(h.penalizedTil) {
 		return true
 	}
-	// The window expired. Drop the whole entry rather than only the deadline: the
-	// server gets a clean slate, so one more failure does not immediately re-arm
-	// the penalty from a streak earned minutes ago.
-	delete(serverHealthState.byAddr, addr)
+	// The window expired. Clear the streak as well as the deadline: the server
+	// gets a clean slate, so one more failure does not immediately re-arm the
+	// penalty from a streak earned minutes ago.
+	h.failures = 0
+	h.lastStrike = time.Time{}
+	h.penalizedTil = time.Time{}
 	return false
 }

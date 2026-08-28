@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -14,6 +15,65 @@ import (
 
 	"github.com/pion/turn/v5"
 )
+
+// errDataPlaneHandshake marks the one failure the static assignment used to be
+// blind to: Allocate succeeded, so the control plane and the credential are
+// fine, and the transport handshake through the relay still never completed.
+// Every transport wraps its handshake failure with this so runSession can tell
+// it apart from a session that ran and then broke.
+var errDataPlaneHandshake = errors.New("data-plane handshake failed")
+
+// sessionVerdict is what a finished session says about the server it ran on.
+type sessionVerdict int
+
+const (
+	// verdictNone: the session says nothing — we tore it down ourselves, or it
+	// ended cleanly without lasting long enough to prove anything.
+	verdictNone sessionVerdict = iota
+	verdictSuccess
+	verdictFailure
+	// verdictHandshakeFailure: allocated, then never completed the transport
+	// handshake. Acted on immediately rather than through the streak.
+	verdictHandshakeFailure
+)
+
+func (v sessionVerdict) String() string {
+	switch v {
+	case verdictSuccess:
+		return "success"
+	case verdictFailure:
+		return "failure"
+	case verdictHandshakeFailure:
+		return "handshake-failure"
+	default:
+		return "none"
+	}
+}
+
+// sessionOutcome grades a finished session for the health accounting in
+// turn_server_health.go.
+//
+// A blackholed allocation is the clearest verdict there is: the control plane
+// answered, so the credential and the path are fine, and the host still ate the
+// traffic. Otherwise a session that ran for a while proves the server works, and
+// a short one that ended in an error counts against it. Teardowns are excluded —
+// cancelled means cancelled by us, not by the server.
+func sessionOutcome(cancelled, blackholed bool, dur time.Duration, err error) sessionVerdict {
+	switch {
+	case cancelled:
+		return verdictNone
+	case blackholed:
+		return verdictFailure
+	case dur >= healthySessionDuration:
+		return verdictSuccess
+	case errors.Is(err, errDataPlaneHandshake):
+		return verdictHandshakeFailure
+	case err != nil:
+		return verdictFailure
+	default:
+		return verdictNone
+	}
+}
 
 // winner holds a successfully allocated TURN session from the race in
 // runWithCreds. The fields are the live resources handed off to the session:
@@ -250,6 +310,11 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 		}
 	}()
 
+	// The transports report their own handshake success against this address
+	// (noteServerHandshakeOK), which is what lets a sibling's success vouch for
+	// the uplink when another server fails its handshake in the same window.
+	s.serverAddr = w.addr
+
 	started := time.Now()
 	var err error
 	switch cfg.PeerType {
@@ -262,18 +327,12 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	}
 
 	// Health accounting for the static assignment (see turn_server_health.go).
-	// A blackholed allocation is the clearest verdict there is: the control plane
-	// answered, so the credential and the path are fine, and the host still ate
-	// the traffic. Otherwise a session that ran for a while proves the server
-	// works, and a short one that ended in an error counts against it. Teardowns
-	// are excluded — ctx is cancelled by us, not by the server.
-	switch {
-	case ctx.Err() != nil:
-	case w.perm.fired():
-		noteServerFailure(w.addr)
-	case time.Since(started) >= healthySessionDuration:
+	switch sessionOutcome(ctx.Err() != nil, w.perm.fired(), time.Since(started), err) {
+	case verdictSuccess:
 		noteServerSuccess(w.addr)
-	case err != nil:
+	case verdictHandshakeFailure:
+		noteServerHandshakeFailure(w.addr, started)
+	case verdictFailure:
 		noteServerFailure(w.addr)
 	}
 
