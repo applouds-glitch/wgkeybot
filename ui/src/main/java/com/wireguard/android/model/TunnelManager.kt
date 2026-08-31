@@ -82,8 +82,20 @@ class TunnelManager(
     /** Name of the tunnel whose connect is currently in flight, or null. */
     @Volatile private var connectInFlight: String? = null
 
-    /** True while [connectInFlight] is an automatic restore rather than a user request. */
-    @Volatile private var restoreInFlight = false
+    /**
+     * How many user-requested connects are outstanding — queued on [stateMutex] as well
+     * as in flight. An automatic restore is not counted: it never paints Connecting, so
+     * the user is looking at a disconnected tunnel and their tap means "connect".
+     */
+    private var userConnects = 0
+
+    /**
+     * Bumped by every stop request. A connect that queued before the bump is stale by the
+     * time it reaches the lock and drops itself instead of running. Global rather than
+     * per-tunnel, like [connectInFlight] and [abortConnect] beside it — this client ships
+     * a single tunnel.
+     */
+    private var stopGeneration = 0
 
     /** Set when a queued request wants the in-flight connect to stop waiting. */
     @Volatile private var abortConnect = false
@@ -394,51 +406,81 @@ class TunnelManager(
         newName!!
     }
 
+    /**
+     * What a TOGGLE on [tunnel] resolves to right now.
+     *
+     * Not the model state: during a connect tunnel.state is still DOWN, so a widget/tile
+     * toggle meant as "cancel" would be read as "connect" and start a second attempt. And
+     * [userConnects] rather than [connectInFlight], because the request being cancelled
+     * may still be queued on [stateMutex] behind an automatic restore, with nothing in
+     * flight yet that carries the user's intent.
+     *
+     * A restore on its own is deliberately not cancellable this way: it never calls
+     * signalUserConnect, so the UI reads Disconnected, and on a cold start it runs at the
+     * very moment of the tap that revived the process — reading that first tap as "cancel"
+     * would kill the connect the user just asked for. So the first tap adopts the restore
+     * (queues its own UP behind it, which comes out of setTunnelStateSerialized on the
+     * first line if the restore got there), and every tap after that cancels like any
+     * other.
+     *
+     * Public because the tile and the widget paint Connecting/Disconnected before this
+     * (slow) work starts, and guessing from tunnel.state alone leaves them claiming
+     * "Connecting" on a tap that is actually a cancel.
+     */
+    fun resolveToggle(tunnel: ObservableTunnel): Tunnel.State = when {
+        tunnel.state == Tunnel.State.UP -> Tunnel.State.DOWN
+        userConnects > 0 -> Tunnel.State.DOWN
+        else -> Tunnel.State.UP
+    }
+
     suspend fun setTunnelState(
         tunnel: ObservableTunnel,
         state: Tunnel.State,
         restore: Boolean = false,
     ): Tunnel.State = withContext(Dispatchers.Main.immediate) {
-        // Resolve TOGGLE against the request in flight rather than the model state:
-        // during a connect tunnel.state is still DOWN, so a widget/tile toggle meant
-        // as "cancel" would otherwise be read as "connect" and start a second attempt.
-        // An automatic restore is deliberately excluded from that: it is invisible to the
-        // user (only signalUserConnect paints Connecting, and restore never calls it, so
-        // the UI still reads Disconnected), and on a cold start it runs at the very moment
-        // of the tap that revived the process — reading that tap as "cancel" would kill
-        // the connect the user just asked for. Such a toggle queues on stateMutex instead
-        // and, if the restore got there, leaves setTunnelStateSerialized on its first line.
-        val requested = if (state != Tunnel.State.TOGGLE) state else when {
-            tunnel.state == Tunnel.State.UP -> Tunnel.State.DOWN
-            connectInFlight == tunnel.name && !restoreInFlight -> Tunnel.State.DOWN
-            else -> Tunnel.State.UP
-        }
+        val requested = if (state != Tunnel.State.TOGGLE) state else resolveToggle(tunnel)
 
-        // Don't make the user wait out a 25s handshake to cancel: tell the in-flight
-        // connect to give up and inhibit the TURN auto-restart before queueing.
-        if (requested == Tunnel.State.DOWN && connectInFlight == tunnel.name) {
-            Log.d(TAG, "Disconnect requested during connect — aborting ${tunnel.name}")
-            abortConnect = true
-            getTurnProxyManager().beginUserStop()
-        }
+        val userConnect = requested == Tunnel.State.UP && !restore
+        if (userConnect) userConnects++
+        // Snapshot before queueing. Aborting what is in flight is not enough on its own:
+        // a connect already queued behind it would take the lock next and start a fresh
+        // 25s attempt, so the stop has to invalidate the queue too.
+        val generation = stopGeneration
 
-        stateMutex.withLock {
-            if (requested == Tunnel.State.UP) {
-                connectInFlight = tunnel.name
-                restoreInFlight = restore
-                abortConnect = false
+        if (requested == Tunnel.State.DOWN) {
+            stopGeneration++
+            // Don't make the user wait out a 25s handshake to cancel: tell the in-flight
+            // connect to give up and inhibit the TURN auto-restart before queueing.
+            if (connectInFlight == tunnel.name) {
+                Log.d(TAG, "Disconnect requested during connect — aborting ${tunnel.name}")
+                abortConnect = true
+                getTurnProxyManager().beginUserStop()
             }
-            try {
-                setTunnelStateSerialized(tunnel, requested, restore)
-            } finally {
+        }
+
+        try {
+            stateMutex.withLock {
+                if (requested == Tunnel.State.UP && stopGeneration != generation) {
+                    Log.d(TAG, "Connect for ${tunnel.name} superseded by a stop, dropping it")
+                    return@withLock tunnel.state
+                }
                 if (requested == Tunnel.State.UP) {
-                    connectInFlight = null
-                    restoreInFlight = false
-                    if (pendingInstalledPackages.isNotEmpty()) {
-                        scheduleSplitTunnelReapply()
+                    connectInFlight = tunnel.name
+                    abortConnect = false
+                }
+                try {
+                    setTunnelStateSerialized(tunnel, requested, restore)
+                } finally {
+                    if (requested == Tunnel.State.UP) {
+                        connectInFlight = null
+                        if (pendingInstalledPackages.isNotEmpty()) {
+                            scheduleSplitTunnelReapply()
+                        }
                     }
                 }
             }
+        } finally {
+            if (userConnect) userConnects--
         }
     }
 
