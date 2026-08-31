@@ -36,7 +36,9 @@ class WidgetToggleActivity : AppCompatActivity() {
                 return@launch
             }
             val tracker = Application.getTunnelStateTracker()
-            val goingUp = tunnel.state != Tunnel.State.UP
+            // Resolved by the manager, not guessed from tunnel.state: during a connect
+            // the state is still DOWN, so the tap that cancels it would paint Connecting.
+            val goingUp = Application.getTunnelManager().resolveToggle(tunnel) == Tunnel.State.UP
             if (goingUp) tracker.signalUserConnect() else tracker.signalUserDisconnect()
             try {
                 tunnel.setStateAsync(Tunnel.State.TOGGLE)

@@ -83,7 +83,13 @@ class QuickTileService : TileService() {
                     unlockAndRun {
                         applicationScope.launch {
                             val tracker = getTunnelStateTracker()
-                            val goingUp = tunnel.state != Tunnel.State.UP
+                            // Ask the manager what this toggle resolves to instead of
+                            // guessing from tunnel.state: during a connect the state is
+                            // still DOWN, so the tap that cancels it would paint
+                            // Connecting and then stick there — nothing changes
+                            // tunnel.state afterwards to correct the tracker.
+                            val goingUp = Application.getTunnelManager()
+                                .resolveToggle(tunnel) == Tunnel.State.UP
                             if (goingUp) tracker.signalUserConnect() else tracker.signalUserDisconnect()
                             try {
                                 tunnel.setStateAsync(Tunnel.State.TOGGLE)
