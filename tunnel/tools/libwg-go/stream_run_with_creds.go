@@ -315,6 +315,10 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// the uplink when another server fails its handshake in the same window.
 	s.serverAddr = w.addr
 
+	// Stamped before the transport runs, so a server that goes on to prove its
+	// data plane already has a latency the election can rank it by.
+	noteServerRTT(w.addr, w.rtt)
+
 	started := time.Now()
 	var err error
 	switch cfg.PeerType {

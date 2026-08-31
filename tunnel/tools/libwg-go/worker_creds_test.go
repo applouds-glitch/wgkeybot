@@ -11,8 +11,14 @@ import (
 )
 
 // A typical device runs 8 streams (2 groups × 4) against the 2 TURN servers VK
-// returns, and the load must land 4/4 rather than piling onto one host.
+// returns. Until one of them is elected the load must land 4/4 rather than
+// piling onto one host: a server nobody dials never proves itself, and the
+// election would have nothing to choose from. resetServerHealth puts every test
+// in this file back into that probing state.
 func TestAssignServersSpreadsEvenly(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
 	addrs := []string{"1.1.1.1:3478", "2.2.2.2:3478"}
 
 	counts := map[string]int{}
@@ -32,6 +38,9 @@ func TestAssignServersSpreadsEvenly(t *testing.T) {
 // group 0 and group 1 would disagree on which server is index 0 and the split
 // would drift.
 func TestAssignServersCanonicalOrder(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
 	forward := []string{"1.1.1.1:3478", "2.2.2.2:3478"}
 	reversed := []string{"2.2.2.2:3478", "1.1.1.1:3478"}
 
@@ -42,9 +51,13 @@ func TestAssignServersCanonicalOrder(t *testing.T) {
 	}
 }
 
-// Every server stays in the returned list — the ones after index 0 are the
-// failover candidates runWithCreds falls back to when the assigned one errors.
+// Every server with no verdict against it stays in the returned list — the ones
+// after index 0 are the failover candidates runWithCreds falls back to when the
+// assigned one errors.
 func TestAssignServersKeepsFailoverCandidates(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
 	addrs := []string{"3.3.3.3:3478", "1.1.1.1:3478", "2.2.2.2:3478"}
 
 	for id := 0; id < 6; id++ {
@@ -68,6 +81,9 @@ func TestAssignServersKeepsFailoverCandidates(t *testing.T) {
 // returns it by reference on a hit), so assignServers must never reorder in
 // place — that would corrupt the cache for every other stream in the group.
 func TestAssignServersDoesNotMutateInput(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
 	addrs := []string{"3.3.3.3:3478", "1.1.1.1:3478"}
 	orig := append([]string(nil), addrs...)
 
@@ -83,6 +99,9 @@ func TestAssignServersDoesNotMutateInput(t *testing.T) {
 // A single server (VK returned one url, or TurnIP is pinned) must pass through
 // untouched — applyTurnOverride collapses the list before we get here.
 func TestAssignServersSingleServer(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
 	addrs := []string{"1.1.1.1:3478"}
 
 	for id := 0; id < 4; id++ {

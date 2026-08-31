@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"time"
 )
@@ -42,52 +43,64 @@ func fetchCreds(ctx context.Context, link string, groupID int) (user, pass strin
 	return
 }
 
-// assignServers returns addrs rotated so index 0 is this stream's assigned TURN
-// server, picked round-robin by stream ID. Streams are thereby spread evenly
-// across every server VK returned instead of piling onto whichever one happened
-// to win a latency race — the load (and the per-credential Allocate quota) is
-// split across the hosts, and a reconnecting stream always returns to its own
-// server rather than sticking to a stale winner.
+// assignServers returns the TURN servers this stream should try, best first.
 //
-// The list is first sorted into a canonical order so the same physical server
-// gets the same index in every group, regardless of the order VK returned the
-// urls in for that group's link. The remaining servers follow in canonical
-// order and act purely as failover candidates: runWithCreds dials them only
-// after the assigned one errors.
+// The list is sorted into a canonical order so the same physical server gets the
+// same index in every group, regardless of the order VK returned the urls in for
+// that group's link. Servers with a verdict against them — demoted for failing a
+// data-plane handshake, or standing down under a penalty — are dropped outright
+// rather than demoted to the back: runWithCreds fans out to addrs[1:] all at
+// once when the head fails to Allocate, so a dead host left anywhere in the list
+// can still win that race and cost the stream another session.
 //
-// A server that has failed repeatedly is stood down for a few minutes (see
-// turn_server_health.go), and its streams are handed to the next healthy server
-// in canonical order for as long as the penalty lasts. Without that, a stream
-// assigned to a dead host went back to it on every reconnect forever — the only
-// thing that changed was how long it waited first. If every server is penalized
-// the original assignment stands: that is an outage, not a bad host, and the
-// failover list would be no better.
+// What is left is assigned one of two ways:
 //
-// Returns a fresh slice when rotating — addrs may alias the cached ServerAddrs
-// slice (returned by reference on a cache hit), so it must not be mutated in
-// place.
+//   - Once the session has elected a server (see turn_server_election.go), every
+//     stream in every group runs on it. The point of the election is that only
+//     one of the relays VK returns is reliably working, so spreading across them
+//     buys nothing and costs a stalled stream per dead host.
+//   - Until then, round-robin by stream ID. This is the probing phase and it has
+//     to stay a spread: a server nobody dials never proves itself, so pinning
+//     before the verdict is in would make the verdict unreachable.
+//
+// If every server has a verdict against it the original list stands. That is an
+// outage, not a bad host, and an empty list would leave the stream nothing to
+// dial; the next attempts re-probe all of them.
+//
+// Returns a fresh slice — addrs may alias the cached ServerAddrs slice (returned
+// by reference on a cache hit), so it must not be mutated in place.
 func assignServers(addrs []string, streamID int) []string {
 	if len(addrs) < 2 {
 		return addrs
 	}
 	sorted := append([]string(nil), addrs...)
 	sort.Strings(sorted)
-	idx := streamID % len(sorted)
 
-	if now := time.Now(); serverPenalized(sorted[idx], now) {
-		for i := 1; i < len(sorted); i++ {
-			candidate := (idx + i) % len(sorted)
-			if !serverPenalized(sorted[candidate], now) {
-				turnLog("[STREAM %d] Assigned server %s is standing down — using %s",
-					streamID, sorted[idx], sorted[candidate])
-				idx = candidate
-				break
-			}
+	now := time.Now()
+	live := make([]string, 0, len(sorted))
+	for _, addr := range sorted {
+		if serverDemoted(addr) || serverPenalized(addr, now) {
+			continue
 		}
+		live = append(live, addr)
+	}
+	if len(live) == 0 {
+		live = sorted
 	}
 
-	out := make([]string, 0, len(sorted))
-	out = append(out, sorted[idx:]...)
-	out = append(out, sorted[:idx]...)
+	if elected := electServer(live, now); elected != "" {
+		if idx := slices.Index(live, elected); idx >= 0 {
+			return rotateServers(live, idx)
+		}
+	}
+	return rotateServers(live, streamID%len(live))
+}
+
+// rotateServers returns list rotated so idx comes first, leaving the rest in
+// canonical order behind it as failover candidates.
+func rotateServers(list []string, idx int) []string {
+	out := make([]string, 0, len(list))
+	out = append(out, list[idx:]...)
+	out = append(out, list[:idx]...)
 	return out
 }

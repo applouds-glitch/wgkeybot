@@ -198,9 +198,11 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		// Apply optional manual TurnIP/TurnPort override to the fetched list.
 		addrs = applyTurnOverride(addrs, cfg)
 
-		// Every stream owns one TURN server (round-robin by stream ID); the
-		// rest of the list follows only as failover for this attempt.
+		// Where this stream runs: the session's elected server once one is
+		// chosen, otherwise round-robin by stream ID. The rest of the list
+		// follows only as failover for this attempt.
 		addrs = assignServers(addrs, s.id)
+		attemptHead := addrs[0]
 
 		start := time.Now()
 		runErr := s.runWithCreds(ctx, user, pass, addrs, cfg)
@@ -248,6 +250,17 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 			failStreak = 0
 		} else {
 			failStreak++
+		}
+
+		// A failure on a server the next attempt will not even dial is not a
+		// repeat of the same failure: the election (or a stand-down) has just
+		// moved this stream to a different host, and that host deserves a first
+		// attempt, not the backoff the dead one earned. Without this a stream
+		// that failed twice on a dead relay waited 7-17s before trying the
+		// working one — most of TunnelManager's 25s connect budget, spent
+		// sleeping next to a server that was already known to work.
+		if assignServers(addrs, s.id)[0] != attemptHead {
+			failStreak = 0
 		}
 
 		retryDelay := reconnectDelay(failStreak)
