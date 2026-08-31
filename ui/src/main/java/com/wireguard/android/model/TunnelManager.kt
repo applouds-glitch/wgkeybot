@@ -82,6 +82,9 @@ class TunnelManager(
     /** Name of the tunnel whose connect is currently in flight, or null. */
     @Volatile private var connectInFlight: String? = null
 
+    /** True while [connectInFlight] is an automatic restore rather than a user request. */
+    @Volatile private var restoreInFlight = false
+
     /** Set when a queued request wants the in-flight connect to stop waiting. */
     @Volatile private var abortConnect = false
 
@@ -268,8 +271,18 @@ class TunnelManager(
             if (lastUsedName != null)
                 lastUsedTunnel = tunnelMap[lastUsedName]
             haveLoaded = true
-            restoreState(true)
+            // Publish the list before restoring, not after. Upstream completes it last,
+            // which is harmless there because restoreState() is a couple of ioctls; here
+            // it is a full connect — TURN allocation, a trip to VK for credentials, maybe
+            // the whole captcha ladder, then the 25s handshake wait. Everything that
+            // resolves a tunnel goes through getTunnels(), so completing last froze the
+            // QS tile, the widget and the state tracker for the entire restore: on a cold
+            // start the tile's tap parked on getTunnels() and the tile looked dead.
+            // The states already in the map come from the backend's own
+            // runningTunnelNames, so they are accurate as of now; restoreState() repairs
+            // tunnels the backend lost, it is not what makes the list valid.
             tunnels.complete(tunnelMap)
+            restoreState(true)
         }
     }
 
@@ -389,8 +402,15 @@ class TunnelManager(
         // Resolve TOGGLE against the request in flight rather than the model state:
         // during a connect tunnel.state is still DOWN, so a widget/tile toggle meant
         // as "cancel" would otherwise be read as "connect" and start a second attempt.
+        // An automatic restore is deliberately excluded from that: it is invisible to the
+        // user (only signalUserConnect paints Connecting, and restore never calls it, so
+        // the UI still reads Disconnected), and on a cold start it runs at the very moment
+        // of the tap that revived the process — reading that tap as "cancel" would kill
+        // the connect the user just asked for. Such a toggle queues on stateMutex instead
+        // and, if the restore got there, leaves setTunnelStateSerialized on its first line.
         val requested = if (state != Tunnel.State.TOGGLE) state else when {
-            connectInFlight == tunnel.name || tunnel.state == Tunnel.State.UP -> Tunnel.State.DOWN
+            tunnel.state == Tunnel.State.UP -> Tunnel.State.DOWN
+            connectInFlight == tunnel.name && !restoreInFlight -> Tunnel.State.DOWN
             else -> Tunnel.State.UP
         }
 
@@ -405,6 +425,7 @@ class TunnelManager(
         stateMutex.withLock {
             if (requested == Tunnel.State.UP) {
                 connectInFlight = tunnel.name
+                restoreInFlight = restore
                 abortConnect = false
             }
             try {
@@ -412,6 +433,7 @@ class TunnelManager(
             } finally {
                 if (requested == Tunnel.State.UP) {
                     connectInFlight = null
+                    restoreInFlight = false
                     if (pendingInstalledPackages.isNotEmpty()) {
                         scheduleSplitTunnelReapply()
                     }
