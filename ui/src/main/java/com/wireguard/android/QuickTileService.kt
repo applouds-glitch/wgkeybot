@@ -21,6 +21,7 @@ import androidx.databinding.Observable
 import androidx.databinding.Observable.OnPropertyChangedCallback
 import com.wireguard.android.activity.MainActivity
 import com.wireguard.android.activity.TunnelToggleActivity
+import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.Application.Companion.getTunnelStateTracker
 import com.wireguard.android.model.ObservableTunnel
@@ -60,16 +61,25 @@ class QuickTileService : TileService() {
             when (val tunnel = tunnel) {
                 null -> {
                     Log.d(TAG, "No tunnel set, so launching main activity")
-                    val intent = Intent(this@QuickTileService, MainActivity::class.java)
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        startActivityAndCollapse(PendingIntent.getActivity(this@QuickTileService, 0, intent, PendingIntent.FLAG_IMMUTABLE))
-                    } else {
-                        startActivityAndCollapseCompat(intent)
-                    }
+                    launchAndCollapse(Intent(this@QuickTileService, MainActivity::class.java))
                 }
 
                 else -> {
+                    // Android hands VPN consent to one app at a time: starting any other
+                    // VPN revokes ours, and prepare() goes back to returning an intent.
+                    // GoBackend then throws VPN_NOT_AUTHORIZED, and a tile cannot host the
+                    // system consent dialog itself — so hand off to an activity that can,
+                    // the way the main screen and the widget already do. The catch below is
+                    // not a substitute: it starts the activity from the background after
+                    // onClick() has returned, which Android 10+ blocks, and on 14+ it asks
+                    // for an overlay permission instead of showing the consent dialog. The
+                    // symptom was a tile that did nothing for anyone who had used another
+                    // VPN in between, leaving the app itself as the only way to connect.
+                    if (needsVpnConsent()) {
+                        Log.d(TAG, "VPN consent missing, so handing off to TunnelToggleActivity")
+                        launchAndCollapse(Intent(this@QuickTileService, TunnelToggleActivity::class.java))
+                        return@launch
+                    }
                     unlockAndRun {
                         applicationScope.launch {
                             val tracker = getTunnelStateTracker()
@@ -103,6 +113,22 @@ class QuickTileService : TileService() {
                     }
                 }
             }
+        }
+    }
+
+    private suspend fun needsVpnConsent(): Boolean = try {
+        Application.getBackend() is GoBackend && GoBackend.VpnService.prepare(this) != null
+    } catch (e: Throwable) {
+        Log.w(TAG, "VpnService.prepare failed", e)
+        false
+    }
+
+    private fun launchAndCollapse(intent: Intent) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startActivityAndCollapse(PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE))
+        } else {
+            startActivityAndCollapseCompat(intent)
         }
     }
 
@@ -160,8 +186,12 @@ class QuickTileService : TileService() {
     }
 
     private fun updateTile() {
-        // Update the tunnel.
-        val newTunnel = Application.getTunnelManager().lastUsedTunnel
+        // Update the tunnel. Resolve by name first — lastUsedTunnel is only set once a
+        // connect has actually reached UP, so before the first successful connect the
+        // tile would sit on "no tunnel" and merely open the app. Every other entry point
+        // (main screen, widget, state tracker) already keys off the name.
+        val manager = Application.getTunnelManager()
+        val newTunnel = manager.getTunnelByName(TUNNEL_NAME) ?: manager.lastUsedTunnel
         if (newTunnel != tunnel) {
             tunnel?.removeOnPropertyChangedCallback(onStateChangedCallback)
             tunnel = newTunnel
@@ -207,6 +237,7 @@ class QuickTileService : TileService() {
 
     companion object {
         private const val TAG = "WireGuard/QuickTileService"
+        private const val TUNNEL_NAME = "wgkeybot"
         var isAdded: Boolean = false
             private set
     }

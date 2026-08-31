@@ -27,8 +27,18 @@ class TunnelToggleActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { toggleTunnelWithPermissionsResult() }
 
     private fun toggleTunnelWithPermissionsResult() {
-        val tunnel = Application.getTunnelManager().lastUsedTunnel ?: return
         lifecycleScope.launch {
+            val manager = Application.getTunnelManager()
+            // Resolve by name first, lastUsedTunnel only as a fallback for a config
+            // imported under some other name: lastUsedTunnel is set only after a connect
+            // reached UP, and the bare `?: return` that used to stand here left this
+            // (invisible, UI-less) activity on screen forever when it was still null.
+            val tunnel = manager.getTunnels()[TUNNEL_NAME] ?: manager.lastUsedTunnel
+            if (tunnel == null) {
+                Log.w(TAG, "No tunnel to toggle")
+                finishAffinity()
+                return@launch
+            }
             try {
                 tunnel.setStateAsync(Tunnel.State.TOGGLE)
             } catch (e: Throwable) {
@@ -65,5 +75,6 @@ class TunnelToggleActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "WireGuard/TunnelToggleActivity"
+        private const val TUNNEL_NAME = "wgkeybot"
     }
 }
