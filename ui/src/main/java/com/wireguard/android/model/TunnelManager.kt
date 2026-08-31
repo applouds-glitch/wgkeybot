@@ -101,6 +101,13 @@ class TunnelManager(
 
     suspend fun getTunnels(): ObservableSortedKeyedArrayList<String, ObservableTunnel> = tunnels.await()
 
+    /**
+     * Synchronous lookup for callers that cannot suspend — the QS tile renders its label
+     * from the main thread. Returns null until [onTunnelsLoaded] has filled the map;
+     * suspending callers should await [getTunnels] instead.
+     */
+    fun getTunnelByName(name: String): ObservableTunnel? = tunnelMap[name]
+
     suspend fun create(
         name: String,
         config: Config?,
