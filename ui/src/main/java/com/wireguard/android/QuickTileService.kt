@@ -10,13 +10,12 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Icon
-import android.net.Uri
 import android.os.Build
 import android.os.IBinder
-import android.provider.Settings
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
+import android.widget.Toast
 import androidx.databinding.Observable
 import androidx.databinding.Observable.OnPropertyChangedCallback
 import com.wireguard.android.activity.MainActivity
@@ -25,6 +24,7 @@ import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.Application.Companion.getTunnelStateTracker
 import com.wireguard.android.model.ObservableTunnel
+import com.wireguard.android.util.ErrorMessages
 import com.wireguard.android.util.applicationScope
 import com.wireguard.android.widget.SlashDrawable
 import kotlinx.coroutines.launch
@@ -89,25 +89,16 @@ class QuickTileService : TileService() {
                                 tunnel.setStateAsync(Tunnel.State.TOGGLE)
                                 updateTile()
                             } catch (e: Throwable) {
+                                // Report and stop, like the widget does. Missing consent is
+                                // handled above, so anything landing here is a real connect
+                                // failure that starting an activity would not fix: retrying
+                                // the toggle in TunnelToggleActivity just fails again, and
+                                // the overlay permission this used to ask for on API 34+ is
+                                // not even declared by the app, so that was a dead end.
                                 tracker.signalUserDisconnect()
-                                Log.d(TAG, "Failed to set state, so falling back", e)
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !Settings.canDrawOverlays(this@QuickTileService)) {
-                                    Log.d(TAG, "Need overlay permissions")
-                                    val permissionIntent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-                                    permissionIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    startActivityAndCollapse(
-                                        PendingIntent.getActivity(
-                                            this@QuickTileService,
-                                            0,
-                                            permissionIntent,
-                                            PendingIntent.FLAG_IMMUTABLE
-                                        )
-                                    )
-                                    return@launch
-                                }
-                                val toggleIntent = Intent(this@QuickTileService, TunnelToggleActivity::class.java)
-                                toggleIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                startActivity(toggleIntent)
+                                val message = getString(R.string.toggle_error, ErrorMessages[e])
+                                Log.e(TAG, message, e)
+                                Toast.makeText(this@QuickTileService, message, Toast.LENGTH_LONG).show()
                             }
                         }
                     }
