@@ -551,6 +551,10 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			}
 		}
 		noteServerHandshakeOK(s.serverAddr)
+		// The only line this transport prints on success. Without it a live
+		// noDTLS stream is invisible in the log — its server can be recovered
+		// only by pairing "Dial TURN" with the absence of a later worker error.
+		turnLog("[STREAM %d] Relay proof OK on %s", s.id, s.serverAddr)
 	} else {
 		// Without a session header the server never registers this stream and so
 		// never echoes: there is nothing to wait for. Keep the old optimistic

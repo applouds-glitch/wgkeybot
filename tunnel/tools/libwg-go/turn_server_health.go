@@ -75,6 +75,16 @@ type serverHealth struct {
 	// the evidence noteServerHandshakeFailure weighs, so entries are cleared in
 	// place rather than deleted — dropping the entry would drop the proof.
 	lastGood time.Time
+
+	// demotedAt is when this server last failed a data-plane handshake. Compared
+	// against lastGood — a failure newer than the proof means the server is out
+	// of this session's rotation. Read by turn_server_election.go, which owns the
+	// meaning of these two stamps together.
+	demotedAt time.Time
+
+	// rtt is the last Dial→Allocate latency measured against this server. The
+	// election ranks proven servers by it.
+	rtt time.Duration
 }
 
 var serverHealthState = struct {
@@ -87,7 +97,19 @@ var serverHealthState = struct {
 func resetServerHealth() {
 	serverHealthState.Lock()
 	serverHealthState.byAddr = make(map[string]*serverHealth)
+	resetElectionLocked()
 	serverHealthState.Unlock()
+}
+
+// healthEntryLocked returns addr's accounting, creating it on first use. Callers
+// must hold the mutex.
+func healthEntryLocked(addr string) *serverHealth {
+	h := serverHealthState.byAddr[addr]
+	if h == nil {
+		h = &serverHealth{}
+		serverHealthState.byAddr[addr] = h
+	}
+	return h
 }
 
 // noteServerFailure records one failed attempt against addr and stands the
@@ -108,11 +130,7 @@ func noteServerFailureAt(addr string, now time.Time) {
 	serverHealthState.Lock()
 	defer serverHealthState.Unlock()
 
-	h := serverHealthState.byAddr[addr]
-	if h == nil {
-		h = &serverHealth{}
-		serverHealthState.byAddr[addr] = h
-	}
+	h := healthEntryLocked(addr)
 	if !h.lastStrike.IsZero() {
 		if since := now.Sub(h.lastStrike); since < serverFailCoalesce {
 			return
@@ -171,12 +189,13 @@ func noteServerHandshakeOKAt(addr string, now time.Time) {
 	serverHealthState.Lock()
 	defer serverHealthState.Unlock()
 
-	h := serverHealthState.byAddr[addr]
-	if h == nil {
-		h = &serverHealth{}
-		serverHealthState.byAddr[addr] = h
+	healthEntryLocked(addr).lastGood = now
+	// The first proof of the session starts the election's settle window: from
+	// here we know the uplink works and can wait a moment for the other servers
+	// to report before picking one (see electionSettleWindow).
+	if firstProofAt.IsZero() {
+		firstProofAt = now
 	}
-	h.lastGood = now
 }
 
 // noteServerHandshakeFailure reports that addr allocated a relay and then failed
@@ -203,6 +222,12 @@ func noteServerHandshakeFailureAt(addr string, attemptStart, now time.Time) {
 	if addr == "" {
 		return
 	}
+	// Out of the rotation immediately, whatever the stand-down decides below.
+	// The election needs no alibi because it punishes nothing: if the uplink is
+	// what died, every server ends up demoted and assignServers falls back to the
+	// full list. See turn_server_election.go.
+	noteServerDemotedAt(addr, now)
+
 	if !siblingProvedAnotherServer(addr, attemptStart, now) {
 		noteServerFailureAt(addr, now)
 		return
@@ -211,11 +236,7 @@ func noteServerHandshakeFailureAt(addr string, attemptStart, now time.Time) {
 	serverHealthState.Lock()
 	defer serverHealthState.Unlock()
 
-	h := serverHealthState.byAddr[addr]
-	if h == nil {
-		h = &serverHealth{}
-		serverHealthState.byAddr[addr] = h
-	}
+	h := healthEntryLocked(addr)
 	h.lastStrike = now
 	h.failures++
 	// Every stream assigned to the bad host reports this within the same breath.
@@ -250,8 +271,13 @@ func siblingProvedAnotherServer(addr string, attemptStart, now time.Time) bool {
 func serverPenalized(addr string, now time.Time) bool {
 	serverHealthState.Lock()
 	defer serverHealthState.Unlock()
+	return penalizedLocked(serverHealthState.byAddr[addr], now)
+}
 
-	h := serverHealthState.byAddr[addr]
+// penalizedLocked is serverPenalized's body for callers that already hold the
+// mutex (the election reads health and penalty together in one critical
+// section). Note it mutates: an expired window is cleared here, on the read.
+func penalizedLocked(h *serverHealth, now time.Time) bool {
 	if h == nil || h.penalizedTil.IsZero() {
 		return false
 	}
