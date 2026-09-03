@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -29,6 +30,7 @@ const (
 
 	socksRepSuccess          = 0x00
 	socksRepGeneralFailure   = 0x01
+	socksRepNotAllowed       = 0x02
 	socksRepHostUnreachable  = 0x04
 	socksRepCmdNotSupported  = 0x07
 	socksRepAddrNotSupported = 0x08
@@ -92,6 +94,12 @@ func (p *tetherProxy) serveSocks5(ctx context.Context, c net.Conn, br *bufio.Rea
 
 	upstream, err := p.dialUpstream(ctx, c, host, port)
 	if err != nil {
+		if errors.Is(err, errTetherRouteBlocked) {
+			// RFC 1928's "connection not allowed by ruleset" — the one reply code
+			// that means exactly this.
+			socksReply(c, socksRepNotAllowed)
+			return
+		}
 		turnLog("[TETHER] socks connect %s:%d failed: %v", host, port, err)
 		socksReply(c, socksRepHostUnreachable)
 		return

@@ -132,7 +132,7 @@ class TunnelStateTracker(private val context: Context) {
     fun currentConfigLoadedAt(): Long = _uiState.value.configLoadedAt
 
     private fun retrack(tunnels: ObservableList<ObservableTunnel>) {
-        val newTunnel = tunnels.firstOrNull { it.name == TUNNEL_NAME }
+        val newTunnel = tunnels.firstOrNull { it.name == TunnelManager.PRIMARY_TUNNEL_NAME }
         if (newTunnel != trackedTunnel) {
             trackedTunnel?.removeOnPropertyChangedCallback(tunnelStateCallback)
             trackedTunnel = newTunnel
@@ -241,7 +241,6 @@ class TunnelStateTracker(private val context: Context) {
     }
 
     companion object {
-        private const val TUNNEL_NAME = "wgkeybot"
         private const val POLL_INTERVAL_MS = 2_000L
         private const val HANDSHAKE_DISPLAY_SECONDS = 5L
         // WireGuard REJECT_AFTER_TIME — peer is considered unreachable past this.

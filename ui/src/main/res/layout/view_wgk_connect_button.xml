@@ -6,10 +6,16 @@
          screens; the buckets live in values/dimens.xml (+ -h680dp / -h760dp) and
          keep the ring proportions. The TV variant in layout-television keeps its
          own literals — it is laid out beside the status column, not above it, so
-         it never competes for vertical space. -->
+         it never competes for vertical space.
+
+         clipChildren off: the power-down animation scales the rings a few dp
+         past this frame while they fade (RING_DISSIPATE_SCALE in the fragment);
+         the parent in tunnel_list_fragment.xml unclips too, or the ripple would
+         be cut flat on its way out. -->
     <FrameLayout
         android:layout_width="@dimen/wgk_connect_ring_outer"
-        android:layout_height="@dimen/wgk_connect_ring_outer">
+        android:layout_height="@dimen/wgk_connect_ring_outer"
+        android:clipChildren="false">
 
         <!-- Alphas here are the resting set; renderConnectButton() raises them
              while the tunnel is coming up or connected. At rest the button carries

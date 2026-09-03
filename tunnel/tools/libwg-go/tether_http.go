@@ -8,6 +8,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -53,6 +54,12 @@ func (p *tetherProxy) httpConnect(ctx context.Context, c net.Conn, br *bufio.Rea
 	}
 	upstream, err := p.dialUpstream(ctx, c, host, port)
 	if err != nil {
+		if errors.Is(err, errTetherRouteBlocked) {
+			// The profile's block list, not a failure: say so with a status a
+			// browser shows as "refused" rather than retrying it as an outage.
+			writeHTTPStatus(c, "403 Forbidden")
+			return
+		}
 		turnLog("[TETHER] CONNECT %s:%d failed: %v", host, port, err)
 		writeHTTPStatus(c, "502 Bad Gateway")
 		return
@@ -93,6 +100,10 @@ func (p *tetherProxy) httpForward(ctx context.Context, c net.Conn, req *http.Req
 	}
 	upstream, err := p.dialUpstream(ctx, c, host, port)
 	if err != nil {
+		if errors.Is(err, errTetherRouteBlocked) {
+			writeHTTPStatus(c, "403 Forbidden")
+			return
+		}
 		turnLog("[TETHER] %s %s failed: %v", req.Method, req.URL, err)
 		writeHTTPStatus(c, "502 Bad Gateway")
 		return
@@ -128,8 +139,8 @@ func (p *tetherProxy) httpForward(ctx context.Context, c net.Conn, req *http.Req
 	// along. Liveness from here on is TCP keepalive's job, exactly as in splice().
 	_ = c.SetDeadline(time.Time{})
 	_ = upstream.SetDeadline(time.Time{})
-	setTetherKeepAlive(c)
-	setTetherKeepAlive(upstream)
+	setTetherKeepAlive(c, tetherClientKeepAlive)
+	setTetherKeepAlive(upstream, tetherUpstreamKeepAlive)
 
 	if err := req.Write(upstream); err != nil {
 		turnLog("[TETHER] %s %s: writing upstream failed: %v", req.Method, host, err)

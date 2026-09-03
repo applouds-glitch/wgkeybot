@@ -18,7 +18,7 @@ import android.widget.Toast
 import com.wireguard.android.Application
 import com.wireguard.android.R
 import com.wireguard.android.activity.MainActivity
-import com.wireguard.android.activity.WidgetToggleActivity
+import com.wireguard.android.activity.TunnelToggleActivity
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.fragment.TunnelState
@@ -67,7 +67,7 @@ class TunnelToggleAppWidgetProvider : AppWidgetProvider() {
                 false
             }
             if (needsConsent) {
-                val toggle = Intent(context, WidgetToggleActivity::class.java).apply {
+                val toggle = Intent(context, TunnelToggleActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(toggle)
@@ -99,7 +99,6 @@ class TunnelToggleAppWidgetProvider : AppWidgetProvider() {
 
     companion object {
         private const val TAG = "WireGuard/WidgetProvider"
-        const val TUNNEL_NAME = "wgkeybot"
         private const val ACTION_TOGGLE = "com.wgkeybot.android.action.WIDGET_TOGGLE"
         // Widget size breakpoints (dp). Below COMPACT_MIN only the round power
         // button is shown; between COMPACT_MIN and FULL_MIN the status text is
@@ -139,7 +138,7 @@ class TunnelToggleAppWidgetProvider : AppWidgetProvider() {
         }
 
         private suspend fun findTunnel(): ObservableTunnel? =
-            Application.getTunnelManager().getTunnels()[TUNNEL_NAME]
+            Application.getTunnelManager().primaryTunnel()
 
         private fun buildViews(
             context: Context,

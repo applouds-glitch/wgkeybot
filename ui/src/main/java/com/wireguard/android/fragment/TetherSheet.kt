@@ -14,6 +14,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
@@ -24,6 +25,7 @@ import com.journeyapps.barcodescanner.BarcodeEncoder
 import com.wireguard.android.Application
 import com.wireguard.android.R
 import com.wireguard.android.databinding.TetherSheetBinding
+import com.wireguard.android.tether.TetherRoutingStatus
 import com.wireguard.android.tether.TetherState
 import com.wireguard.android.tether.formatTetherBytes
 import kotlinx.coroutines.launch
@@ -110,6 +112,28 @@ class TetherSheet : BottomSheetDialogFragment() {
             formatTetherBytes(state.bytesDown)
         )
         showWifiQr(state.ssid, state.passphrase)
+        showRoutingNote(state.routing)
+    }
+
+    /**
+     * Split routing contradicts the "nothing slips past the tunnel" line right
+     * above it, so while it is on the sheet says so in the same colour; when it
+     * was asked for but no rules could be had, that is said too, quietly.
+     */
+    private fun showRoutingNote(routing: TetherRoutingStatus) {
+        val b = binding ?: return
+        b.wgkTetherRoutingNote.isVisible = routing != TetherRoutingStatus.OFF
+        when (routing) {
+            TetherRoutingStatus.ON -> {
+                b.wgkTetherRoutingNote.setText(R.string.wgk_tether_routing_note_on)
+                b.wgkTetherRoutingNote.setTextColor(ContextCompat.getColor(requireContext(), R.color.wgk_warning))
+            }
+            TetherRoutingStatus.UNAVAILABLE -> {
+                b.wgkTetherRoutingNote.setText(R.string.wgk_tether_routing_note_unavailable)
+                b.wgkTetherRoutingNote.setTextColor(ContextCompat.getColor(requireContext(), R.color.wgk_on_surface_variant))
+            }
+            TetherRoutingStatus.OFF -> Unit
+        }
     }
 
     /**

@@ -17,10 +17,15 @@ import (
 type stubLookup struct {
 	addrs []string
 	asked []string
+	// err, when set, is what every lookup returns instead of addrs.
+	err error
 }
 
 func (s *stubLookup) LookupHost(_ context.Context, host string) ([]string, error) {
 	s.asked = append(s.asked, host)
+	if s.err != nil {
+		return nil, s.err
+	}
 	return s.addrs, nil
 }
 
@@ -31,6 +36,32 @@ func TestParseDNSServersAddsDefaultPort(t *testing.T) {
 	want := []string{"1.1.1.1:53", "8.8.8.8:5353", "[2001:db8::1]:53"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseDNSServers = %v, want %v", got, want)
+	}
+}
+
+// The resolver is asked only for the families the tunnel can carry: an AAAA
+// answer on an IPv4-only tunnel is a wasted round trip through the relay.
+func TestTetherLookupNetworkFollowsTunnelFamilies(t *testing.T) {
+	cases := []struct {
+		name  string
+		addrs string
+		want  string
+	}{
+		{"v4 only", "10.0.0.2/32", "ip4"},
+		{"v6 only", "fd00::2/128", "ip6"},
+		{"dual stack", "10.0.0.2/32,fd00::2/128", "ip"},
+	}
+	for _, tc := range cases {
+		g, err := newTetherEgressGuard("192.168.43.1", tc.addrs)
+		if err != nil {
+			t.Fatalf("%s: guard: %v", tc.name, err)
+		}
+		if got := tetherLookupNetwork(g); got != tc.want {
+			t.Errorf("%s: network = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got := tetherLookupNetwork(nil); got != "ip" {
+		t.Errorf("nil guard: network = %q, want ip", got)
 	}
 }
 

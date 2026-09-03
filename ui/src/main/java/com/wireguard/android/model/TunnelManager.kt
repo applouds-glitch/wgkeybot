@@ -117,11 +117,21 @@ class TunnelManager(
     suspend fun getTunnels(): ObservableSortedKeyedArrayList<String, ObservableTunnel> = tunnels.await()
 
     /**
-     * Synchronous lookup for callers that cannot suspend — the QS tile renders its label
-     * from the main thread. Returns null until [onTunnelsLoaded] has filled the map;
-     * suspending callers should await [getTunnels] instead.
+     * The tunnel this client acts on from everywhere but the main screen: the tile, the
+     * widget, the state tracker and internet sharing. It is the one shipped under
+     * [PRIMARY_TUNNEL_NAME]; the last one that reached UP is the fallback for a config
+     * imported under some other name. Suspends until the list is loaded.
      */
-    fun getTunnelByName(name: String): ObservableTunnel? = tunnelMap[name]
+    suspend fun primaryTunnel(): ObservableTunnel? {
+        getTunnels()
+        return primaryTunnelOrNull()
+    }
+
+    /**
+     * [primaryTunnel] for callers that cannot suspend — the QS tile renders its label from
+     * the main thread. Null until [onTunnelsLoaded] has filled the map.
+     */
+    fun primaryTunnelOrNull(): ObservableTunnel? = tunnelMap[PRIMARY_TUNNEL_NAME] ?: lastUsedTunnel
 
     suspend fun create(
         name: String,
@@ -918,6 +928,14 @@ class TunnelManager(
 
     companion object {
         private const val TAG = "WireGuard/TunnelManager"
+
+        /**
+         * The one tunnel this client ships, created by the import flow under this name.
+         * Every surface outside the main screen resolves it through [primaryTunnel];
+         * the literal lives here and nowhere else.
+         */
+        const val PRIMARY_TUNNEL_NAME = "wgkeybot"
+
         // How long to wait for the first WireGuard handshake after the interface
         // comes up before declaring the connection failed and tearing it down.
         private const val HANDSHAKE_TIMEOUT_MS = 25_000L

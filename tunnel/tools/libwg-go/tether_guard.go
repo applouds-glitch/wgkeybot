@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -33,6 +34,17 @@ import (
 // destination fell outside it. Either way the connection is dropped and sharing
 // is retired wholesale — a partial leak is still a leak, and the user was told
 // it could not happen.
+//
+// A routing profile (tether_route.go) adds destinations that are MEANT to leave
+// outside the tunnel, so both checks take the route as a parameter. For a
+// direct route the questions invert: the destination must still be one that
+// can leave at all (never loopback, never the hotspot, never the tunnel's own
+// address), and the socket must NOT carry a tunnel address — a direct socket
+// that landed in the tunnel is not a leak, but it is a protect() that failed
+// quietly, and it is logged as such. The family filter does not apply to a
+// direct route: it exists because the tunnel's families are known, and the
+// physical uplink's are not — an address of a family the uplink lacks fails
+// its dial at once with ENETUNREACH, which costs nothing.
 
 var (
 	// errTetherDestBlocked is a refusal, not a failure: the destination is one a
@@ -41,9 +53,18 @@ var (
 	// errTetherEgressLeak means a socket reached the internet without passing
 	// through the tunnel. It retires sharing; see tetherEgressGuard.checkEgress.
 	errTetherEgressLeak = errors.New("upstream socket did not leave through the tunnel")
+	// errTetherEgressUnknown is a direct-routed socket whose exit cannot be
+	// vouched for. Only that connection is dropped: nothing leaked, since a
+	// direct route is allowed out in the first place.
+	errTetherEgressUnknown = errors.New("direct upstream socket has no usable local address")
 )
 
-var ipv4Broadcast = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+var (
+	ipv4Broadcast = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+	// cgnat is RFC 6598 shared address space, which netip does not count as
+	// private but carriers use exactly like it.
+	cgnat = netip.MustParsePrefix("100.64.0.0/10")
+)
 
 type tetherEgressGuard struct {
 	// tunnelIPs are the addresses of the tunnel interface, straight from the
@@ -65,6 +86,9 @@ type tetherEgressGuard struct {
 	// A /24 for the same reason pacLocalNetwork assumes one: a local-only hotspot
 	// is always handed a /24, and the mask is not worth plumbing down from Kotlin.
 	apNet netip.Prefix
+	// directMisrouted logs, once, a direct-routed socket that went into the
+	// tunnel anyway; see checkEgress.
+	directMisrouted sync.Once
 	// onLeak retires sharing after checkEgress fails. A field for the same reason
 	// tetherProxy.onFatal is one: this file stays free of the cgo half, and tests
 	// can observe it.
@@ -128,8 +152,9 @@ func newTetherEgressGuard(bindIP, tunnelAddrsCsv string) (*tetherEgressGuard, er
 	return g, nil
 }
 
-// allowDest reports whether a tethered client may be connected to ip.
-func (g *tetherEgressGuard) allowDest(ip netip.Addr) bool {
+// allowDest reports whether a tethered client may be connected to ip over the
+// given route.
+func (g *tetherEgressGuard) allowDest(ip netip.Addr, route routeKind) bool {
 	if g == nil {
 		// No guard configured (host builds and tests). Production always has one:
 		// startTetherProxy refuses to run without it.
@@ -157,6 +182,9 @@ func (g *tetherEgressGuard) allowDest(ip netip.Addr) bool {
 			return false
 		}
 	}
+	if route == routeDirect {
+		return directableAddr(ip)
+	}
 	if ip.Is4() && !g.hasV4 {
 		return false
 	}
@@ -166,9 +194,37 @@ func (g *tetherEgressGuard) allowDest(ip netip.Addr) bool {
 	return true
 }
 
-// checkEgress verifies that an upstream socket left through the tunnel, and
-// retires sharing when it did not.
-func (g *tetherEgressGuard) checkEgress(c net.Conn) error {
+// directableAddr reports whether ip is one the physical uplink may be asked to
+// reach on a tethered client's behalf.
+//
+// The profile's geoip:private sends RFC 1918 and CGNAT space direct — right for
+// the device Happ runs on, whose own LAN that is, and wrong here: a direct
+// socket leaves over the phone's uplink, so "private" would mean the home Wi-Fi
+// the phone is joined to, or the carrier's CGNAT segment. A tethered client was
+// let onto the hotspot, not onto those.
+//
+// Refusing such a destination outright would be wrong too: behind the WireGuard
+// server private space is an ordinary destination that worked before the
+// routing switch existed. So this is a demotion, not a veto — see the caller in
+// tether_dns.go, which sends these back through the tunnel.
+func directableAddr(ip netip.Addr) bool {
+	return !ip.IsPrivate() && !cgnat.Contains(ip)
+}
+
+// anyDirectable reports whether any of these addresses may be dialled direct.
+func anyDirectable(addrs []netip.Addr) bool {
+	for _, ip := range addrs {
+		if directableAddr(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkEgress verifies that an upstream socket left the way its route says:
+// through the tunnel, or — for a direct route — anywhere but. A tunnel-bound
+// socket found outside retires sharing; see the note at the top of this file.
+func (g *tetherEgressGuard) checkEgress(c net.Conn, route routeKind) error {
 	if g == nil {
 		return nil
 	}
@@ -176,13 +232,40 @@ func (g *tetherEgressGuard) checkEgress(c net.Conn) error {
 	if !local.IsValid() {
 		// Unreadable local address: fail closed. This is the one case where being
 		// wrong is cheap (a dropped connection) and being permissive is not.
+		if route == routeDirect {
+			return errTetherEgressUnknown
+		}
 		g.trip("upstream socket has no readable local address")
 		return errTetherEgressLeak
 	}
+	inTunnel := false
 	for _, t := range g.tunnelIPs {
 		if t == local {
+			inTunnel = true
+			break
+		}
+	}
+	if route == routeDirect {
+		if inTunnel {
+			// Wrong road, but the safe one: nothing left the tunnel that should
+			// not have. It does mean the direct protect hook is not doing its job,
+			// which is worth exactly one line.
+			g.directMisrouted.Do(func() {
+				turnLog("[TETHER] a direct-routed socket went through the tunnel (local %s); the routing profile is not taking effect", local)
+			})
 			return nil
 		}
+		if local == g.apIP || (g.apNet.IsValid() && g.apNet.Contains(local)) {
+			// Bound to the hotspot side: this socket is talking to nothing that
+			// can answer. Drop it; sharing itself is fine. (Loopback needs no
+			// check of its own — allowDest never lets a loopback destination
+			// through, and only that could bind a socket to it.)
+			return errTetherEgressUnknown
+		}
+		return nil
+	}
+	if inTunnel {
+		return nil
 	}
 	g.trip("upstream socket bound to " + local.String() + ", which is not a tunnel address")
 	return errTetherEgressLeak

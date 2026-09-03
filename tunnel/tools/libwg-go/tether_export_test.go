@@ -32,7 +32,7 @@ func freePort(t *testing.T) int {
 // port it gets must be the one actually bound.
 func TestStartTetherProxyBindsAndReportsPort(t *testing.T) {
 	port := freePort(t)
-	if rc := startTetherProxy("127.0.0.1", port, "127.0.0.1:53", tunnelAddrsForTest); rc != 0 {
+	if rc := startTetherProxy("127.0.0.1", port, "127.0.0.1:53", tunnelAddrsForTest, "", ""); rc != 0 {
 		t.Fatalf("startTetherProxy returned %d, want 0", rc)
 	}
 	defer stopTetherProxy()
@@ -61,7 +61,7 @@ func TestStartTetherProxyReportsBindFailure(t *testing.T) {
 	}
 	defer blocker.Close()
 
-	if rc := startTetherProxy("127.0.0.1", port, "", tunnelAddrsForTest); rc != -2 {
+	if rc := startTetherProxy("127.0.0.1", port, "", tunnelAddrsForTest, "", ""); rc != -2 {
 		stopTetherProxy()
 		t.Fatalf("startTetherProxy returned %d, want -2", rc)
 	}
@@ -71,7 +71,7 @@ func TestStartTetherProxyReportsBindFailure(t *testing.T) {
 // how many times it is called.
 func TestStopTetherProxyIsIdempotent(t *testing.T) {
 	port := freePort(t)
-	if rc := startTetherProxy("127.0.0.1", port, "", tunnelAddrsForTest); rc != 0 {
+	if rc := startTetherProxy("127.0.0.1", port, "", tunnelAddrsForTest, "", ""); rc != 0 {
 		t.Fatalf("startTetherProxy returned %d, want 0", rc)
 	}
 	stopTetherProxy()
@@ -99,13 +99,13 @@ func TestRetireTetherProxyLeavesASuccessorAlone(t *testing.T) {
 	reportTetherStopped = func(reason string) { reported <- reason }
 	defer func() { reportTetherStopped = saved }()
 
-	if rc := startTetherProxy("127.0.0.1", freePort(t), "", tunnelAddrsForTest); rc != 0 {
+	if rc := startTetherProxy("127.0.0.1", freePort(t), "", tunnelAddrsForTest, "", ""); rc != 0 {
 		t.Fatalf("startTetherProxy returned %d, want 0", rc)
 	}
 	stale := takeCurrentTetherProxy()
 
 	port := freePort(t)
-	if rc := startTetherProxy("127.0.0.1", port, "", tunnelAddrsForTest); rc != 0 {
+	if rc := startTetherProxy("127.0.0.1", port, "", tunnelAddrsForTest, "", ""); rc != 0 {
 		t.Fatalf("restarting sharing returned %d, want 0", rc)
 	}
 	defer stopTetherProxy()
@@ -131,7 +131,7 @@ func TestRetireTetherProxyTellsAndroid(t *testing.T) {
 	reportTetherStopped = func(reason string) { reported <- reason }
 	defer func() { reportTetherStopped = saved }()
 
-	if rc := startTetherProxy("127.0.0.1", freePort(t), "", tunnelAddrsForTest); rc != 0 {
+	if rc := startTetherProxy("127.0.0.1", freePort(t), "", tunnelAddrsForTest, "", ""); rc != 0 {
 		t.Fatalf("startTetherProxy returned %d, want 0", rc)
 	}
 	retireTetherProxy(takeCurrentTetherProxy(), "egress leak")

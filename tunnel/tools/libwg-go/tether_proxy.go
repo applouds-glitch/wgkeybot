@@ -49,7 +49,6 @@ const (
 	tetherHandshakeTimeout = 5 * time.Second
 	tetherMaxConns         = 512
 	tetherBufSize          = 32 * 1024
-	tetherKeepAlive        = 30 * time.Second
 	tetherClientTTL        = 5 * time.Minute
 
 	// Bounds on the pause after a recoverable Accept error. The realistic one is
@@ -59,6 +58,26 @@ const (
 	// the CPU.
 	tetherAcceptBackoffMin = 10 * time.Millisecond
 	tetherAcceptBackoffMax = time.Second
+)
+
+// TCP keepalive for the two halves of a relayed connection, and deliberately not
+// the same numbers.
+//
+// The client half is one hop of local Wi-Fi, and its probes are how a device
+// that walked out of range gets noticed: without them a laptop that left
+// mid-download parks its handler in Read for good. Probing early is cheap there.
+//
+// The upstream half runs through WireGuard and a TURN relay, and every probe is
+// a packet down that whole path, per idle connection. A browser holds dozens of
+// those (six per host, websockets, long polls), and with the same thirty seconds
+// on this side the tunnel never went quiet while sharing was on: a packet or two
+// a second through the relay with nobody doing anything, and a radio that never
+// dropped to idle. All this probe has to catch is a server that vanished without
+// a FIN, and nothing waits on that verdict, so it starts late; once it does, the
+// interval and count are what bound the wait.
+var (
+	tetherClientKeepAlive   = net.KeepAliveConfig{Enable: true, Idle: 30 * time.Second, Interval: 10 * time.Second, Count: 3}
+	tetherUpstreamKeepAlive = net.KeepAliveConfig{Enable: true, Idle: 5 * time.Minute, Interval: 30 * time.Second, Count: 3}
 )
 
 // errTetherStopping is what a dial that finished after stop() had already taken
@@ -78,6 +97,10 @@ type tetherStats struct {
 	Conns   int64 `json:"conns"`
 	Up      int64 `json:"up"`
 	Down    int64 `json:"down"`
+	// Routing reports whether a routing profile is in force — Kotlin asked for
+	// one and it loaded — so the sheet can say that some destinations now leave
+	// outside the tunnel.
+	Routing bool `json:"routing"`
 }
 
 type tetherProxy struct {
@@ -87,10 +110,17 @@ type tetherProxy struct {
 	maxConns         int
 	handshakeTimeout time.Duration
 	cancel           context.CancelFunc
+	// routing is true when dial follows a routing profile; see tether_route.go.
+	// Reported through stats and nothing else here: the dial function owns the
+	// behaviour, this only says so.
+	routing bool
 	// onFatal retires this proxy after an Accept error no retry can fix. Wired to
 	// stopTetherProxy by startTetherProxy; a field so tether_proxy.go stays free
 	// of the cgo half and so tests can observe it.
 	onFatal func()
+	// activity feeds the periodic summary line; see tether_activity.go. The
+	// dialer shares it, which is how the route split gets in.
+	activity *tetherActivity
 
 	wg        sync.WaitGroup
 	conns     atomic.Int64
@@ -116,6 +146,7 @@ func newTetherProxy(ln net.Listener, dial tetherDialFunc) *tetherProxy {
 		handshakeTimeout: tetherHandshakeTimeout,
 		clients:          make(map[string]time.Time),
 		live:             make(map[net.Conn]struct{}),
+		activity:         newTetherActivity(),
 	}
 }
 
@@ -295,8 +326,7 @@ func (p *tetherProxy) handle(ctx context.Context, c net.Conn) {
 }
 
 // dispatch routes by the first byte, the same trick PdaNet uses on its :8000
-// port. Protocol handlers arrive in the next two tasks; until then every client
-// is unrecognised.
+// port: SOCKS5 opens with its version byte, HTTP with an uppercase method.
 func (p *tetherProxy) dispatch(ctx context.Context, c net.Conn, br *bufio.Reader, first byte) {
 	switch {
 	case first == socksVersion5:
@@ -318,8 +348,8 @@ func (p *tetherProxy) dispatch(ctx context.Context, c net.Conn, br *bufio.Reader
 // buffer. Reading the raw conn here would silently drop them.
 func (p *tetherProxy) splice(client net.Conn, clientSrc io.Reader, upstream net.Conn) {
 	_ = client.SetDeadline(time.Time{})
-	setTetherKeepAlive(client)
-	setTetherKeepAlive(upstream)
+	setTetherKeepAlive(client, tetherClientKeepAlive)
+	setTetherKeepAlive(upstream, tetherUpstreamKeepAlive)
 
 	done := make(chan struct{}, 2)
 	go func() {
@@ -384,10 +414,9 @@ func (b *countingBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func setTetherKeepAlive(c net.Conn) {
+func setTetherKeepAlive(c net.Conn, cfg net.KeepAliveConfig) {
 	if tc, ok := c.(*net.TCPConn); ok {
-		_ = tc.SetKeepAlive(true)
-		_ = tc.SetKeepAlivePeriod(tetherKeepAlive)
+		_ = tc.SetKeepAliveConfig(cfg)
 	}
 }
 
@@ -419,6 +448,7 @@ func (p *tetherProxy) stats() tetherStats {
 		Conns:   p.conns.Load(),
 		Up:      p.bytesUp.Load(),
 		Down:    p.bytesDown.Load(),
+		Routing: p.routing,
 	}
 }
 

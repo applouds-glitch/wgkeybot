@@ -26,7 +26,7 @@ extern void wgTurnProxyStop();
 extern void wgNotifyNetworkChange();
 extern void wgSetNetworkAvailable(int available);
 extern const char* getNetworkDnsServers(long long network_handle);
-extern int wgTetherStart(const char *bind_ip, int port, const char *dns_servers, const char *tunnel_addrs);
+extern int wgTetherStart(const char *bind_ip, int port, const char *dns_servers, const char *tunnel_addrs, const char *routing_dir, const char *direct_dns);
 extern void wgTetherStop(void);
 extern char *wgTetherStats(void);
 
@@ -238,7 +238,13 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetVpnSe
 	pthread_mutex_unlock(&jni_globals_mutex);
 }
 
-int wgProtectSocket(int fd)
+// protect_and_bind is the body shared by wgProtectSocket and
+// wgProtectSocketDirect: VpnService.protect(), then Network.bindSocket() to the
+// cached physical network. who names the caller in log lines; quiet drops the
+// success line, which the TURN dials want (a handful per session, and the
+// bound netId is a useful fact) and the sharing proxy's direct dials cannot
+// afford (one per connection a tethered client opens).
+static int protect_and_bind(int fd, const char *who, int quiet)
 {
 	JNIEnv *env;
 	int ret = 0;
@@ -247,7 +253,7 @@ int wgProtectSocket(int fd)
 	// Validate fd
 	if (fd < 0) {
 		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
-			"wgProtectSocket: invalid fd=%d", fd);
+			"%s: invalid fd=%d", who, fd);
 		return -1;
 	}
 
@@ -256,13 +262,13 @@ int wgProtectSocket(int fd)
 	pthread_mutex_unlock(&jni_globals_mutex);
 	if (!registered) {
 		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
-			"wgProtectSocket(fd=%d): vpn_service_global is NULL! CANNOT PROTECT", fd);
+			"%s(fd=%d): vpn_service_global is NULL! CANNOT PROTECT", who, fd);
 		return -1;
 	}
 	if ((*java_vm)->GetEnv(java_vm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
 		if ((*java_vm)->AttachCurrentThread(java_vm, &env, NULL) != 0) {
 			__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
-				"wgProtectSocket(fd=%d): AttachCurrentThread failed", fd);
+				"%s(fd=%d): AttachCurrentThread failed", who, fd);
 			return -1;
 		}
 		attached = 1;
@@ -283,31 +289,31 @@ int wgProtectSocket(int fd)
 
 	if (!vpn_service || !protect) {
 		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
-			"wgProtectSocket(fd=%d): VpnService went away mid-call! CANNOT PROTECT", fd);
+			"%s(fd=%d): VpnService went away mid-call! CANNOT PROTECT", who, fd);
 		ret = -1;
 		goto cleanup;
 	}
 
 	if ((*env)->CallBooleanMethod(env, vpn_service, protect, (jint)fd)) {
-        // Use cached network object for immediate binding
-        if (network && bind_socket && fd_class && fd_init && fd_field) {
-            jobject fd_obj = (*env)->NewObject(env, fd_class, fd_init);
+		// Use cached network object for immediate binding
+		if (network && bind_socket && fd_class && fd_init && fd_field) {
+			jobject fd_obj = (*env)->NewObject(env, fd_class, fd_init);
 			(*env)->SetIntField(env, fd_obj, fd_field, fd);
 			(*env)->CallVoidMethod(env, network, bind_socket, fd_obj);
 			if ((*env)->ExceptionCheck(env)) {
-				__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI", "wgProtectSocket(fd=%d): bindSocket exception!", fd);
+				__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI", "%s(fd=%d): bindSocket exception!", who, fd);
 				(*env)->ExceptionClear(env);
-			} else {
-				__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI", "wgProtectSocket(fd=%d): SUCCESS (protected + bound to net %lld)", fd, (long long)network_handle);
+			} else if (!quiet) {
+				__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI", "%s(fd=%d): SUCCESS (protected + bound to net %lld)", who, fd, (long long)network_handle);
 			}
 			(*env)->DeleteLocalRef(env, fd_obj);
-		} else {
-            __android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI", "wgProtectSocket(fd=%d): SUCCESS (protected, but NOT bound - handle=%lld)", fd, (long long)network_handle);
-        }
+		} else if (!quiet) {
+			__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI", "%s(fd=%d): SUCCESS (protected, but NOT bound - handle=%lld)", who, fd, (long long)network_handle);
+		}
 		ret = 0;
 	} else {
 		__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI",
-			"wgProtectSocket(fd=%d): VpnService.protect() FAILED", fd);
+			"%s(fd=%d): VpnService.protect() FAILED", who, fd);
 		ret = -1;
 	}
 cleanup:
@@ -317,6 +323,22 @@ cleanup:
 	if (attached)
 		(*java_vm)->DetachCurrentThread(java_vm);
 	return ret;
+}
+
+int wgProtectSocket(int fd)
+{
+	return protect_and_bind(fd, "wgProtectSocket", 0);
+}
+
+// wgProtectSocketDirect is wgProtectSocket for the sharing proxy's direct
+// route (tether_route.go): a tethered client's connection that the routing
+// profile sends past the tunnel. Same protect, same bind to the physical
+// network — that is exactly what makes the socket leave over the uplink — but
+// silent on success, because it runs once per such connection and once per
+// direct DNS query.
+int wgProtectSocketDirect(int fd)
+{
+	return protect_and_bind(fd, "wgProtectSocketDirect", 1);
 }
 
 // wgProtectSocketNoBind is wgProtectSocket without the bindSocket half: it keeps
@@ -504,27 +526,37 @@ JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProx
 	return ret;
 }
 
-JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTetherStart(JNIEnv *env, jclass c, jstring bind_ip, jint port, jstring dns_servers, jstring tunnel_addrs)
+JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTetherStart(JNIEnv *env, jclass c, jstring bind_ip, jint port, jstring dns_servers, jstring tunnel_addrs, jstring routing_dir, jstring direct_dns)
 {
 	const char *bind_ip_jni = (*env)->GetStringUTFChars(env, bind_ip, 0);
 	const char *dns_jni = dns_servers ? (*env)->GetStringUTFChars(env, dns_servers, 0) : NULL;
 	const char *tunnel_addrs_jni = tunnel_addrs ? (*env)->GetStringUTFChars(env, tunnel_addrs, 0) : NULL;
+	const char *routing_dir_jni = routing_dir ? (*env)->GetStringUTFChars(env, routing_dir, 0) : NULL;
+	const char *direct_dns_jni = direct_dns ? (*env)->GetStringUTFChars(env, direct_dns, 0) : NULL;
 
 	// Duplicate strings to avoid MTE issues with JNI-tagged pointers during Go execution
 	char *bind_ip_str = bind_ip_jni ? strdup(bind_ip_jni) : NULL;
 	char *dns_str = dns_jni ? strdup(dns_jni) : NULL;
 	char *tunnel_addrs_str = tunnel_addrs_jni ? strdup(tunnel_addrs_jni) : NULL;
+	char *routing_dir_str = routing_dir_jni ? strdup(routing_dir_jni) : NULL;
+	char *direct_dns_str = direct_dns_jni ? strdup(direct_dns_jni) : NULL;
 
-	int ret = wgTetherStart(bind_ip_str, (int)port, dns_str, tunnel_addrs_str);
+	int ret = wgTetherStart(bind_ip_str, (int)port, dns_str, tunnel_addrs_str, routing_dir_str, direct_dns_str);
 
 	(*env)->ReleaseStringUTFChars(env, bind_ip, bind_ip_jni);
 	if (dns_jni)
 		(*env)->ReleaseStringUTFChars(env, dns_servers, dns_jni);
 	if (tunnel_addrs_jni)
 		(*env)->ReleaseStringUTFChars(env, tunnel_addrs, tunnel_addrs_jni);
+	if (routing_dir_jni)
+		(*env)->ReleaseStringUTFChars(env, routing_dir, routing_dir_jni);
+	if (direct_dns_jni)
+		(*env)->ReleaseStringUTFChars(env, direct_dns, direct_dns_jni);
 	free(bind_ip_str);
 	free(dns_str);
 	free(tunnel_addrs_str);
+	free(routing_dir_str);
+	free(direct_dns_str);
 
 	return ret;
 }

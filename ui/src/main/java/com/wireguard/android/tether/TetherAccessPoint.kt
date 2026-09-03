@@ -32,9 +32,10 @@ enum class TetherError(val isFailure: Boolean = true) {
     NATIVE_ERROR,
 
     /**
-     * Nothing had used sharing for half an hour, so it switched itself off. Not a
-     * failure — the access point costs a radio and a data plan, and this is the
-     * feature the user armed (or left armed) precisely to be spared it.
+     * Nothing had used sharing for the idle window (two hours), so it switched
+     * itself off. Not a failure — the access point costs a radio and a data plan,
+     * and this is the feature the user armed (or left armed) precisely to be
+     * spared it.
      */
     AUTO_OFF(isFailure = false),
 }

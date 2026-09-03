@@ -93,6 +93,17 @@
                     android:textAppearance="?attr/textAppearanceBodySmall"
                     android:textColor="@color/wgk_warning" />
 
+                <!-- The one exception to the guarantee above, said out loud
+                     whenever split routing is on for this session. -->
+                <TextView
+                    android:id="@+id/wgk_tether_routing_note"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:textColor="@color/wgk_warning"
+                    android:visibility="gone" />
+
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
