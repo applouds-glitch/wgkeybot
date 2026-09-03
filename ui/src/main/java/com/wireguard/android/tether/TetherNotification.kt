@@ -7,6 +7,7 @@ package com.wireguard.android.tether
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.TaskStackBuilder
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -15,11 +16,12 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.wireguard.android.Application
 import com.wireguard.android.R
+import com.wireguard.android.activity.AppSettingsActivity
 
 /**
  * The shade entry for an active sharing session.
  *
- * Sharing costs the phone a Wi-Fi radio, a wake lock and its data plan, and
+ * Sharing costs the phone a Wi-Fi radio and its data plan, and
  * until now the only place that said so was a bottom sheet the user had to go
  * looking for: counters stopped updating when it closed, and there was no way to
  * turn sharing off without unlocking the phone and walking back into settings.
@@ -84,7 +86,7 @@ object TetherNotification {
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setContentIntent(launchIntent(context))
+                .setContentIntent(launchIntent(context, openSheet = true))
                 .addAction(
                     R.drawable.ic_wifi_tethering,
                     context.getString(R.string.wgk_tether_stop_action),
@@ -122,7 +124,7 @@ object TetherNotification {
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setContentIntent(launchIntent(context))
+                .setContentIntent(launchIntent(context, openSheet = false))
                 .build()
             nm.notify(STOPPED_NOTIFICATION_ID, notification)
         } catch (e: Throwable) {
@@ -154,12 +156,27 @@ object TetherNotification {
         )
     }
 
-    private fun launchIntent(context: Context): PendingIntent {
-        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: Intent()
-        return PendingIntent.getActivity(
-            context, 0, intent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
+    /**
+     * Opens the settings screen the sharing section lives on, over the main screen
+     * so that Back behaves. With [openSheet] it goes straight to the credentials
+     * and QR: a tap on the live notification is the user coming back for the
+     * password, and the launcher activity this used to open left them a screen
+     * and a tap short of it. The auto-off notice lands on the same screen, where
+     * the status line says why sharing stopped.
+     *
+     * Distinct request codes: the two intents differ only in an extra, which
+     * PendingIntent does not look at, so under one code the notice would have
+     * overwritten the live entry's intent with its own.
+     */
+    private fun launchIntent(context: Context, openSheet: Boolean): PendingIntent {
+        val settings = Intent(context, AppSettingsActivity::class.java)
+            .putExtra(AppSettingsActivity.EXTRA_OPEN_TETHER, openSheet)
+        return TaskStackBuilder.create(context)
+            .addNextIntentWithParentStack(settings)
+            .getPendingIntent(
+                if (openSheet) 0 else 1,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
     }
 
     private fun stopIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(

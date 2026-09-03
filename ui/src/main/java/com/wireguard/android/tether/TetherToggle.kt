@@ -17,9 +17,10 @@ import com.wireguard.android.Application
 import com.wireguard.android.R
 import com.wireguard.android.util.applicationScope
 import kotlinx.coroutines.launch
+import java.text.DateFormat
+import java.util.Date
 
 private const val TAG = "WireGuard/TetherToggle"
-private const val TUNNEL_NAME = "wgkeybot"
 
 /**
  * Everything between a switch and TetherManager.start(): the permissions the
@@ -134,7 +135,7 @@ class TetherToggle(
     private data class TunnelNetworking(val dnsServers: List<String>, val addresses: List<String>)
 
     private suspend fun readTunnelNetworking(): TunnelNetworking = try {
-        val tunnel = Application.getTunnelManager().getTunnels().firstOrNull { it.name == TUNNEL_NAME }
+        val tunnel = Application.getTunnelManager().primaryTunnel()
         val iface = tunnel?.getConfigAsync()?.`interface`
         TunnelNetworking(
             dnsServers = iface?.dnsServers?.mapNotNull { it.hostAddress }.orEmpty(),
@@ -159,6 +160,11 @@ fun formatTetherBytes(bytes: Long): String = when {
     bytes >= 1024 -> String.format("%.1f KB", bytes / 1024.0)
     else -> "$bytes B"
 }
+
+/** Dates on the routing screens: the device's short locale format, or a dash for "never". */
+fun formatRoutingDate(epochMillis: Long): String =
+    if (epochMillis <= 0L) "—"
+    else DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(epochMillis))
 
 /** One wording per failure, shared by every surface that reports one. */
 @StringRes

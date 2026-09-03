@@ -8,6 +8,7 @@ package main
 /*
 #include <stdlib.h>
 extern int wgProtectSocketNoBind(int fd);
+extern int wgProtectSocketDirect(int fd);
 extern void notifyTetherStopped(const char *reason);
 */
 import "C"
@@ -34,6 +35,26 @@ func tetherProtectControl(network, address string, c syscall.RawConn) error {
 	var protectErr error
 	if err := c.Control(func(fd uintptr) {
 		if C.wgProtectSocketNoBind(C.int(fd)) != 0 {
+			protectErr = errSocketNotProtected
+		}
+	}); err != nil {
+		return err
+	}
+	return protectErr
+}
+
+// tetherDirectControl is the protect hook for a direct-routed upstream socket
+// and the direct resolver's UDP socket: protect() AND bind to the cached
+// physical network, exactly what protectControl does for a TURN dial and for
+// the same reason — this socket must leave over the uplink, not fall into the
+// tunnel. It is its own JNI entry point rather than protectControl because
+// that one logs every success, which is fine for a handful of TURN streams
+// and unreadable once every direct connection a tethered client opens adds a
+// line; wgProtectSocketDirect stays quiet unless it fails.
+func tetherDirectControl(network, address string, c syscall.RawConn) error {
+	var protectErr error
+	if err := c.Control(func(fd uintptr) {
+		if C.wgProtectSocketDirect(C.int(fd)) != 0 {
 			protectErr = errSocketNotProtected
 		}
 	}); err != nil {
@@ -79,13 +100,29 @@ var (
 // tunnelAddrsCsv is the tunnel's own Interface.Address list; without it there is
 // nothing to check an upstream socket's local address against, so sharing does
 // not start at all rather than start unverified (see tether_guard.go).
-func startTetherProxy(bindIP string, port int, dnsCsv, tunnelAddrsCsv string) int32 {
+//
+// routingDir, when not empty, holds a Happ routing profile and its geodata
+// (see tether_route.go); a profile that cannot be loaded is -5, and Kotlin
+// decides whether to share without one. Loaded before the port is bound so a
+// refusal leaves nothing behind. directDNSCsv, when not empty, replaces the
+// profile's DomesticDns for names routed direct — the user's own choice from
+// the routing settings screen.
+func startTetherProxy(bindIP string, port int, dnsCsv, tunnelAddrsCsv, routingDir, directDNSCsv string) int32 {
 	stopTetherProxy()
 
 	guard, err := newTetherEgressGuard(bindIP, tunnelAddrsCsv)
 	if err != nil {
 		turnLog("[TETHER] refusing to start: %v", err)
 		return -4
+	}
+
+	var router *tetherRouter
+	if routingDir != "" {
+		if router, err = loadTetherRouter(routingDir); err != nil {
+			turnLog("[TETHER] routing profile in %s is unusable: %v", routingDir, err)
+			return -5
+		}
+		overrideDomesticDNS(router, directDNSCsv)
 	}
 
 	lc := net.ListenConfig{Control: tetherProtectControl}
@@ -105,8 +142,23 @@ func startTetherProxy(bindIP string, port int, dnsCsv, tunnelAddrsCsv string) in
 		return -2
 	}
 
-	resolver := newCachingLookup(newTunnelResolver(tetherDNSServers(dnsCsv)))
-	p := newTetherProxy(ln, newTetherDial(resolver, guard))
+	dialer := &tetherDialer{
+		tunnelLookup: newCachingLookup(familyLookup{
+			r:       newTunnelResolver(tetherDNSServers(dnsCsv)),
+			network: tetherLookupNetwork(guard),
+		}),
+		guard: guard,
+	}
+	if router != nil {
+		dialer.router = router
+		// Its own cache, not the tunnel resolver's: the two answer from
+		// different vantage points, and a name must not inherit the other's.
+		dialer.directLookup = newCachingLookup(newDirectResolver(router.domesticDNS, tetherDirectControl, vkRootCAPool()))
+		dialer.directControl = tetherDirectControl
+	}
+	p := newTetherProxy(ln, dialer.dial)
+	p.routing = router != nil
+	dialer.activity = p.activity
 	// An unrecoverable Accept error must clear tetherCurrent, not just end the
 	// accept loop: otherwise wgTetherStats keeps describing a live session over a
 	// proxy that will never serve another client. Same for the guard catching
@@ -122,7 +174,12 @@ func startTetherProxy(bindIP string, port int, dnsCsv, tunnelAddrsCsv string) in
 	tetherMu.Unlock()
 
 	go p.serve(ctx)
-	turnLog("[TETHER] sharing proxy listening on %s", ln.Addr())
+	go p.reportActivity(ctx)
+	if router != nil {
+		turnLog("[TETHER] sharing proxy listening on %s, routing by profile (direct DNS %v, TLS first)", ln.Addr(), router.domesticDNS)
+	} else {
+		turnLog("[TETHER] sharing proxy listening on %s", ln.Addr())
+	}
 	return 0
 }
 
@@ -191,8 +248,8 @@ func currentTetherStats() tetherStats {
 }
 
 //export wgTetherStart
-func wgTetherStart(bindIPC *C.char, portC C.int, dnsCsvC, tunnelAddrsC *C.char) int32 {
-	return startTetherProxy(C.GoString(bindIPC), int(portC), C.GoString(dnsCsvC), C.GoString(tunnelAddrsC))
+func wgTetherStart(bindIPC *C.char, portC C.int, dnsCsvC, tunnelAddrsC, routingDirC, directDNSC *C.char) int32 {
+	return startTetherProxy(C.GoString(bindIPC), int(portC), C.GoString(dnsCsvC), C.GoString(tunnelAddrsC), C.GoString(routingDirC), C.GoString(directDNSC))
 }
 
 //export wgTetherStop
@@ -207,7 +264,7 @@ func wgTetherStop() {
 func wgTetherStats() *C.char {
 	b, err := json.Marshal(currentTetherStats())
 	if err != nil {
-		return C.CString(`{"port":0,"clients":0,"conns":0,"up":0,"down":0}`)
+		return C.CString(`{"port":0,"clients":0,"conns":0,"up":0,"down":0,"routing":false}`)
 	}
 	return C.CString(string(b))
 }

@@ -23,10 +23,14 @@ import com.wireguard.android.activity.TunnelToggleActivity
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.Application.Companion.getTunnelStateTracker
+import com.wireguard.android.fragment.TunnelState
 import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.util.ErrorMessages
 import com.wireguard.android.util.applicationScope
 import com.wireguard.android.widget.SlashDrawable
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -40,6 +44,9 @@ class QuickTileService : TileService() {
     private var iconOff: Icon? = null
     private var iconOn: Icon? = null
     private var tunnel: ObservableTunnel? = null
+
+    /** Follows the tracker while the panel is open; see [onStartListening]. */
+    private var listening: Job? = null
 
     /* This works around an annoying unsolved frameworks bug some people are hitting. */
     override fun onBind(intent: Intent): IBinder? {
@@ -167,9 +174,28 @@ class QuickTileService : TileService() {
         Application.getTunnelManager().addOnPropertyChangedCallback(onTunnelChangedCallback)
         tunnel?.addOnPropertyChangedCallback(onStateChangedCallback)
         updateTile()
+        listening?.cancel()
+        listening = applicationScope.launch {
+            // On a cold start this runs before the tunnel list is loaded, and nothing
+            // redraws the tile afterwards unless lastUsedTunnel happens to change: on
+            // a device that had never connected, the tile sat on "no tunnel" until the
+            // panel was reopened. The tap still worked (onClick awaits the list); only
+            // the label lied. So wait for the list once and redraw.
+            Application.getTunnelManager().getTunnels()
+            updateTile()
+            // The subtitle follows the tracker, not tunnel.state: the state stays DOWN
+            // for the whole 25s connect and flips only at the end, so until now the
+            // tile gave no sign that the tap had done anything.
+            getTunnelStateTracker().uiState
+                .map { it.state }
+                .distinctUntilChanged()
+                .collect { updateTile() }
+        }
     }
 
     override fun onStopListening() {
+        listening?.cancel()
+        listening = null
         tunnel?.removeOnPropertyChangedCallback(onStateChangedCallback)
         Application.getTunnelManager().removeOnPropertyChangedCallback(onTunnelChangedCallback)
     }
@@ -183,12 +209,11 @@ class QuickTileService : TileService() {
     }
 
     private fun updateTile() {
-        // Update the tunnel. Resolve by name first — lastUsedTunnel is only set once a
+        // Update the tunnel. Resolved the way every other entry point resolves it
+        // (see TunnelManager.primaryTunnel): lastUsedTunnel alone is only set once a
         // connect has actually reached UP, so before the first successful connect the
-        // tile would sit on "no tunnel" and merely open the app. Every other entry point
-        // (main screen, widget, state tracker) already keys off the name.
-        val manager = Application.getTunnelManager()
-        val newTunnel = manager.getTunnelByName(TUNNEL_NAME) ?: manager.lastUsedTunnel
+        // tile sat on "no tunnel" and merely opened the app.
+        val newTunnel = Application.getTunnelManager().primaryTunnelOrNull()
         if (newTunnel != tunnel) {
             tunnel?.removeOnPropertyChangedCallback(onStateChangedCallback)
             tunnel = newTunnel
@@ -197,19 +222,29 @@ class QuickTileService : TileService() {
         // Update the tile contents.
         val tile = qsTile ?: return
 
-        when (val tunnel = tunnel) {
-            null -> {
-                tile.label = getString(R.string.app_name)
-                tile.state = Tile.STATE_INACTIVE
-                tile.icon = iconOff
-            }
-            else -> {
-                tile.label = tunnel.name
-                tile.state = if (tunnel.state == Tunnel.State.UP) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-                tile.icon = if (tunnel.state == Tunnel.State.UP) iconOn else iconOff
-            }
+        // The label is the app's name whether or not a tunnel exists: the tunnel's
+        // own name is an implementation detail this client shows nowhere else.
+        tile.label = getString(R.string.app_name)
+        val up = tunnel?.state == Tunnel.State.UP
+        tile.state = if (up) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        tile.icon = if (up) iconOn else iconOff
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            tile.subtitle = getString(subtitleFor(tunnel))
         }
         tile.updateTile()
+    }
+
+    /** Same wording as the widget, so the two surfaces never disagree about the state. */
+    private fun subtitleFor(tunnel: ObservableTunnel?): Int {
+        if (tunnel == null) return R.string.widget_no_tunnel
+        return when (getTunnelStateTracker().uiState.value.state) {
+            TunnelState.Connecting -> R.string.widget_status_connecting
+            TunnelState.Handshake -> R.string.widget_status_handshake
+            TunnelState.Connected -> R.string.widget_status_on
+            TunnelState.Reconnecting -> R.string.widget_status_reconnecting
+            TunnelState.Failed -> R.string.widget_status_failed
+            TunnelState.Disconnected -> R.string.widget_status_off
+        }
     }
 
     private inner class OnStateChangedCallback : OnPropertyChangedCallback() {
@@ -234,7 +269,6 @@ class QuickTileService : TileService() {
 
     companion object {
         private const val TAG = "WireGuard/QuickTileService"
-        private const val TUNNEL_NAME = "wgkeybot"
         var isAdded: Boolean = false
             private set
     }

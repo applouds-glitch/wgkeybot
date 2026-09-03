@@ -5,8 +5,10 @@
 package com.wireguard.android.activity
 
 import android.content.Context
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.ColorRes
 import androidx.appcompat.app.AppCompatActivity
@@ -25,12 +27,15 @@ import com.wireguard.android.databinding.AppSettingsActivityBinding
 import com.wireguard.android.databinding.ViewWgkSettingsChoiceRowBinding
 import com.wireguard.android.fragment.TetherSheet
 import com.wireguard.android.fragment.TunnelState
+import com.wireguard.android.tether.TetherRouting
 import com.wireguard.android.tether.TetherSettings
+import com.wireguard.android.tether.formatRoutingDate
 import com.wireguard.android.tether.TetherState
 import com.wireguard.android.tether.TetherToggle
 import com.wireguard.android.tether.messageRes
 import com.wireguard.android.turn.ConnectionMode
 import com.wireguard.android.util.AuthStore
+import com.wireguard.android.util.applicationScope
 import com.wireguard.android.util.localeWrapped
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -227,6 +232,14 @@ class AppSettingsActivity : AppCompatActivity() {
             }
         }
         bindTetherAutoOff()
+        bindTetherRouting()
+        binding.wgkTetherRoutingSettingsRow.apply {
+            wgkRowIcon.setImageResource(R.drawable.ic_cloud)
+            wgkRowLabel.setText(R.string.wgk_routing_settings_title)
+            wgkRowBtn.setOnClickListener {
+                startActivity(Intent(this@AppSettingsActivity, RoutingSettingsActivity::class.java))
+            }
+        }
         binding.wgkTetherDetailsRow.apply {
             wgkRowIcon.setImageResource(R.drawable.ic_action_scan_qr_code)
             wgkRowLabel.setText(R.string.wgk_tether_details_title)
@@ -254,6 +267,78 @@ class AppSettingsActivity : AppCompatActivity() {
                 val enable = !wgkSwitch.isChecked
                 TetherSettings.setAutoOffEnabled(this@AppSettingsActivity, enable)
                 wgkSwitch.isChecked = enable
+            }
+        }
+    }
+
+    /**
+     * The split-routing switch. A stored preference like auto-off, bound once.
+     *
+     * Switching it on is also the moment the rules are fetched: waiting for the
+     * next sharing start meant the first start after the switch sat in
+     * "Starting…" for the download's whole timeout and, past it, came up
+     * without rules and said so — which read as broken. Fetched here, in the
+     * background, the files are on disk long before anyone taps the sharing
+     * switch. A live session picks the change up either way, through
+     * [TetherManager.reloadRouting].
+     */
+    private fun bindTetherRouting() {
+        binding.wgkTetherRoutingRow.apply {
+            wgkSwitchIcon.setImageResource(R.drawable.ic_call_split)
+            wgkSwitchLabel.setText(R.string.wgk_tether_routing_label)
+            wgkSwitchValue.setText(R.string.wgk_tether_routing_desc)
+            // The row's two-line cap is sized for a status word; this one carries
+            // a sentence, which at a large font scale needs the third line.
+            wgkSwitchValue.maxLines = 3
+            wgkSwitch.isChecked = TetherSettings.isRoutingEnabled(this@AppSettingsActivity)
+            wgkSwitchRoot.setOnClickListener {
+                val enable = !wgkSwitch.isChecked
+                TetherSettings.setRoutingEnabled(this@AppSettingsActivity, enable)
+                wgkSwitch.isChecked = enable
+                applyRoutingSwitch(enable)
+            }
+        }
+    }
+
+    /**
+     * Fetches the rules (on) and applies the switch to a running session. The
+     * work runs on the application scope so leaving the screen does not abandon
+     * a half-finished download; this screen only waits on it to refresh the
+     * summary row.
+     */
+    private fun applyRoutingSwitch(enable: Boolean) {
+        val appContext = applicationContext
+        if (enable) {
+            binding.wgkTetherRoutingSettingsRow.wgkRowValue.setText(R.string.wgk_routing_fetching)
+        }
+        val work = applicationScope.launch {
+            try {
+                if (enable) TetherRouting.prepare(appContext)
+                Application.getTetherManager().reloadRouting()
+            } catch (e: Exception) {
+                Log.w(TAG, "applying the routing switch failed", e)
+            }
+        }
+        lifecycleScope.launch {
+            work.join()
+            renderRoutingSummary()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The routing screen may have fetched or discarded rules while this one
+        // was behind it, so the summary is re-read on every return, not bound once.
+        if (Application.getTetherManager().isSupported) renderRoutingSummary()
+    }
+
+    private fun renderRoutingSummary() {
+        lifecycleScope.launch {
+            val info = TetherRouting.info(this@AppSettingsActivity)
+            binding.wgkTetherRoutingSettingsRow.wgkRowValue.text = if (info == null) {
+                getString(R.string.wgk_routing_none)
+            } else {
+                getString(R.string.wgk_routing_profile_value, info.name, formatRoutingDate(info.rulesUpdatedAt * 1000))
             }
         }
     }
@@ -338,6 +423,7 @@ class AppSettingsActivity : AppCompatActivity() {
         /** Boolean extra: open the sharing sheet as soon as the screen is up. */
         const val EXTRA_OPEN_TETHER = "open_tether"
 
+        private const val TAG = "WireGuard/AppSettings"
         private const val STATE_OPEN_WHEN_ACTIVE = "open_tether_when_active"
         private const val TAG_TETHER = "tether_sheet"
         private const val DISABLED_ALPHA = 0.6f

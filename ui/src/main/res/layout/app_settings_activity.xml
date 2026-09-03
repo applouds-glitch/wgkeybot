@@ -178,6 +178,34 @@
                                     android:layout_width="match_parent"
                                     android:layout_height="wrap_content" />
 
+                                <View
+                                    android:layout_width="match_parent"
+                                    android:layout_height="1dp"
+                                    android:layout_marginStart="16dp"
+                                    android:background="@color/wgk_outline_variant" />
+
+                                <!-- Split routing for tethered clients: also a
+                                     preference, applied at the next start. -->
+                                <include
+                                    android:id="@+id/wgk_tether_routing_row"
+                                    layout="@layout/view_wgk_settings_switch_row"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content" />
+
+                                <View
+                                    android:layout_width="match_parent"
+                                    android:layout_height="1dp"
+                                    android:layout_marginStart="16dp"
+                                    android:background="@color/wgk_outline_variant" />
+
+                                <!-- Where the rules come from and when they were
+                                     fetched; opens the routing settings screen. -->
+                                <include
+                                    android:id="@+id/wgk_tether_routing_settings_row"
+                                    layout="@layout/view_wgk_settings_row"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content" />
+
                                 <!-- The credentials only exist while an access
                                      point is up, so the row that shows them —
                                      and its divider — appear with it. -->

@@ -6,9 +6,12 @@
 <layout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
+    <!-- clipChildren off: the power-down scales the rings a few dp past the
+         frame (see RING_DISSIPATE_SCALE); the parent layout unclips too. -->
     <FrameLayout
         android:layout_width="260dp"
-        android:layout_height="260dp">
+        android:layout_height="260dp"
+        android:clipChildren="false">
 
         <!-- IDs and resting alphas match the phone layout: same binding class,
              same state-driven grading from renderConnectButton(). -->

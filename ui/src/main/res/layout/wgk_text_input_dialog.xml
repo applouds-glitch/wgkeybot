@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One text field for the routing screen's edit dialogs (profile URL, DNS).
+     Inflated by hand, not through databinding: it is a dialog body and nothing
+     observes it. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingStart="24dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="24dp"
+    android:paddingBottom="0dp">
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/wgk_input_layout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/wgk_input_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:imeOptions="actionDone"
+            android:inputType="textUri|textNoSuggestions"
+            android:maxLines="3" />
+    </com.google.android.material.textfield.TextInputLayout>
+</FrameLayout>

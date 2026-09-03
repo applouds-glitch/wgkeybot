@@ -18,6 +18,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,7 +30,21 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+
+/**
+ * What split routing (see [TetherRouting]) is doing for a session. Fixed at
+ * start: a running session keeps the rules it started with.
+ */
+enum class TetherRoutingStatus {
+    /** Everything through the tunnel — the switch is off. */
+    OFF,
+    /** The profile is in force: some destinations leave outside the tunnel. */
+    ON,
+    /** The switch is on, but no usable rules could be had; everything tunnels. */
+    UNAVAILABLE,
+}
 
 sealed interface TetherState {
     data object Idle : TetherState
@@ -39,6 +54,7 @@ sealed interface TetherState {
         val passphrase: String,
         val host: String,
         val port: Int,
+        val routing: TetherRoutingStatus,
         /**
          * Devices seen within the native side's client TTL (five minutes) — a
          * device that walked away is still counted for a while, which is why
@@ -69,6 +85,16 @@ class TetherManager(private val context: Context) {
 
     private val lock = Mutex()
     private var accessPoint: TetherAccessPoint? = null
+
+    /**
+     * What the native proxy was started with, kept for [reloadRouting]: the
+     * proxy can be restarted with fresh rules without touching the access point,
+     * but only with the same bind address and tunnel parameters. Guarded by
+     * [lock]; null outside a session.
+     */
+    private var session: Session? = null
+
+    private data class Session(val bindIp: String, val dnsServers: List<String>, val tunnelAddresses: List<String>)
 
     /**
      * What the user last asked for, written before anything suspends.
@@ -119,6 +145,17 @@ class TetherManager(private val context: Context) {
 
     /** Total bytes at the previous tick; see [checkIdleLocked]. */
     private var lastTraffic = 0L
+
+    /**
+     * Bytes this session moved before the last native restart.
+     *
+     * [reloadRouting] restarts the proxy under a live access point, and the new
+     * one counts from zero. Without a carry the sheet and the notification would
+     * show the session's totals jumping backwards mid-session, and the idle
+     * check would read that drop as traffic and postpone the auto-off.
+     */
+    private var carryUp = 0L
+    private var carryDown = 0L
 
     // Lets lint treat this property as a NewApi gate for the LocalOnlyHotspotAp
     // construction below — without the annotation lint can't follow a named
@@ -215,6 +252,33 @@ class TetherManager(private val context: Context) {
             }
             _state.value = TetherState.Starting
 
+            // The routing rules come before the access point: they are fetched
+            // over the network, and an access point standing with nothing behind
+            // it while that happens is exactly what the Starting state is meant to
+            // spare the user. The fetch runs on its own coroutine so that waiting
+            // for it — not the download itself — is what this one can be cancelled
+            // or timed out of: a download that outlives the wait still finishes
+            // and is there for the next start.
+            var routingDir = ""
+            var routing = TetherRoutingStatus.OFF
+            if (TetherSettings.isRoutingEnabled(context)) {
+                routing = TetherRoutingStatus.UNAVAILABLE
+                val fetch = applicationScope.async(Dispatchers.IO) { TetherRouting.prepare(context) }
+                val dir = try {
+                    withTimeoutOrNull(ROUTING_PREPARE_TIMEOUT_MS) { fetch.await() }
+                } catch (e: CancellationException) {
+                    _state.value = TetherState.Idle
+                    throw e
+                }
+                if (dir != null) routingDir = dir.absolutePath
+                else Log.w(TAG, "no routing rules within $ROUTING_PREPARE_TIMEOUT_MS ms; sharing through the tunnel only")
+                if (!wanted) {
+                    Log.d(TAG, "sharing was switched off while the routing rules were being fetched")
+                    _state.value = TetherState.Idle
+                    return
+                }
+            }
+
             val ap = LocalOnlyHotspotAp(context)
             val info = try {
                 // startLocalOnlyHotspot is flaky on vendor firmware, and its
@@ -236,13 +300,13 @@ class TetherManager(private val context: Context) {
                 _state.value = TetherState.Failed(TetherError.AP_UNAVAILABLE)
                 return
             } catch (e: CancellationException) {
-                // The real trigger here: the caller's scope (the sharing sheet's
-                // lifecycle scope) dying while the access point is still coming
-                // up — e.g. the user closes the sheet mid-start. ap.start() tears
-                // its own reservation down on cancellation, but this call is what
-                // set _state to Starting, so it must not leave that behind for a
-                // future connect attempt to inherit. Never swallow the
-                // cancellation — rethrow so structured concurrency still sees it.
+                // The trigger here is cancelPendingStart(): a stop (the switch, the
+                // notification's button, the tunnel going down) landing while the
+                // access point is still coming up. ap.start() tears its own
+                // reservation down on cancellation, but this call is what set
+                // _state to Starting, so it must not leave that behind for a future
+                // attempt to inherit. Never swallow the cancellation — rethrow so
+                // structured concurrency still sees it.
                 ap.stop()
                 _state.value = TetherState.Idle
                 throw e
@@ -270,14 +334,11 @@ class TetherManager(private val context: Context) {
             // exactly the moment the tunnel is coming down. The Go side serialises
             // itself with its own mutex, so nothing is lost by leaving the main
             // thread.
-            val rc = withContext(Dispatchers.IO) {
-                TurnBackend.wgTetherStart(
-                    info.bindIp,
-                    DEFAULT_PORT,
-                    dnsServers.joinToString(","),
-                    tunnelAddresses.joinToString(","),
-                )
-            }
+            val current = Session(info.bindIp, dnsServers, tunnelAddresses)
+            session = current
+            val started = startProxy(current, routingDir)
+            val rc = started.rc
+            if (started.routing != null) routing = started.routing
             if (rc != 0) {
                 // -4 is the native side refusing to share without the tunnel's own
                 // addresses to check egress against. It is reported as a plain
@@ -286,6 +347,7 @@ class TetherManager(private val context: Context) {
                 Log.w(TAG, "wgTetherStart returned $rc")
                 ap.stop()
                 accessPoint = null
+                session = null
                 _state.value = TetherState.Failed(
                     if (rc == -2 || rc == -3) TetherError.BIND_FAILED else TetherError.NATIVE_ERROR
                 )
@@ -294,19 +356,113 @@ class TetherManager(private val context: Context) {
 
             val stats = readStats()
             idleSince = 0L
+            carryUp = 0L
+            carryDown = 0L
             lastTraffic = stats.up + stats.down
             _state.value = TetherState.Active(
                 ssid = info.ssid,
                 passphrase = info.passphrase,
                 host = info.bindIp,
                 port = stats.port,
+                routing = routing,
                 clients = stats.clients,
                 connections = stats.conns,
                 bytesUp = stats.up,
                 bytesDown = stats.down,
             )
-            Log.d(TAG, "sharing on ${info.ssid} via ${info.bindIp}:${stats.port}")
+            Log.d(TAG, "sharing on ${info.ssid} via ${info.bindIp}:${stats.port}, routing $routing")
         }
+    }
+
+    private class ProxyStart(val rc: Int, val routing: TetherRoutingStatus?)
+
+    /**
+     * Starts (or restarts) the native proxy for [s] with the rules in
+     * [routingDir] ("" for none). Off the main thread: wgTetherStart binds a
+     * socket and, on a restart, waits out the previous proxy's drain.
+     *
+     * A -5 — the native side could not make sense of the files on disk — is
+     * handled here: they are thrown away so the next start downloads fresh
+     * ones, and the proxy is started without them. The routing status that
+     * comes back is what the attempt actually achieved, or null when it did not
+     * involve rules at all.
+     */
+    private suspend fun startProxy(s: Session, routingDir: String): ProxyStart {
+        val directDns = TetherSettings.routingDirectDns(context)
+        suspend fun start(dir: String) = withContext(Dispatchers.IO) {
+            TurnBackend.wgTetherStart(
+                s.bindIp,
+                DEFAULT_PORT,
+                s.dnsServers.joinToString(","),
+                s.tunnelAddresses.joinToString(","),
+                dir,
+                directDns,
+            )
+        }
+        if (routingDir.isEmpty()) return ProxyStart(start(""), null)
+        var rc = start(routingDir)
+        if (rc == -5) {
+            Log.w(TAG, "native side rejected the routing rules; sharing through the tunnel only")
+            // applicationScope is Dispatchers.Main.immediate, and this walks a
+            // directory and deletes files.
+            withContext(Dispatchers.IO) { TetherRouting.invalidate(context) }
+            rc = start("")
+            return ProxyStart(rc, TetherRoutingStatus.UNAVAILABLE)
+        }
+        return ProxyStart(rc, if (rc == 0) TetherRoutingStatus.ON else null)
+    }
+
+    enum class RoutingReload {
+        /** No session to apply to; the next start picks the rules up. */
+        NOT_SHARING,
+        /** The proxy is running the rules on disk (or none, if the switch is off). */
+        APPLIED,
+        /** The proxy could not be restarted; sharing is down. */
+        FAILED,
+    }
+
+    /**
+     * Restarts the native proxy of a live session with whatever rules are on
+     * disk now — the routing settings screen after an update, or after the
+     * switch or the DNS changed. The access point is untouched, so clients stay
+     * joined, but every connection through the proxy is cut and reopened by the
+     * client: the native side has no way to swap rules under a live connection.
+     */
+    suspend fun reloadRouting(): RoutingReload = lock.withLock {
+        val active = _state.value as? TetherState.Active ?: return@withLock RoutingReload.NOT_SHARING
+        val s = session ?: return@withLock RoutingReload.NOT_SHARING
+        var routingDir = ""
+        var routing = TetherRoutingStatus.OFF
+        if (TetherSettings.isRoutingEnabled(context)) {
+            routing = TetherRoutingStatus.UNAVAILABLE
+            TetherRouting.cachedDir(context)?.let { routingDir = it.absolutePath }
+        }
+        // Taken before the restart, because the restarted proxy counts from zero.
+        carryUp = active.bytesUp
+        carryDown = active.bytesDown
+        val started = startProxy(s, routingDir)
+        if (started.rc != 0) {
+            Log.w(TAG, "wgTetherStart returned ${started.rc} on a routing reload; tearing sharing down")
+            shutdownLocked(TetherState.Failed(TetherError.NATIVE_ERROR))
+            return@withLock RoutingReload.FAILED
+        }
+        if (started.routing != null) routing = started.routing
+        val stats = readStats()
+        // A failed stats read says port 0; the poll will read it again, and
+        // meanwhile the sheet must not offer ":0". The native side binds the
+        // same port back whenever it can (it is freed before the rebind), so a
+        // different one is news worth a line: clients carry the old one.
+        val port = if (stats.port == 0) active.port else stats.port
+        if (port != active.port) Log.w(TAG, "sharing proxy moved from port ${active.port} to $port on reload")
+        _state.value = active.copy(
+            port = port,
+            routing = routing,
+            connections = stats.conns,
+            bytesUp = carryUp + stats.up,
+            bytesDown = carryDown + stats.down,
+        )
+        Log.d(TAG, "routing reloaded on ${active.ssid}: $routing")
+        RoutingReload.APPLIED
     }
 
     fun stop() {
@@ -402,6 +558,7 @@ class TetherManager(private val context: Context) {
             checkIdleLocked(stats)
             if (_state.value !is TetherState.Active) return@withLock
             _state.value = active.copy(
+                routing = routingStatus(active.routing, stats),
                 // The port is refreshed too, and that is not redundant: start()
                 // publishes whatever the very first read said, so a read that failed
                 // there left the session carrying port 0 for the rest of its life —
@@ -410,10 +567,25 @@ class TetherManager(private val context: Context) {
                 port = stats.port,
                 clients = stats.clients,
                 connections = stats.conns,
-                bytesUp = stats.up,
-                bytesDown = stats.down,
+                bytesUp = carryUp + stats.up,
+                bytesDown = carryDown + stats.down,
             )
         }
+    }
+
+    /**
+     * What the rules are actually doing, taken from the native side rather than
+     * from what the start returned: the proxy either holds a loaded profile or
+     * it does not, and it is the only thing that knows. "Does not" is OFF only
+     * when this session never asked for one.
+     *
+     * Only sound on a stats read that found a proxy at all — [refreshStats]
+     * checks that first.
+     */
+    private fun routingStatus(asked: TetherRoutingStatus, stats: Stats) = when {
+        stats.routing -> TetherRoutingStatus.ON
+        asked == TetherRoutingStatus.OFF -> TetherRoutingStatus.OFF
+        else -> TetherRoutingStatus.UNAVAILABLE
     }
 
     /**
@@ -445,7 +617,7 @@ class TetherManager(private val context: Context) {
             idleSince = 0L
             return
         }
-        val traffic = stats.up + stats.down
+        val traffic = carryUp + stats.up + carryDown + stats.down
         val busy = stats.clients > 0 || stats.conns > 0L || traffic != lastTraffic
         lastTraffic = traffic
         if (busy) {
@@ -498,9 +670,12 @@ class TetherManager(private val context: Context) {
     private suspend fun shutdownLocked(next: TetherState) {
         wanted = false
         startJob = null
+        session = null
         statsMisses = 0
         idleSince = 0L
         lastTraffic = 0L
+        carryUp = 0L
+        carryDown = 0L
         // Off the main thread: this one can block for the proxy's drain grace.
         withContext(Dispatchers.IO) { TurnBackend.wgTetherStop() }
         accessPoint?.stop()
@@ -534,6 +709,8 @@ class TetherManager(private val context: Context) {
         val conns: Long,
         val up: Long,
         val down: Long,
+        /** Whether the native proxy is holding a routing profile. */
+        val routing: Boolean,
     )
 
     private suspend fun readStats(): Stats {
@@ -549,6 +726,7 @@ class TetherManager(private val context: Context) {
                 port = json.optInt("port"),
                 clients = json.optInt("clients"),
                 conns = json.optLong("conns"),
+                routing = json.optBoolean("routing"),
                 up = json.optLong("up"),
                 down = json.optLong("down"),
             )
@@ -563,9 +741,17 @@ class TetherManager(private val context: Context) {
 
         // A zero port reads as "the native side holds no proxy", which is exactly
         // what an unreadable stats call means; see refreshStats.
-        private val EMPTY_STATS = Stats(port = 0, clients = 0, conns = 0, up = 0, down = 0)
+        private val EMPTY_STATS = Stats(port = 0, clients = 0, conns = 0, up = 0, down = 0, routing = false)
 
         private const val AP_START_TIMEOUT_MS = 20_000L
+
+        /**
+         * How long a start waits for the routing rules. Bounded by the download's
+         * own timeouts otherwise, and those add up to more than a minute across
+         * three files — sharing without the rules beats a switch that appears
+         * stuck for that long.
+         */
+        private const val ROUTING_PREPARE_TIMEOUT_MS = 20_000L
 
         // Consecutive empty stats reads before a session is declared dead. Two, so
         // that one unreadable poll is a hiccup and not a teardown.

@@ -14,9 +14,13 @@
         android:layout_height="match_parent"
         android:background="@color/wgk_background">
 
+        <!-- Unclipped for the connect control's power-down ripple, which scales
+             the rings a few dp past the include's bounds. -->
         <androidx.constraintlayout.widget.ConstraintLayout
             android:layout_width="match_parent"
             android:layout_height="match_parent"
+            android:clipChildren="false"
+            android:clipToPadding="false"
             android:paddingHorizontal="48dp"
             android:paddingVertical="27dp">
 

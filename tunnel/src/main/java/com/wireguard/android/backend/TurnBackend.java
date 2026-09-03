@@ -359,15 +359,27 @@ public final class TurnBackend {
      * checked against it: that is what proves a tethered client's traffic really
      * left through the tunnel, so sharing refuses to start without it.
      *
+     * {@code routingDir} is a directory holding a Happ routing profile
+     * ({@code profile.json}) and the {@code geosite.dat} / {@code geoip.dat} it
+     * references, or empty to route every tethered connection through the
+     * tunnel. With a profile, destinations it lists as direct leave over the
+     * physical network and destinations it blocks are refused.
+     *
+     * {@code directDns} (comma separated, optional port) replaces the profile's
+     * own domestic resolver for names the profile routes direct; empty keeps
+     * the profile's.
+     *
      * Returns 0 on success, -2 when the whole port range is busy, -3 when
      * protect() refused the listening socket, -4 when the egress guard could not
-     * be built — no usable tunnel address, or a bindIp that is not an IP.
+     * be built — no usable tunnel address, or a bindIp that is not an IP — and
+     * -5 when the routing profile could not be loaded (nothing is listening in
+     * that case; call again with an empty {@code routingDir} to share without it).
      */
-    public static native int wgTetherStart(String bindIp, int port, String dnsServers, String tunnelAddrs);
+    public static native int wgTetherStart(String bindIp, int port, String dnsServers, String tunnelAddrs, String routingDir, String directDns);
 
     public static native void wgTetherStop();
 
-    /** Returns {"port":…,"clients":…,"conns":…,"up":…,"down":…} as JSON. */
+    /** Returns {"port":…,"clients":…,"conns":…,"up":…,"down":…,"routing":…} as JSON. */
     public static native String wgTetherStats();
 
     private static final String TAG = "WireGuard/TurnBackend";

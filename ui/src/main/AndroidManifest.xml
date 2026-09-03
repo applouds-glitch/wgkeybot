@@ -74,13 +74,10 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
+        <!-- Headless toggle for the tile and the widget. Its own task affinity, so
+             launching it never drags the main screen to the front. -->
         <activity
             android:name=".activity.TunnelToggleActivity"
-            android:excludeFromRecents="true"
-            android:theme="@style/NoBackgroundTheme" />
-
-        <activity
-            android:name=".activity.WidgetToggleActivity"
             android:excludeFromRecents="true"
             android:exported="false"
             android:taskAffinity=""
@@ -133,6 +130,13 @@
             android:label="@string/wgk_settings_title"
             android:theme="@style/AppTheme.NoActionBar"
             android:parentActivityName=".activity.MainActivity" />
+
+        <activity
+            android:name=".activity.RoutingSettingsActivity"
+            android:screenOrientation="portrait"
+            android:label="@string/wgk_routing_settings_title"
+            android:theme="@style/AppTheme.NoActionBar"
+            android:parentActivityName=".activity.AppSettingsActivity" />
 
         <activity
             android:name="com.journeyapps.barcodescanner.CaptureActivity"

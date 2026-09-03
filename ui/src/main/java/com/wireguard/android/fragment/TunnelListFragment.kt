@@ -15,6 +15,7 @@ import android.content.res.ColorStateList
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -39,6 +40,7 @@ import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.databinding.TunnelListFragmentBinding
 import com.wireguard.android.databinding.ViewWgkConnectButtonBinding
 import com.wireguard.android.model.ObservableTunnel
+import com.wireguard.android.model.TunnelManager
 import com.wireguard.android.tether.TetherState
 import com.wireguard.android.turn.ConnectionMode
 import com.wireguard.android.util.ApiClient
@@ -61,8 +63,10 @@ import com.wireguard.android.widget.TvTokenKeyboard
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.floor
+import kotlin.math.sin
 
-private const val TUNNEL_NAME = "wgkeybot"
 private const val PREFS_CONFIG_LOAD = "config_load_prefs"          // legacy (migration only)
 private const val PREFS_CONFIG_LOAD_SECURE = "config_load_secure"  // encrypted
 private const val KEY_CONFIG_LOADED_AT = "config_loaded_at"
@@ -75,7 +79,27 @@ class TunnelListFragment : BaseFragment() {
     private var tvKeyboard: TvTokenKeyboard? = null
     private var refreshAnim: ObjectAnimator? = null
     private var buttonAnim: ValueAnimator? = null
+    private var ringPulse: ValueAnimator? = null
+    private var ringSettle: ValueAnimator? = null
     private var _prefs: SharedPreferences? = null
+
+    /**
+     * The halo, split into what the state render owns and what rides on top of it.
+     *
+     * [ringBase] and [ringScale] are set by [renderConnectButton]; [ringLift] is
+     * added by the sharing pulse. Two animators can be driving the rings at once —
+     * the sharing beacon under a state cross-fade, or its settle-out under the
+     * power-down — and if each wrote view alpha directly, whichever ran later in
+     * the frame would win and the other would flicker through. Each writes only
+     * its own array and [applyRings] composes them, so the order never matters.
+     * All three are outer → inner, like the alpha tables in the companion.
+     */
+    private val ringBase = RING_ALPHA_REST.copyOf()
+    private val ringLift = FloatArray(3)
+    private val ringScale = floatArrayOf(1f, 1f, 1f)
+
+    /** Whether the access point is up: what the beacon on the halo signals. */
+    private var tetherSharing = false
 
     private var currentSplitProxy: ConfigProxy? = null
     private var updateShownThisSession = false
@@ -192,8 +216,10 @@ class TunnelListFragment : BaseFragment() {
                         .distinctUntilChanged()
                         .collect { clients ->
                             tetherClients = clients
+                            tetherSharing = clients >= 0
                             val b = binding ?: return@collect
                             renderActionSlot(b, vm.uiState.value.state)
+                            syncRingPulse()
                         }
                 }
             }
@@ -222,12 +248,26 @@ class TunnelListFragment : BaseFragment() {
         updateConnectionModeButton()
     }
 
+    override fun onStart() {
+        super.onStart()
+        syncRingPulse()
+    }
+
+    override fun onStop() {
+        // A repeating animator keeps taking frames with the window hidden — the
+        // choreographer does not know the screen is gone — so the beacon is
+        // stopped here, not left to the collectors that only restart it.
+        stopRingPulse(settle = false)
+        super.onStop()
+    }
+
     override fun onDestroyView() {
         refreshAnim?.cancel()
         refreshAnim = null
         // Cleared first, same as in renderConnectButton: the cancel runs the end
         // callback, which must see that it no longer owns the control.
         buttonAnim.also { buttonAnim = null }?.cancel()
+        stopRingPulse(settle = false)
         // The diff describes views that are about to go away; a stale entry would
         // leave the next view tree unrendered until the state happened to change.
         rendered = null
@@ -245,7 +285,7 @@ class TunnelListFragment : BaseFragment() {
         lifecycleScope.launch {
             try {
                 val tunnel = Application.getTunnelManager().getTunnels()
-                    .firstOrNull { it.name == TUNNEL_NAME }
+                    .firstOrNull { it.name == TunnelManager.PRIMARY_TUNNEL_NAME }
                 if (tunnel == null) {
                     showSnackbar(getString(R.string.wgk_config_not_found))
                     return@launch
@@ -291,7 +331,7 @@ class TunnelListFragment : BaseFragment() {
                     // stopForTunnel — so userInitiatedStop would stay false and
                     // performRestartSequence would keep reconnecting after the stop.
                     withContext(Dispatchers.IO) {
-                        Application.getTurnProxyManager().stopForTunnel(TUNNEL_NAME)
+                        Application.getTurnProxyManager().stopForTunnel(TunnelManager.PRIMARY_TUNNEL_NAME)
                     }
                 }
 
@@ -332,7 +372,7 @@ class TunnelListFragment : BaseFragment() {
             }
 
             val tunnel = Application.getTunnelManager().getTunnels()
-                .firstOrNull { it.name == TUNNEL_NAME }
+                .firstOrNull { it.name == TunnelManager.PRIMARY_TUNNEL_NAME }
 
             if (tunnel == null) {
                 // Has valid auth but config missing locally — auto-fetch
@@ -534,7 +574,7 @@ class TunnelListFragment : BaseFragment() {
         if (prev == null || prev.state != ui.state || prev.failure != ui.failure) {
             // Nothing to cross-fade from on the first pass: the view tree has just
             // arrived wearing the layout's resting values.
-            renderConnectButton(b, ui, animate = prev != null)
+            renderConnectButton(b, ui, from = prev?.state)
             renderStatusChrome(b, ui)
             renderActionSlot(b, ui.state)
         }
@@ -562,12 +602,20 @@ class TunnelListFragment : BaseFragment() {
      * than the halo it was leaving behind (wgk_outline #44474E at 0.7 over the
      * background ≈ #34373C), so the button sat dark inside three rings brighter
      * than itself until they caught up. Anything visual added to this control
-     * later has to join the animator too, or it will do the same thing.
+     * later has to join the animator too, or it will do the same thing. The one
+     * thing that does not is the sharing beacon, and it never writes a view: it
+     * adds to [ringLift], and [applyRings] composes that with what this animator
+     * owns, so the two can run at once without either seeing the other's writes.
+     *
+     * [from] is the state the control is showing now, null on the first pass when
+     * there is nothing to cross-fade from. Switching off from a live halo — any
+     * state but the two resting ones, into Disconnected — gets the power-down
+     * instead of the cross-fade; see [powerDownFrame].
      */
     private fun renderConnectButton(
         b: TunnelListFragmentBinding,
         ui: TunnelUiState,
-        animate: Boolean,
+        from: TunnelState?,
     ) {
         val cb = b.wgkConnectButtonView
         val btn = cb.wgkConnectBtn
@@ -585,7 +633,7 @@ class TunnelListFragment : BaseFragment() {
         val busy = ui.state == TunnelState.Connecting ||
                 ui.state == TunnelState.Handshake ||
                 ui.state == TunnelState.Reconnecting
-        val atRest = ui.state == TunnelState.Disconnected || ui.state == TunnelState.Failed
+        val atRest = isAtRest(ui.state)
 
         // Kept in step with the state even though the fill no longer reads them:
         // they are what the view reports to accessibility, and they keep the
@@ -622,26 +670,42 @@ class TunnelListFragment : BaseFragment() {
 
         val fromBg = btn.backgroundTintList?.defaultColor
         val fromIcon = btn.iconTint?.defaultColor
-        if (!animate || fromBg == null || fromIcon == null) {
+        if (from == null || fromBg == null || fromIcon == null) {
             applyConnectButtonLook(cb, targetBg, targetIcon, targetRings, targetArc)
             arc.isVisible = busy
+            syncRingPulse()
             return
         }
 
-        val fromRings = floatArrayOf(cb.wgkRingOuter.alpha, cb.wgkRingMid.alpha, cb.wgkRingInner.alpha)
+        // Read back from the render's own arrays, not the views: view alpha carries
+        // the beacon's lift on top, and view scale a power-down caught midway.
+        val fromRings = ringBase.copyOf()
+        val fromScale = ringScale.copyOf()
         val fromArc = arc.alpha
+        val powerDown = !isAtRest(from) && ui.state == TunnelState.Disconnected
+
         val anim = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = BUTTON_FADE_MS
-            interpolator = AccelerateDecelerateInterpolator()
-            addUpdateListener { a ->
-                val f = a.animatedFraction
-                applyConnectButtonLook(
-                    cb,
-                    ColorUtils.blendARGB(fromBg, targetBg, f),
-                    ColorUtils.blendARGB(fromIcon, targetIcon, f),
-                    FloatArray(3) { i -> fromRings[i] + (targetRings[i] - fromRings[i]) * f },
-                    fromArc + (targetArc - fromArc) * f,
-                )
+            if (powerDown) {
+                duration = BUTTON_POWER_DOWN_MS
+                // Linear: the power-down eases each of its beats on its own.
+                interpolator = LinearInterpolator()
+                addUpdateListener { a ->
+                    powerDownFrame(cb, a.animatedFraction, fromBg, targetBg, fromIcon, targetIcon, fromRings, fromArc)
+                }
+            } else {
+                duration = BUTTON_FADE_MS
+                interpolator = AccelerateDecelerateInterpolator()
+                addUpdateListener { a ->
+                    val f = a.animatedFraction
+                    applyConnectButtonLook(
+                        cb,
+                        ColorUtils.blendARGB(fromBg, targetBg, f),
+                        ColorUtils.blendARGB(fromIcon, targetIcon, f),
+                        FloatArray(3) { i -> lerp(fromRings[i], targetRings[i], f) },
+                        lerp(fromArc, targetArc, f),
+                        FloatArray(3) { i -> lerp(fromScale[i], 1f, f) },
+                    )
+                }
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
@@ -653,6 +717,56 @@ class TunnelListFragment : BaseFragment() {
         }
         buttonAnim = anim
         anim.start()
+        syncRingPulse()
+    }
+
+    /**
+     * One frame of the power-down, at [t] ∈ [0, 1] of [BUTTON_POWER_DOWN_MS].
+     *
+     * The fill goes dark together with the inner ring, over the first 240 ms —
+     * the beat the plain cross-fade has, so the tap still feels answered at once,
+     * and the ring next to the button never outshines a fill that has already
+     * gone dark (the flash described on [renderConnectButton]). Each ring further
+     * out starts 80 ms after the one inside it, and while it fades it drifts a
+     * few dp outward: the halo leaves the button as a ripple rather than as three
+     * lamps switching off. Only once the last ring has gone does the resting halo
+     * fade back in, in place and at its usual scale. A ring's scale is reset on
+     * the frame its alpha reaches zero, so the reset is never seen.
+     */
+    private fun powerDownFrame(
+        cb: ViewWgkConnectButtonBinding,
+        t: Float,
+        fromBg: Int,
+        targetBg: Int,
+        fromIcon: Int,
+        targetIcon: Int,
+        fromRings: FloatArray,
+        fromArc: Float,
+    ) {
+        val head = easeInOut(segment(t, 0f, POWER_DOWN_HEAD))
+        val back = easeInOut(segment(t, POWER_DOWN_RETURN, 1f))
+        val rings = FloatArray(3)
+        val scales = FloatArray(3)
+        for (i in 0..2) {
+            // Arrays run outer → inner; the inner ring leads.
+            val start = (2 - i) * POWER_DOWN_STAGGER
+            val out = segment(t, start, start + POWER_DOWN_HEAD)
+            if (out < 1f) {
+                rings[i] = fromRings[i] * (1f - out)
+                scales[i] = 1f + (RING_DISSIPATE_SCALE - 1f) * easeOut(out)
+            } else {
+                rings[i] = RING_ALPHA_REST[i] * back
+                scales[i] = 1f
+            }
+        }
+        applyConnectButtonLook(
+            cb,
+            ColorUtils.blendARGB(fromBg, targetBg, head),
+            ColorUtils.blendARGB(fromIcon, targetIcon, head),
+            rings,
+            lerp(fromArc, 0f, head),
+            scales,
+        )
     }
 
     private fun applyConnectButtonLook(
@@ -661,13 +775,131 @@ class TunnelListFragment : BaseFragment() {
         icon: Int,
         ringAlphas: FloatArray,
         arcAlpha: Float,
+        ringScales: FloatArray = RING_SCALE_UNIT,
     ) {
         cb.wgkConnectBtn.backgroundTintList = ColorStateList.valueOf(bg)
         cb.wgkConnectBtn.iconTint = ColorStateList.valueOf(icon)
-        cb.wgkRingOuter.alpha = ringAlphas[0]
-        cb.wgkRingMid.alpha = ringAlphas[1]
-        cb.wgkRingInner.alpha = ringAlphas[2]
+        ringAlphas.copyInto(ringBase)
+        ringScales.copyInto(ringScale)
+        applyRings(cb)
         cb.wgkBusyArc.alpha = arcAlpha
+    }
+
+    /** Writes the halo views from [ringBase], [ringLift] and [ringScale]. */
+    private fun applyRings(cb: ViewWgkConnectButtonBinding) {
+        setRing(cb.wgkRingOuter, 0)
+        setRing(cb.wgkRingMid, 1)
+        setRing(cb.wgkRingInner, 2)
+    }
+
+    private fun setRing(ring: View, i: Int) {
+        ring.alpha = (ringBase[i] + ringLift[i]).coerceIn(0f, 1f)
+        ring.scaleX = ringScale[i]
+        ring.scaleY = ringScale[i]
+    }
+
+    private fun isAtRest(state: TunnelState) =
+        state == TunnelState.Disconnected || state == TunnelState.Failed
+
+    // ── Sharing beacon ─────────────────────────────────────────────────────────
+
+    /**
+     * Starts or stops the beacon on the halo to match the state.
+     *
+     * While the access point is up the rings carry a wave that travels outward,
+     * inner to outer, once a period — the halo broadcasting, which is what the
+     * chip under the button says in words. Only over a Connected tunnel: through
+     * a reconnect the arc has the inner ring, and the beacon settles out until
+     * the tunnel is back. Called from every path that changes either input: the
+     * sharing collector, the state render, and onStart after onStop took it down.
+     */
+    private fun syncRingPulse() {
+        val want = tetherSharing && rendered?.state == TunnelState.Connected && binding != null
+        if (want) startRingPulse() else stopRingPulse(settle = true)
+    }
+
+    private fun startRingPulse() {
+        if (ringPulse != null) return
+        val cb = binding?.wgkConnectButtonView ?: return
+        // With animations off system-wide a repeating animator ends on its first
+        // frame, which is fine — nothing lifts and the halo stays as rendered — but
+        // where the platform can say so up front, the beacon is simply not started.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !ValueAnimator.areAnimatorsEnabled()) return
+        ringSettle.also { ringSettle = null }?.cancel()
+        val anim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = RING_PULSE_PERIOD_MS
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = LinearInterpolator()
+            addUpdateListener { a ->
+                val t = a.animatedValue as Float
+                for (i in 0..2) ringLift[i] = RING_PULSE_LIFT[i] * pulseWave(t - RING_PULSE_DELAY[i])
+                applyRings(cb)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    // Only a run that ended on its own gets here owning the field;
+                    // stopRingPulse clears it before cancelling and takes the lift
+                    // down itself.
+                    if (ringPulse !== animation) return
+                    ringPulse = null
+                    ringLift.fill(0f)
+                    applyRings(cb)
+                }
+            })
+        }
+        ringPulse = anim
+        anim.start()
+    }
+
+    /**
+     * Takes the beacon off the halo. With [settle] the lift it was adding decays
+     * over [RING_SETTLE_MS] instead of vanishing between two frames: sharing most
+     * often ends because the tunnel is going down, and the power-down is already
+     * running underneath. Without it — the view is going away, or the window is —
+     * the lift is dropped at once.
+     */
+    private fun stopRingPulse(settle: Boolean) {
+        ringPulse.also { ringPulse = null }?.cancel()
+        val cb = binding?.wgkConnectButtonView
+        if (!settle || cb == null || ringLift.all { it == 0f }) {
+            ringSettle.also { ringSettle = null }?.cancel()
+            ringLift.fill(0f)
+            if (cb != null) applyRings(cb)
+            return
+        }
+        if (ringSettle != null) return
+        val fromLift = ringLift.copyOf()
+        val anim = ValueAnimator.ofFloat(1f, 0f).apply {
+            duration = RING_SETTLE_MS
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener { a ->
+                val k = a.animatedValue as Float
+                for (i in 0..2) ringLift[i] = fromLift[i] * k
+                applyRings(cb)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (ringSettle !== animation) return
+                    ringSettle = null
+                    ringLift.fill(0f)
+                    applyRings(cb)
+                }
+            })
+        }
+        ringSettle = anim
+        anim.start()
+    }
+
+    /**
+     * The beacon's profile at [phase] periods along: zero outside the crest, a
+     * smooth hump [RING_PULSE_WIDTH] of a period long. Wraps, so a ring's delay
+     * can be subtracted straight off the animator's fraction.
+     */
+    private fun pulseWave(phase: Float): Float {
+        val u = phase - floor(phase)
+        if (u >= RING_PULSE_WIDTH) return 0f
+        val s = sin(PI.toFloat() * u / RING_PULSE_WIDTH)
+        return s * s
     }
 
     /** The view state the res/color selectors key on, for the given tunnel state. */
@@ -968,7 +1200,7 @@ class TunnelListFragment : BaseFragment() {
         showFeedback: Boolean = true,
     ) {
         val tunnelManager = Application.getTunnelManager()
-        val existing = tunnelManager.getTunnels().firstOrNull { it.name == TUNNEL_NAME }
+        val existing = tunnelManager.getTunnels().firstOrNull { it.name == TunnelManager.PRIMARY_TUNNEL_NAME }
         if (existing != null) {
             val turnSettings = TurnConfigProcessor.extractTurnSettings(config)
                 ?: existing.turnSettings
@@ -982,7 +1214,7 @@ class TunnelListFragment : BaseFragment() {
             tunnelManager.setTunnelConfig(existing, configWithApps, turnSettings, reconnect = reconnect)
             if (wasUp) vm.notifyTunnelUp()
         } else {
-            tunnelManager.create(TUNNEL_NAME, config)
+            tunnelManager.create(TunnelManager.PRIMARY_TUNNEL_NAME, config)
         }
         recordConfigLoaded()
         refreshButtonState()
@@ -1143,7 +1375,7 @@ class TunnelListFragment : BaseFragment() {
         lifecycleScope.launch {
             try {
                 val tunnel = Application.getTunnelManager().getTunnels()
-                    .firstOrNull { it.name == TUNNEL_NAME }
+                    .firstOrNull { it.name == TunnelManager.PRIMARY_TUNNEL_NAME }
                 if (tunnel == null) { showSnackbar(getString(R.string.wgk_config_not_found)); return@launch }
                 val config = tunnel.getConfigAsync()
                 val proxy = ConfigProxy(config, tunnel.turnSettings)
@@ -1171,7 +1403,7 @@ class TunnelListFragment : BaseFragment() {
         lifecycleScope.launch {
             try {
                 val tunnel = Application.getTunnelManager().getTunnels()
-                    .firstOrNull { it.name == TUNNEL_NAME }
+                    .firstOrNull { it.name == TunnelManager.PRIMARY_TUNNEL_NAME }
                 if (tunnel == null) { showSnackbar(getString(R.string.wgk_config_not_found)); return@launch }
 
                 if (excluded) {
@@ -1300,9 +1532,54 @@ class TunnelListFragment : BaseFragment() {
         private val RING_ALPHA_REST = floatArrayOf(0.10f, 0.16f, 0.24f)
         private val RING_ALPHA_ACTIVE = floatArrayOf(0.28f, 0.45f, 0.70f)
 
+        private val RING_SCALE_UNIT = floatArrayOf(1f, 1f, 1f)
+
         /** Cross-fade of the whole connect control on a state change. Long enough
          *  to read as a transition, short enough that the tap that caused it still
          *  feels answered immediately. */
         private const val BUTTON_FADE_MS = 180L
+
+        /** The power-down, when the halo is switched off from a live state. Its
+         *  beats are fractions of this length: the fill and the inner ring go over
+         *  the first 240 ms, each ring further out starts 80 ms later, and the
+         *  resting halo returns over the last 240 ms — see [powerDownFrame]. */
+        private const val BUTTON_POWER_DOWN_MS = 640L
+        private const val POWER_DOWN_HEAD = 0.375f       // 240 ms
+        private const val POWER_DOWN_STAGGER = 0.125f    // 80 ms
+        private const val POWER_DOWN_RETURN = 0.625f     // 400 ms
+
+        /** How far a ring drifts outward while it fades in the power-down: 5 dp on
+         *  the outer ring at the phone's 176 dp. It leaves the control's bounds
+         *  doing so, which is why the layouts around the control have clipChildren
+         *  off. */
+        private const val RING_DISSIPATE_SCALE = 1.06f
+
+        /** The sharing beacon: one wave a period, travelling inner → outer. */
+        private const val RING_PULSE_PERIOD_MS = 2200L
+
+        /** How much each ring brightens at its crest, outer → inner. The outer
+         *  ring doubles and the inner gains under a third: one absolute step for
+         *  all three would flash on the outer and be lost on the inner. */
+        private val RING_PULSE_LIFT = floatArrayOf(0.30f, 0.24f, 0.20f)
+
+        /** Where in the period each ring's crest starts, outer → inner. The wave
+         *  takes 0.28 of a period to cross the halo and is gone by 0.78, leaving a
+         *  quiet gap before the next one. */
+        private val RING_PULSE_DELAY = floatArrayOf(0.28f, 0.14f, 0f)
+
+        /** Length of each ring's hump, as a fraction of the period. */
+        private const val RING_PULSE_WIDTH = 0.5f
+
+        /** Decay of the beacon's lift when sharing ends. */
+        private const val RING_SETTLE_MS = 300L
     }
 }
+
+private fun lerp(a: Float, b: Float, f: Float) = a + (b - a) * f
+
+/** [t] mapped onto [start]..[end] and clamped to 0..1. */
+private fun segment(t: Float, start: Float, end: Float) = ((t - start) / (end - start)).coerceIn(0f, 1f)
+
+private fun easeInOut(x: Float) = x * x * (3f - 2f * x)
+
+private fun easeOut(x: Float) = 1f - (1f - x) * (1f - x)

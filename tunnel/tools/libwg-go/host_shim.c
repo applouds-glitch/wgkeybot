@@ -43,6 +43,13 @@ int wgProtectSocketNoBind(int fd)
 	return 0;
 }
 
+/* The direct-route variant (protect + bind, quiet). Equally inert here. */
+int wgProtectSocketDirect(int fd)
+{
+	(void)fd;
+	return 0;
+}
+
 /* NULL reads as "the platform told us nothing", which every caller of these
  * already handles: no system DNS servers, no captcha token, no device profile. */
 const char *getNetworkDnsServers(long long network_handle)
