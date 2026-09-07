@@ -30,6 +30,22 @@ const (
 	// Closing sooner caused correlated reconnect storms across aligned streams.
 	deadStreamTimeout = 90 * time.Second
 
+	// dispatchStaleAfter is how long a ready stream may go without a validated
+	// inbound packet before the dispatcher stops handing it chunks (see
+	// dispatchPacket in init_groups.go). A healthy stream hears the server's
+	// keepalive echo once per keepaliveInterval, at its own phase inside
+	// keepaliveSpread, so its longest silent gap is one interval plus the
+	// spread plus a mobile round trip; this sits just past that. It is
+	// deliberately far below deadStreamTimeout: that one tears the stream
+	// down, and three missed windows were chosen there so aligned streams do
+	// not mass-reconnect on one lost burst. Skipping is reversible and costs no
+	// reconnect — the stream keeps probing and rejoins the rotation on its next
+	// echo — so one missed echo is enough. Before this a relay that had gone
+	// quiet kept receiving every Nth chunk for the whole 90s until the detector
+	// fired, which for TCP inside the tunnel is a steady 1/N loss for a minute
+	// and a half.
+	dispatchStaleAfter = 35 * time.Second
+
 	// A failed write retries quickly on that stream. A successful retry rejoins
 	// the shared wall-clock grid on the following keepalive.
 	keepaliveSendRetry = 5 * time.Second
