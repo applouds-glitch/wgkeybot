@@ -16,6 +16,21 @@ import (
 	"time"
 )
 
+const (
+	// groupLaunchStagger is the pause between consecutive WorkerGroup launches.
+	// It used to be ~2s "so TURN allocations and VK credential fetches are
+	// staggered across groups", but both reasons have since moved elsewhere:
+	// wgTurnProxyStart pre-fetches every group's credential before this runs,
+	// so a group's first fetch is a cache hit, and Allocate is paced by
+	// allocSemaphore and workerStagger regardless of which group a stream
+	// belongs to. What is left is only to keep the first streams of adjacent
+	// groups from dialing in the same instant — a few hundred milliseconds do
+	// that, and the last of three groups no longer starts 4-5s late for
+	// nothing.
+	groupLaunchStagger       = 300 * time.Millisecond
+	groupLaunchStaggerJitter = 200 * time.Millisecond
+)
+
 // dispatchDropCount counts WireGuard packets the dispatcher could not hand to
 // any stream because every ready stream's queue was full. Dropping here is
 // indistinguishable from loss on the far side, so it is logged — sparsely,
@@ -119,12 +134,13 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	}
 
 	var groupsWg sync.WaitGroup
-	// The cascade below sleeps ~2s per group, so it is launched in its own
+	// The cascade below sleeps between groups, so it is launched in its own
 	// goroutine: run inline it delayed everything after it — including the packet
-	// dispatcher — by 2s × (groups-1), which at four groups meant ~7s during which
-	// 127.0.0.1:9000 was bound but nobody drained it. Stream 0 is typically ready
-	// within a second, so those were WireGuard handshakes sitting in the socket
-	// buffer (or dropped) while a working path was already available.
+	// dispatcher — by the whole cascade (2s per group back then, ~7s at four
+	// groups) during which 127.0.0.1:9000 was bound but nobody drained it.
+	// Stream 0 is typically ready within a second, so those were WireGuard
+	// handshakes sitting in the socket buffer (or dropped) while a working path
+	// was already available.
 	//
 	// The extra Add(1) is held by the launcher itself: without it groupsWg could
 	// reach zero — and close done — before the first group had been added.
@@ -145,15 +161,12 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			}
 
 			if gi > 0 {
-				// Cascading group launch: each group starts ~2s after the
-				// previous one so TURN allocations and VK credential fetches
-				// are staggered across groups instead of fanning out at once.
-				// Abandoned on cancellation so a stop during startup doesn't
-				// keep launching groups for a proxy that is already gone.
-				baseDelay := 2 * time.Second
-				jitter := time.Duration(rand.Intn(500)) * time.Millisecond
+				// Cascading group launch (see groupLaunchStagger). Abandoned on
+				// cancellation so a stop during startup doesn't keep launching
+				// groups for a proxy that is already gone.
+				jitter := time.Duration(rand.Int63n(int64(groupLaunchStaggerJitter)))
 				select {
-				case <-time.After(baseDelay + jitter):
+				case <-time.After(groupLaunchStagger + jitter):
 				case <-gCtx.Done():
 					return
 				}
@@ -236,30 +249,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 				}
 			}
 
-			// Hand the packet to the first ready stream that can take it,
-			// starting at the current chunk's stream. A full s.in used to drop
-			// the packet outright, so one stream whose TX goroutine had stalled
-			// (a slow relay, a reconnect in progress) silently ate its whole
-			// 8-packet chunk even while every sibling sat idle. Spilling over
-			// costs nothing when the queues are empty — the first candidate
-			// accepts — and keeps the loss confined to a genuinely saturated
-			// pool.
-			sent := false
-			anyReady := false
-			for i := 0; i < totalStreams; i++ {
-				st := allStreams[(lastUsed+i)%totalStreams]
-				if !st.ready.Load() {
-					continue
-				}
-				anyReady = true
-				select {
-				case st.in <- b[:nRead]:
-					sent = true
-				default:
-					continue
-				}
-				break
-			}
+			sent, anyReady := dispatchPacket(allStreams, lastUsed, time.Now(), b[:nRead])
 			if !sent {
 				packetPool.Put(b[:cap(b)])
 				noteDispatchDrop(anyReady)
@@ -275,4 +265,47 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	}()
 
 	return gCancel, okChan, done, nil
+}
+
+// dispatchPacket hands pkt to one ready stream, searching from start and
+// wrapping around, and reports whether it was accepted and whether any stream
+// was ready at all — the two dispatch-drop causes noteDispatchDrop tells apart.
+//
+// Two passes. The first skips streams whose relay has gone quiet
+// (dispatchStale): a stream stays ready until its dead-stream detector fires
+// 90s after the last echo, and the plain round-robin used to keep feeding it
+// every Nth chunk for that whole time — a steady 1/N loss that TCP inside the
+// tunnel reads as congestion. The second pass admits stale streams too, and
+// runs only when the first placed nothing: with every stream silent it is the
+// uplink that is down, not a relay, and placing nothing would only add a drop
+// of our own to whatever the network is already losing.
+//
+// Within a pass a full queue is not a drop either: the packet spills to the
+// next candidate, so one stream whose TX goroutine has stalled (a slow relay, a
+// reconnect in progress) cannot eat its whole 8-packet chunk while siblings sit
+// idle. Spilling costs nothing when the queues are empty — the first candidate
+// accepts — and keeps the loss confined to a genuinely saturated pool.
+func dispatchPacket(streams []*stream, start int, now time.Time, pkt []byte) (sent, anyReady bool) {
+	n := len(streams)
+	for pass := 0; pass < 2; pass++ {
+		for i := 0; i < n; i++ {
+			st := streams[(start+i)%n]
+			if !st.ready.Load() {
+				continue
+			}
+			anyReady = true
+			if pass == 0 && st.dispatchStale(now) {
+				continue
+			}
+			select {
+			case st.in <- pkt:
+				return true, true
+			default:
+			}
+		}
+		if !anyReady {
+			return false, false
+		}
+	}
+	return false, true
 }

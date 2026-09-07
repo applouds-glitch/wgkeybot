@@ -140,6 +140,12 @@ type stream struct {
 	// keepaliveInterval.
 	kaPhase time.Duration
 
+	// activity is the liveness clock of the session currently running on this
+	// stream, published by the transport before it flips ready. The dispatcher
+	// reads it to keep chunks off a stream whose relay has gone quiet (see
+	// dispatchStale); the transports own it and replace it per session.
+	activity atomic.Pointer[streamActivity]
+
 	// wrapTx carries this stream's outbound WRAP SSRC and counter. Both are
 	// per-stream, so each stream (and each device) uses a distinct keystream
 	// even at the same counter, and its RTP sequence advances one step per
@@ -179,6 +185,16 @@ func sameRelayPeer(from net.Addr, peer *net.UDPAddr, peerStr string) bool {
 		return ua.Port == peer.Port && ua.IP.Equal(peer.IP)
 	}
 	return from.String() == peerStr
+}
+
+// dispatchStale reports whether the stream's relay has been silent for longer
+// than dispatchStaleAfter and so should be skipped by the dispatcher while a
+// fresher sibling exists (see dispatchPacket). Only ready streams are asked; a
+// session that has not published its clock yet counts as fresh — the ready
+// flag is the gate there, not this.
+func (s *stream) dispatchStale(now time.Time) bool {
+	a := s.activity.Load()
+	return a != nil && a.rxAge(now) > dispatchStaleAfter
 }
 
 const iPacketBuffMaxSize = 2048
@@ -316,6 +332,20 @@ const (
 	// case that is what was lost) while waiting. UDP loses packets; one silent
 	// drop must not read as a dead relay.
 	relayProbeInterval = 400 * time.Millisecond
+
+	// dataPlaneHandshakeTimeout bounds the DTLS and DTLS-SRTP handshakes through
+	// the relay — those transports' counterpart of relayProofTimeout. pion/dtls
+	// retransmits a flight on a doubling timer (1s, 2s, 4s, ...), so within this
+	// window the ClientHello goes out four times; a relay that swallowed all
+	// four is not going to answer a fifth. It used to be 30s, longer than
+	// TunnelManager's 25s connect budget: on the default proxy_v2 peer type a
+	// blackholed relay failed its handshake — and was demoted, see
+	// turn_server_election.go — only after the tunnel had already been torn
+	// down, so the election effectively ran only for peerType "wireguard". A
+	// healthy handshake over these relays measures 130-220ms, so the window
+	// keeps an order of magnitude of headroom for a bad mobile RTT plus a lost
+	// flight or two.
+	dataPlaneHandshakeTimeout = 8 * time.Second
 )
 
 // runNoDTLS carries WireGuard straight over the relay, optionally WRAP-obfuscated.
@@ -380,6 +410,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	context.AfterFunc(sCtx, func() { relayConn.Close() })
 
 	activity := newStreamActivity(time.Now(), s.kaPhase)
+	s.activity.Store(activity)
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -763,11 +794,15 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	}()
 
 	turnLog("[STREAM %d] DTLS handshake...", s.id)
-	dtlsConn.SetDeadline(time.Now().Add(30 * time.Second))
-	if err := dtlsConn.HandshakeContext(sCtx); err != nil {
+	// The handshake FSM watches this context between flights, so the timeout
+	// cuts a blackholed relay off at dataPlaneHandshakeTimeout wherever it is
+	// in the retransmit schedule.
+	hsCtx, hsCancel := context.WithTimeout(sCtx, dataPlaneHandshakeTimeout)
+	err = dtlsConn.HandshakeContext(hsCtx)
+	hsCancel()
+	if err != nil {
 		return fmt.Errorf("%w: DTLS handshake failed: %w", errDataPlaneHandshake, err)
 	}
-	dtlsConn.SetDeadline(time.Time{})
 	turnLog("[STREAM %d] DTLS handshake OK", s.id)
 	noteServerHandshakeOK(s.serverAddr)
 	markNetworkPathProven(s.networkGeneration)
@@ -795,10 +830,13 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		dtlsConn.SetWriteDeadline(time.Time{})
 	}
 
+	// Published before ready, so the dispatcher never judges this session by
+	// the previous one's liveness clock (see dispatchStale).
+	activity := newStreamActivity(time.Now(), s.kaPhase)
+	s.activity.Store(activity)
+
 	s.ready.Store(true)
 	s.okFunc()
-
-	activity := newStreamActivity(time.Now(), s.kaPhase)
 
 	wg.Add(3)
 
@@ -911,7 +949,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	context.AfterFunc(sCtx, func() { relayConn.Close() })
 
 	turnLog("[STREAM %d] SRTP handshake...", s.id)
-	hsCtx, hsCancel := context.WithTimeout(sCtx, 30*time.Second)
+	hsCtx, hsCancel := context.WithTimeout(sCtx, dataPlaneHandshakeTimeout)
 	srtpConn, err := srtpwrap.Client(hsCtx, relayConn, peer)
 	hsCancel()
 	if err != nil {
@@ -945,10 +983,13 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 		srtpConn.SetWriteDeadline(time.Time{})
 	}
 
+	// Published before ready, so the dispatcher never judges this session by
+	// the previous one's liveness clock (see dispatchStale).
+	activity := newStreamActivity(time.Now(), s.kaPhase)
+	s.activity.Store(activity)
+
 	s.ready.Store(true)
 	s.okFunc()
-
-	activity := newStreamActivity(time.Now(), s.kaPhase)
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -1295,11 +1336,13 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	currentTurnDone = done
 	turnMutex.Unlock()
 
-	// Startup timeout: if no stream completes its DTLS handshake within this
-	// window, the server is unreachable or DTLS is being blocked. Bail out so
+	// Startup timeout: if no stream proves its data plane within this window,
+	// the server is unreachable or the transport is being blocked. Bail out so
 	// the UI can surface a "failed to connect" state instead of spinning forever.
-	// 30s matches the inner DTLS handshake deadline — one attempt is enough to
-	// tell whether the path works; further worker retries are wasted at startup.
+	// 30s covers a handshake that times out on one relay
+	// (dataPlaneHandshakeTimeout) plus the reconnect onto the other; if neither
+	// carries a round trip in that time, further worker retries are wasted at
+	// startup.
 	const startupTimeout = 30 * time.Second
 	select {
 	case <-okChan:
