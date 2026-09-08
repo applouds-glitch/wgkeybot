@@ -32,13 +32,13 @@ func blockingAllocate() (allocate func() (net.PacketConn, error), abort func(), 
 	return allocate, abort, aborted
 }
 
-// A silent Allocate is abandoned at the deadline, not at pion's 7.8s.
+// A stuck Allocate is abandoned at the outer watchdog deadline.
 func TestAllocateWithDeadlineAbortsSilentAllocate(t *testing.T) {
 	allocate, abort, aborted := blockingAllocate()
 	start := time.Now()
 	relay, err := allocateWithDeadline(context.Background(), 50*time.Millisecond, allocate, abort)
-	if relay != nil || !errors.Is(err, errAllocateSilent) {
-		t.Fatalf("relay=%v err=%v, want errAllocateSilent", relay, err)
+	if relay != nil || !errors.Is(err, errAllocateTimeout) {
+		t.Fatalf("relay=%v err=%v, want errAllocateTimeout", relay, err)
 	}
 	if !aborted.Load() {
 		t.Fatal("abort was not called")
@@ -72,24 +72,31 @@ func TestAllocateWithDeadlinePassesPromptResult(t *testing.T) {
 		t.Fatalf("err=%v aborted=%v, want the allocate error and no abort", err, aborted.Load())
 	}
 
-	pc, _ := net.ListenPacket("udp", "127.0.0.1:0")
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
 	relay, err := allocateWithDeadline(context.Background(), time.Minute,
 		func() (net.PacketConn, error) { return pc, nil },
 		func() { aborted.Store(true) })
 	if relay != pc || err != nil || aborted.Load() {
 		t.Fatalf("relay=%v err=%v aborted=%v", relay, err, aborted.Load())
 	}
-	pc.Close()
 }
 
-// An allocation that lands after the deadline is released, not leaked.
+// A relay returned during abort is closed, stopping its local resources.
 func TestAllocateWithDeadlineClosesLateRelay(t *testing.T) {
-	pc, _ := net.ListenPacket("udp", "127.0.0.1:0")
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
 	release := make(chan struct{})
-	_, err := allocateWithDeadline(context.Background(), 20*time.Millisecond,
+	_, err = allocateWithDeadline(context.Background(), 20*time.Millisecond,
 		func() (net.PacketConn, error) { <-release; return pc, nil },
 		func() { close(release) })
-	if !errors.Is(err, errAllocateSilent) {
+	if !errors.Is(err, errAllocateTimeout) {
 		t.Fatalf("err=%v", err)
 	}
 	if _, werr := pc.WriteTo([]byte{0}, pc.LocalAddr()); werr == nil {

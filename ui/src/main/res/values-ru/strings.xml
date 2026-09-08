@@ -468,8 +468,8 @@
         <item quantity="other">Ещё %d тапа до логов</item>
     </plurals>
     <string name="wgk_update_available_title">Доступно обновление v%s</string>
-    <string name="wgk_update_available_message">Хотите скачать новую версию?</string>
-    <string name="wgk_update_now">Обновить</string>
+    <string name="wgk_update_available_message">Скачать и установить новую версию?</string>
+    <string name="wgk_update_now">Скачать и установить</string>
     <string name="wgk_update_later">Позже</string>
     <string name="wgk_upgrade_required_title">Версия устарела</string>
     <string name="wgk_upgrade_required_message">Версия приложения устарела и больше не поддерживается. Необходимо обновиться.</string>
@@ -549,4 +549,29 @@
         <item quantity="many">%d устройств</item>
         <item quantity="other">%d устройства</item>
     </plurals>
+
+    <!-- APK self-update -->
+    <string name="wgk_update_title">Обновление приложения</string>
+    <string name="wgk_update_verifying">Подготовка и проверка обновления…</string>
+    <string name="wgk_update_permission">Разрешите этому приложению устанавливать обновления. После выдачи разрешения вернитесь сюда для продолжения.</string>
+    <string name="wgk_update_allow">Разрешить установку</string>
+    <string name="wgk_update_install">Установить</string>
+    <string name="wgk_update_confirm">Подтвердите обновление в установщике Android.</string>
+    <string name="wgk_update_success">Обновление установлено.</string>
+    <string name="wgk_update_error">Не удалось обновить: %s</string>
+    <string name="wgk_update_failed">Произошла непредвиденная ошибка.</string>
+    <string name="wgk_update_install_failed">Android не смог установить обновление, либо установка была отменена. Можно повторить без повторного скачивания.</string>
+    <string name="wgk_update_cancelled">Установка отменена. Можно повторить без повторного скачивания.</string>
+    <string name="wgk_update_retry">Повторить</string>
+    <string name="wgk_update_close">Закрыть</string>
+    <string name="wgk_update_invalid_url">Сервер не предоставил корректную HTTPS-ссылку на APK.</string>
+    <string name="wgk_update_invalid_apk">Скачанный файл не является корректным APK. Нужна прямая ссылка на APK.</string>
+    <string name="wgk_update_wrong_package">Этот APK предназначен для другого приложения.</string>
+    <string name="wgk_update_old_apk">Этот APK не новее установленной версии.</string>
+    <string name="wgk_update_wrong_signature">Подпись APK несовместима с установленным приложением.</string>
+    <string name="wgk_update_too_large">Размер обновления превышает ограничение 256 МБ.</string>
+    <string name="wgk_update_incomplete">APK не загрузился или загружен не полностью. Повторите попытку.</string>
+    <string name="wgk_update_settings_unavailable">На этом устройстве не удалось открыть настройки разрешения на установку.</string>
+    <string name="wgk_update_installer_unavailable">Не удалось открыть установщик Android.</string>
+    <string name="wgk_update_store_unavailable">Не удалось открыть Google Play.</string>
 </resources>

@@ -504,8 +504,8 @@
     <string name="wgk_no_access_token">No access token. Reopen the link from the bot.</string>
     <string name="wgk_refresh_error_format">Refresh error: %s</string>
     <string name="wgk_update_available_title">Update available v%s</string>
-    <string name="wgk_update_available_message">Download the new version?</string>
-    <string name="wgk_update_now">Update</string>
+    <string name="wgk_update_available_message">Download and install the new version?</string>
+    <string name="wgk_update_now">Download and install</string>
     <string name="wgk_update_later">Later</string>
     <string name="wgk_config_updated">Config updated</string>
     <string name="wgk_config_up_to_date">Config is up to date</string>
@@ -525,4 +525,29 @@
     <string name="tunnel_connection_lost_text">The connection was lost and could not be restored.</string>
     <string name="turn_fatal_text">Could not obtain connection credentials — the captcha could not be solved or the call is no longer available. Try connecting again later.</string>
     <string name="turn_restart_failed_text">The connection could not be re-established after the network changed. Try connecting again.</string>
+
+    <!-- APK self-update -->
+    <string name="wgk_update_title">Application update</string>
+    <string name="wgk_update_verifying">Preparing and checking the update…</string>
+    <string name="wgk_update_permission">Allow this app to install updates. After granting permission, return here to continue.</string>
+    <string name="wgk_update_allow">Allow installation</string>
+    <string name="wgk_update_install">Install</string>
+    <string name="wgk_update_confirm">Confirm the update in the Android installer.</string>
+    <string name="wgk_update_success">Update installed.</string>
+    <string name="wgk_update_error">Could not update: %s</string>
+    <string name="wgk_update_failed">An unexpected error occurred.</string>
+    <string name="wgk_update_install_failed">Android could not install the update, or installation was cancelled. You can retry without downloading again.</string>
+    <string name="wgk_update_cancelled">Installation cancelled. You can retry without downloading again.</string>
+    <string name="wgk_update_retry">Retry</string>
+    <string name="wgk_update_close">Close</string>
+    <string name="wgk_update_invalid_url">The server did not provide a valid HTTPS link to the APK.</string>
+    <string name="wgk_update_invalid_apk">The downloaded file is not a valid APK. A direct APK link is required.</string>
+    <string name="wgk_update_wrong_package">This APK belongs to a different application.</string>
+    <string name="wgk_update_old_apk">This APK is not newer than the installed version.</string>
+    <string name="wgk_update_wrong_signature">The APK signature does not match the installed application.</string>
+    <string name="wgk_update_too_large">The update exceeds the 256 MB size limit.</string>
+    <string name="wgk_update_incomplete">The APK download is empty or incomplete. Please retry.</string>
+    <string name="wgk_update_settings_unavailable">This device could not open the installation permission settings.</string>
+    <string name="wgk_update_installer_unavailable">The Android installer could not be opened.</string>
+    <string name="wgk_update_store_unavailable">Google Play could not be opened.</string>
 </resources>

@@ -144,7 +144,9 @@ type stream struct {
 	// stream, published by the transport before it flips ready. The dispatcher
 	// reads it to keep chunks off a stream whose relay has gone quiet (see
 	// dispatchStale); the transports own it and replace it per session.
-	activity atomic.Pointer[streamActivity]
+	activity        atomic.Pointer[streamActivity]
+	control         atomic.Pointer[clientStreamControl]
+	feedbackEnabled bool
 
 	// wrapTx carries this stream's outbound WRAP SSRC and counter. Both are
 	// per-stream, so each stream (and each device) uses a distinct keystream
@@ -411,6 +413,8 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 
 	activity := newStreamActivity(time.Now(), s.kaPhase)
 	s.activity.Store(activity)
+	control := s.newFeedbackControl()
+	defer s.control.CompareAndSwap(control, nil)
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -489,7 +493,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				if m == 0 {
 					continue
 				}
-				if isStunKeepalive(plain[:m]) {
+				if control.receive(plain[:m]) || isStunKeepalive(plain[:m]) {
 					continue
 				}
 				a := s.peer.Load()
@@ -508,7 +512,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				activity.noteRx(time.Now())
 				markNetworkPathProven(s.networkGeneration)
 				proven()
-				if isStunKeepalive(wire[:n]) {
+				if control.receive(wire[:n]) || isStunKeepalive(wire[:n]) {
 					continue
 				}
 				a := s.peer.Load()
@@ -536,7 +540,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		s.runKeepalive(sCtx, activity, reportErr, func(tick int) error {
 			var sendErr error
 			if hasWrap {
-				if enc, err := wrapPacket(s.wrapKey, stunBindingIndication, s.wrapTx); err == nil {
+				if enc, err := wrapPacket(s.wrapKey, control.keepalive(), s.wrapTx); err == nil {
 					_, sendErr = relayConn.WriteTo(enc, peer)
 				} else {
 					sendErr = err
@@ -547,7 +551,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 					}
 				}
 			} else {
-				_, sendErr = relayConn.WriteTo(stunBindingIndication, peer)
+				_, sendErr = relayConn.WriteTo(control.keepalive(), peer)
 			}
 			if sessionHS != nil {
 				if hasWrap {
@@ -594,6 +598,9 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	}
 
 	s.ready.Store(true)
+	if control != nil {
+		s.enqueueControl(control.keepalive())
+	}
 	s.okFunc()
 	wg.Wait()
 	select {
@@ -834,8 +841,13 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// the previous one's liveness clock (see dispatchStale).
 	activity := newStreamActivity(time.Now(), s.kaPhase)
 	s.activity.Store(activity)
+	control := s.newFeedbackControl()
+	defer s.control.CompareAndSwap(control, nil)
 
 	s.ready.Store(true)
+	if control != nil {
+		s.enqueueControl(control.keepalive())
+	}
 	s.okFunc()
 
 	wg.Add(3)
@@ -876,7 +888,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			// is valid inbound liveness evidence.
 			activity.noteRx(time.Now())
 			markNetworkPathProven(s.networkGeneration)
-			if isStunKeepalive(buf[:n]) {
+			if control.receive(buf[:n]) || isStunKeepalive(buf[:n]) {
 				continue
 			}
 			if n == 0 {
@@ -904,7 +916,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		defer wg.Done()
 		defer sCancel()
 		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
-			_, err := dtlsConn.Write(stunBindingIndication)
+			_, err := dtlsConn.Write(control.keepalive())
 			return err
 		})
 	}()
@@ -987,8 +999,13 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// the previous one's liveness clock (see dispatchStale).
 	activity := newStreamActivity(time.Now(), s.kaPhase)
 	s.activity.Store(activity)
+	control := s.newFeedbackControl()
+	defer s.control.CompareAndSwap(control, nil)
 
 	s.ready.Store(true)
+	if control != nil {
+		s.enqueueControl(control.keepalive())
+	}
 	s.okFunc()
 
 	var wg sync.WaitGroup
@@ -1030,7 +1047,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 			// srtpConn.Read has already authenticated and decrypted this packet.
 			activity.noteRx(time.Now())
 			markNetworkPathProven(s.networkGeneration)
-			if isStunKeepalive(buf[:n]) {
+			if control.receive(buf[:n]) || isStunKeepalive(buf[:n]) {
 				continue
 			}
 			if n == 0 {
@@ -1057,7 +1074,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 		defer wg.Done()
 		defer sCancel()
 		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
-			_, err := srtpConn.Write(stunBindingIndication)
+			_, err := srtpConn.Write(control.keepalive())
 			return err
 		})
 	}()
