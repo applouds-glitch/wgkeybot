@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -262,8 +263,7 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 	}
 
 	if err := client.Listen(); err != nil {
-		client.Close()
-		raw.Close()
+		closeFailedAllocation(client, raw)
 		return nil, nil, nil, 0, nil, fmt.Errorf("TURN listen: %w", err)
 	}
 
@@ -272,19 +272,16 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 	select {
 	case allocSemaphore <- struct{}{}:
 	case <-ctx.Done():
-		client.Close()
-		raw.Close()
+		closeFailedAllocation(client, raw)
 		return nil, nil, nil, 0, nil, ctx.Err()
 	}
 	allocStart := time.Now()
-	relay, err := allocateWithDeadline(ctx, allocateSilenceTimeout, client.Allocate, func() {
-		client.Close()
-		raw.Close()
+	relay, err := allocateWithDeadline(ctx, allocateHandshakeTimeout, client.Allocate, func() {
+		closeFailedAllocation(client, raw)
 	})
 	<-allocSemaphore
 	if err != nil {
-		client.Close()
-		raw.Close()
+		closeFailedAllocation(client, raw)
 		// Only a genuine refusal counts against the server. A losing failover
 		// candidate — or any dial during a teardown — fails because we cancelled
 		// its context, which says nothing about the host.
@@ -297,33 +294,32 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 	return client, raw, relay, dialed + time.Since(allocStart), perm, nil
 }
 
-// allocateSilenceTimeout bounds one Allocate. pion retransmits on its own
-// schedule (0.2/0.4/0.8/1.6/1.6/1.6/1.6s — 7.8s to "all retransmissions
-// failed"), which is built for a lossy path where the next copy may get
-// through. The failure seen in the field is not loss: on the same relay, in the
-// same second, one socket's Allocate got no answer to any of its seven copies
-// while its siblings' were answered in one round trip — a 5-tuple the server
-// (or a balancer in front of it) had blackholed, and retransmitting on it buys
-// nothing. Meanwhile that socket held one of the three allocSemaphore slots
-// for the whole 7.8s, queueing the healthy dials behind it: with two blackholed
-// first, streams 8 and 9 waited 5.5s for a slot, and a stream whose two
-// servers both drew a dead tuple spent 16s before its first retry.
-//
-// A normal Allocate is two round trips (401 challenge, then the authenticated
-// request), well under a second even on a slow mobile path; 2s still leaves
-// three of pion's retransmits for genuine loss. Same figure as
-// relayProofTimeout, the data-plane verdict: the control plane is allowed no
-// longer than the data plane to prove the path.
-const allocateSilenceTimeout = 2 * time.Second
+// allocateHandshakeTimeout is a watchdog for blocked transport operations.
+// Pion already bounds each of Allocate's two transactions (401 challenge, then
+// authenticated request) to about 7.8s of retransmissions. Let both finish,
+// including scheduler headroom. A 2s total budget cut off answering servers on
+// slow or lossy links, sometimes after they had created an allocation whose
+// response we could no longer receive or use to release it.
+// Silent servers still fail on Pion's own timer; cancellation need not wait
+// for either timer. Keep semaphore queue time out of this budget and the RTT.
+const allocateHandshakeTimeout = 20 * time.Second
 
-var errAllocateSilent = errors.New("no answer to Allocate")
+var errAllocateTimeout = errors.New("Allocate timed out")
+
+// closeFailedAllocation aborts a pending Allocate. Pion holds mutexTrMap while
+// retransmitting and Client.Close needs that same mutex: close the transport
+// first so a blocked WriteTo cannot keep Close (and allocSemaphore) stuck.
+// Established sessions close their relay first to send Refresh(lifetime=0).
+func closeFailedAllocation(client *turn.Client, transport io.Closer) {
+	transport.Close()
+	client.Close()
+}
 
 // allocateWithDeadline runs allocate, giving up after timeout or when ctx is
 // cancelled. abort must make a pending allocate return promptly — for pion
-// that is Client.Close (fails the transaction being waited on) plus closing
-// the conn (fails a retransmit or a follow-up transaction that was racing the
-// close). A relay that allocate hands back after the deadline is closed here,
-// so the server-side allocation is released rather than leaked.
+// that is closeFailedAllocation. A relay handed back while abort races with
+// Allocate is closed to stop its local timers. Once the transport is closed,
+// server-side release is no longer guaranteed; its lease may need to expire.
 func allocateWithDeadline(ctx context.Context, timeout time.Duration, allocate func() (net.PacketConn, error), abort func()) (net.PacketConn, error) {
 	type result struct {
 		relay net.PacketConn
@@ -351,7 +347,7 @@ func allocateWithDeadline(ctx context.Context, timeout time.Duration, allocate f
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return nil, fmt.Errorf("%w within %v", errAllocateSilent, timeout)
+	return nil, fmt.Errorf("%w after %v", errAllocateTimeout, timeout)
 }
 
 // runSession runs the relay session on the connected server and owns its

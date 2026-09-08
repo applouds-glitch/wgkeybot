@@ -59,6 +59,7 @@ import com.wireguard.android.activity.AppSettingsActivity
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.turn.TurnConfigProcessor
 import com.wireguard.android.util.TokenFormat
+import com.wireguard.android.updater.UpdateActivity
 import com.wireguard.android.widget.TvTokenKeyboard
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1273,7 +1274,7 @@ class TunnelListFragment : BaseFragment() {
             .setTitle(getString(R.string.wgk_update_available_title, latestVersion))
             .setMessage(getString(R.string.wgk_update_available_message))
             .setPositiveButton(getString(R.string.wgk_update_now)) { _, _ ->
-                downloadUrl?.let { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) }
+                UpdateActivity.open(requireContext(), downloadUrl)
             }
             .setNegativeButton(getString(R.string.wgk_update_later), null)
             .show()
@@ -1284,7 +1285,7 @@ class TunnelListFragment : BaseFragment() {
             .setTitle(getString(R.string.wgk_upgrade_required_title))
             .setMessage(getString(R.string.wgk_upgrade_required_message))
             .setPositiveButton(getString(R.string.wgk_upgrade_required_action)) { _, _ ->
-                downloadUrl?.let { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) }
+                UpdateActivity.open(requireContext(), downloadUrl)
             }
             .setCancelable(false)
             .show()
