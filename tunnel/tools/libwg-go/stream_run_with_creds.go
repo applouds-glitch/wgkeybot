@@ -161,7 +161,13 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			lastErr = err
 			errCount++
 			if !fannedOut {
-				// The assigned server failed: try the failover candidates.
+				// The assigned server failed: try the failover candidates. Say
+				// why before moving on — a failover that succeeds swallows this
+				// error otherwise (only "all servers failed" ever surfaces it),
+				// and an elected server refusing Allocate on every reconnect was
+				// invisible in the log except as a second Dial line one RTT later.
+				turnLog("[STREAM %d] %s failed (%v) — fanning out to %v (group %d)",
+					s.id, addrs[0], err, addrs[1:], cfg.GroupID)
 				fanOut()
 			} else if errCount == launchedCount {
 				return fmt.Errorf("TURN allocate: all %d servers failed: %w", len(addrs), lastErr)
