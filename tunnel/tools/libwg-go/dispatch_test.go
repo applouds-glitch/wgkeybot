@@ -6,6 +6,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,5 +145,127 @@ func TestDataPlaneHandshakeTimeoutFitsConnectBudget(t *testing.T) {
 	}
 	if dataPlaneHandshakeTimeout <= 7*time.Second {
 		t.Fatalf("dataPlaneHandshakeTimeout %v cuts off the fourth DTLS flight at 7s", dataPlaneHandshakeTimeout)
+	}
+}
+
+// Under load the chunk rotates by count: chunkSize packets on one stream, then
+// the next, so a burst keeps its order.
+func TestChunkRotorRotatesByCount(t *testing.T) {
+	now := time.Now()
+	r := newChunkRotor(3)
+	for i := 0; i < chunkSize; i++ {
+		if got := r.start(now); got != 0 {
+			t.Fatalf("packet %d: start=%d, want 0 until the chunk fills", i, got)
+		}
+		r.sent(now)
+	}
+	if got := r.start(now); got != 1 {
+		t.Fatalf("after %d packets start=%d, want 1", chunkSize, got)
+	}
+}
+
+// At idle the count never fills, so the chunk closes by age instead: packets
+// chunkMaxAge apart — a WireGuard handshake retry series — each start on a new
+// stream rather than piling onto whichever one the last burst ended on.
+func TestChunkRotorRotatesIdleChunkByAge(t *testing.T) {
+	now := time.Now()
+	r := newChunkRotor(3)
+	r.sent(r.startAt(now))
+	if got := r.start(now.Add(chunkMaxAge / 2)); got != 0 {
+		t.Fatalf("young chunk rotated: start=%d, want 0", got)
+	}
+	if got := r.start(now.Add(chunkMaxAge)); got != 1 {
+		t.Fatalf("idle chunk kept: start=%d, want 1", got)
+	}
+	// An empty chunk has no age: nothing to close, the slot stays.
+	if got := r.start(now.Add(10 * chunkMaxAge)); got != 1 {
+		t.Fatalf("empty chunk rotated: start=%d, want 1", got)
+	}
+}
+
+// startAt is start followed by returning now, so a test can write
+// r.sent(r.startAt(now)) for "dispatch one packet at now".
+func (r *chunkRotor) startAt(now time.Time) time.Time {
+	r.start(now)
+	return now
+}
+
+// One stream going quiet is logged once, on the way in and on the way out —
+// not on every packet in between.
+func TestStaleWatchLogsTransitionsOnce(t *testing.T) {
+	now := time.Now()
+	quiet := dispatchStream(0, true, now, 8)
+	fresh := dispatchStream(1, true, now, 8)
+	streams := []*stream{quiet, fresh}
+	w := newStaleWatch(len(streams))
+
+	if lines := w.observe(streams, now); len(lines) != 0 {
+		t.Fatalf("fresh streams produced %q", lines)
+	}
+
+	later := now.Add(dispatchStaleAfter + time.Second)
+	fresh.activity.Load().noteRx(later)
+	lines := w.observe(streams, later)
+	if len(lines) != 1 || !strings.Contains(lines[0], "stream 0 silent") {
+		t.Fatalf("stale transition: got %q", lines)
+	}
+	if lines := w.observe(streams, later.Add(staleWatchInterval)); len(lines) != 0 {
+		t.Fatalf("steady stale state logged again: %q", lines)
+	}
+
+	back := later.Add(2 * staleWatchInterval)
+	quiet.activity.Load().noteRx(back)
+	fresh.activity.Load().noteRx(back)
+	lines = w.observe(streams, back)
+	if len(lines) != 1 || !strings.Contains(lines[0], "stream 0 heard its relay again") {
+		t.Fatalf("recovery transition: got %q", lines)
+	}
+}
+
+// Every ready stream silent at once is the uplink, and gets its own line so the
+// log distinguishes it from one dead allocation.
+func TestStaleWatchReportsWholeUplink(t *testing.T) {
+	now := time.Now()
+	a := dispatchStream(0, true, now, 8)
+	b := dispatchStream(1, true, now, 8)
+	down := dispatchStream(2, false, now, 8) // not ready: never counted
+	streams := []*stream{a, b, down}
+	w := newStaleWatch(len(streams))
+	w.observe(streams, now)
+
+	dark := now.Add(dispatchStaleAfter + time.Second)
+	lines := w.observe(streams, dark)
+	if len(lines) != 3 || !strings.Contains(lines[2], "every ready stream (2) is silent") {
+		t.Fatalf("blackout: got %q", lines)
+	}
+
+	// One stream hearing echoes again ends the blackout verdict even though the
+	// other is still stale.
+	partial := dark.Add(staleWatchInterval)
+	a.activity.Load().noteRx(partial)
+	lines = w.observe(streams, partial)
+	if len(lines) != 2 || !strings.Contains(lines[1], "echoes are back on 1 of 2") {
+		t.Fatalf("partial recovery: got %q", lines)
+	}
+}
+
+// Scans are rate-limited; a transition that lands between two scans is still
+// reported on the next one, just not sooner.
+func TestStaleWatchRateLimitsScans(t *testing.T) {
+	now := time.Now()
+	s := dispatchStream(0, true, now.Add(-dispatchStaleAfter-time.Second), 8)
+	streams := []*stream{s}
+	w := newStaleWatch(1)
+
+	first := w.observe(streams, now)
+	if len(first) != 2 {
+		t.Fatalf("first scan: got %q", first)
+	}
+	s.activity.Load().noteRx(now)
+	if lines := w.observe(streams, now.Add(staleWatchInterval/2)); len(lines) != 0 {
+		t.Fatalf("scanned inside the interval: %q", lines)
+	}
+	if lines := w.observe(streams, now.Add(staleWatchInterval)); len(lines) != 2 {
+		t.Fatalf("next scan missed the recovery: %q", lines)
 	}
 }

@@ -203,13 +203,13 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 		close(done)
 	}()
 
-	// Chunked round-robin dispatcher: sends eight consecutive packets through
-	// the same ready stream before rotating. This avoids per-packet path-quality
-	// accounting while preserving packet order within each chunk.
+	// Chunked round-robin dispatcher: sends chunkSize consecutive packets through
+	// the same ready stream before rotating (or sooner once the chunk goes idle,
+	// see chunkRotor). This avoids per-packet path-quality accounting while
+	// preserving packet order within each chunk.
 	go func() {
-		const chunkSize = 8
-		lastUsed := 0
-		packetsInChunk := 0
+		rotor := newChunkRotor(totalStreams)
+		stale := newStaleWatch(totalStreams)
 		// Broadcast the WG source addr to every stream so each stream's RX
 		// can forward responses back to WG even if the dispatcher never
 		// picked it for TX. (The server's backendLoop round-robins peer
@@ -249,18 +249,17 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 				}
 			}
 
-			sent, anyReady := dispatchPacket(allStreams, lastUsed, time.Now(), b[:nRead])
+			now := time.Now()
+			for _, line := range stale.observe(allStreams, now) {
+				turnLog("%s", line)
+			}
+			sent, anyReady := dispatchPacket(allStreams, rotor.start(now), now, b[:nRead])
 			if !sent {
 				packetPool.Put(b[:cap(b)])
 				noteDispatchDrop(anyReady)
 				continue
 			}
-
-			packetsInChunk++
-			if packetsInChunk >= chunkSize {
-				lastUsed = (lastUsed + 1) % totalStreams
-				packetsInChunk = 0
-			}
+			rotor.sent(now)
 		}
 	}()
 
