@@ -17,6 +17,7 @@ import androidx.core.view.isVisible
 import com.google.android.material.button.MaterialButton
 import com.wireguard.android.R
 import com.wireguard.android.util.TokenFormat
+import com.wireguard.android.util.ConnectionLink
 
 /**
  * D-pad keyboard for entering connection tokens on Android TV.
@@ -38,6 +39,7 @@ class TvTokenKeyboard(
     private val connectKey: MaterialButton
     private val gridKeys = ArrayList<MaterialButton>(TokenFormat.KEYBOARD_CHARS.length)
     private val token = StringBuilder()
+    private var pastedConnectionLink: String? = null
     private var cursor: Int = 0
     private var upperCase: Boolean = false
 
@@ -196,6 +198,7 @@ class TvTokenKeyboard(
     // ── Editing operations ─────────────────────────────────────────────────────
 
     private fun appendChar(c: Char) {
+        if (pastedConnectionLink != null) clear()
         if (token.length >= TokenFormat.MAX_LENGTH) return
         if (!TokenFormat.isTokenChar(c)) return
         token.insert(cursor, c)
@@ -204,6 +207,7 @@ class TvTokenKeyboard(
     }
 
     private fun backspace() {
+        if (pastedConnectionLink != null) { clear(); return }
         if (cursor == 0) return
         token.deleteCharAt(cursor - 1)
         cursor--
@@ -211,6 +215,7 @@ class TvTokenKeyboard(
     }
 
     private fun clear() {
+        pastedConnectionLink = null
         token.clear()
         cursor = 0
         render()
@@ -236,7 +241,14 @@ class TvTokenKeyboard(
         // Accepts a bare token, a deeplink or a bot link; dashes are stripped off
         // a UUID so the display keeps grouping it, and case is left alone because
         // anything else may be case-sensitive.
-        val pasted = TokenFormat.extract(raw) ?: return
+        val pasted = ConnectionLink.extractInput(raw) ?: return
+        if (pasted.startsWith("wgkeybot://")) {
+            clear()
+            pastedConnectionLink = pasted
+            render()
+            return
+        }
+        pastedConnectionLink = null
         val dashless = pasted.replace("-", "")
         token.clear()
         token.append(if (TokenFormat.isRawUuidHex(dashless)) dashless else pasted)
@@ -250,6 +262,7 @@ class TvTokenKeyboard(
     }
 
     private fun connect() {
+        pastedConnectionLink?.let { onConnect(it); return }
         val candidate = TokenFormat.fromKeyboard(token.toString())
         if (TokenFormat.isValid(candidate)) onConnect(candidate)
     }
@@ -266,9 +279,10 @@ class TvTokenKeyboard(
     }
 
     private fun render() {
-        display.text = TokenFormat.display(token.toString(), cursor)
+        display.text = if (pastedConnectionLink != null) context.getString(R.string.wgk_connection_link_ready)
+        else TokenFormat.display(token.toString(), cursor)
         // A half-typed token would otherwise look like a dead Connect key.
-        connectKey.isEnabled = TokenFormat.isValid(TokenFormat.fromKeyboard(token.toString()))
+        connectKey.isEnabled = pastedConnectionLink != null || TokenFormat.isValid(TokenFormat.fromKeyboard(token.toString()))
     }
 
     companion object {

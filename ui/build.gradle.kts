@@ -93,6 +93,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     coreLibraryDesugaring(libs.desugarJdkLibs)
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
 }
 
 tasks.withType<JavaCompile>().configureEach {

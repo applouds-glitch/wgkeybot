@@ -352,15 +352,15 @@
     <!-- WGKeyBot UI strings -->
     <string name="wgk_connect_action">Подключиться</string>
     <string name="wgk_no_key_title">Подключите WGKeyBot</string>
-    <string name="wgk_no_key_subtitle">Получите доступ в Telegram или введите токен подключения, если он у вас уже есть</string>
+    <string name="wgk_no_key_subtitle">Получите доступ в Telegram или вставьте токен либо ссылку подключения</string>
     <string name="wgk_no_key_action">Открыть Telegram-бота</string>
-    <string name="wgk_or_divider">или введите токен</string>
-    <string name="wgk_token_hint">Токен подключения</string>
+    <string name="wgk_or_divider">или вставьте токен или ссылку</string>
+    <string name="wgk_token_hint">Токен или ссылка подключения</string>
     <string name="wgk_paste_cd">Вставить из буфера</string>
-    <string name="wgk_pasted_from_clipboard">Токен вставлен из буфера обмена</string>
-    <string name="wgk_token_error_empty">Введите токен</string>
-    <string name="wgk_token_error_format">Это не похоже на токен подключения</string>
-    <string name="wgk_clipboard_no_token">В буфере обмена нет токена</string>
+    <string name="wgk_pasted_from_clipboard">Данные подключения вставлены из буфера</string>
+    <string name="wgk_token_error_empty">Введите токен или ссылку подключения</string>
+    <string name="wgk_token_error_format">Это не похоже на токен или ссылку подключения</string>
+    <string name="wgk_clipboard_no_token">В буфере нет токена или ссылки подключения</string>
     <string name="wgk_menu_cd">Меню</string>
     <string name="wgk_profile_name">Конфигурация</string>
     <string name="wgk_profile_loaded_at">Загружено в %1$s</string>
@@ -574,4 +574,6 @@
     <string name="wgk_update_settings_unavailable">На этом устройстве не удалось открыть настройки разрешения на установку.</string>
     <string name="wgk_update_installer_unavailable">Не удалось открыть установщик Android.</string>
     <string name="wgk_update_store_unavailable">Не удалось открыть Google Play.</string>
+    <string name="wgk_connection_import_error">Не удалось импортировать подключение. Получите новую ссылку в боте и попробуйте снова.</string>
+    <string name="wgk_connection_link_ready">Ссылка подключения вставлена</string>
 </resources>

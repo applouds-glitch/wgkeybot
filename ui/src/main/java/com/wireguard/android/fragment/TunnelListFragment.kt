@@ -47,6 +47,7 @@ import com.wireguard.android.util.ApiClient
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.ErrorMessages
 import com.wireguard.android.viewmodel.ConfigProxy
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -58,7 +59,8 @@ import androidx.security.crypto.MasterKey
 import com.wireguard.android.activity.AppSettingsActivity
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.turn.TurnConfigProcessor
-import com.wireguard.android.util.TokenFormat
+import com.wireguard.android.util.ConnectionImport
+import com.wireguard.android.util.ConnectionLink
 import com.wireguard.android.updater.UpdateActivity
 import com.wireguard.android.widget.TvTokenKeyboard
 import java.text.SimpleDateFormat
@@ -491,7 +493,7 @@ class TunnelListFragment : BaseFragment() {
             b.wgkConnectWithTokenBtn.isVisible = false
             if (tvKeyboard == null) {
                 tvKeyboard = TvTokenKeyboard(requireContext()) { token ->
-                    initWithToken(token)
+                    initConnection(token)
                 }
             }
             tvKeyboard?.setVisible(true)
@@ -504,19 +506,15 @@ class TunnelListFragment : BaseFragment() {
             b.wgkConnectWithTokenBtn.isVisible = true
             tvKeyboard?.detach()
             b.wgkPasteBtn.setOnClickListener {
-                pasteTokenFromClipboard(b)
+                pasteConnectionFromClipboard(b)
             }
             b.wgkConnectWithTokenBtn.setOnClickListener {
-                val token = TokenFormat.normalize(b.wgkTokenInput.text?.toString() ?: "")
-                if (token.isEmpty()) {
+                val raw = b.wgkTokenInput.text?.toString().orEmpty()
+                if (raw.isBlank()) {
                     showSnackbar(getString(R.string.wgk_token_error_empty))
                     return@setOnClickListener
                 }
-                if (!TokenFormat.isValid(token)) {
-                    showSnackbar(getString(R.string.wgk_token_error_format))
-                    return@setOnClickListener
-                }
-                initWithToken(token)
+                initConnection(raw)
             }
         }
 
@@ -532,21 +530,16 @@ class TunnelListFragment : BaseFragment() {
     fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean =
         tvKeyboard?.takeIf { it.rootView.isVisible }?.handleKey(event) == true
 
-    private fun initWithToken(token: String) {
+    private fun initConnection(token: String) {
         val b = binding ?: return
-        val auth = AuthStore.getInstance(requireContext())
         b.wgkConnectWithTokenBtn.isEnabled = false
         lifecycleScope.launch {
             try {
-                val resp = withContext(Dispatchers.IO) { ApiClient.init(token) }
-                auth.saveAccessToken(resp.accessToken)
-                auth.saveSubscriptionExpiresAt(resp.subscriptionExpiresAt)
-                val config = com.wireguard.config.Config.parse(resp.config.byteInputStream())
-                applyConfig(config)
-            } catch (_: ApiClient.InvalidTokenException) {
-                showSnackbar(getString(R.string.wgk_token_error_format))
+                val prepared = withContext(Dispatchers.IO) { ConnectionImport.prepare(token) }
+                applyConnection(prepared)
             } catch (e: Exception) {
-                showSnackbar(getString(R.string.wgk_error_format, e.message ?: ""))
+                if (e is CancellationException) throw e
+                showSnackbar(getString(R.string.wgk_connection_import_error))
             } finally {
                 b.wgkConnectWithTokenBtn.isEnabled = true
             }
@@ -1194,6 +1187,13 @@ class TunnelListFragment : BaseFragment() {
         }
     }
 
+    /** Every entry point uses the same validated bootstrap and refresh state. */
+    suspend fun applyConnection(prepared: ConnectionImport.Prepared) {
+        vm.pendingAutoRefresh = false
+        ConnectionImport.saveSession(AuthStore.getInstance(requireContext()), prepared)
+        applyConfig(prepared.config)
+    }
+
     // Shared entry point used by both the refresh button and deeplink import.
     suspend fun applyConfig(
         config: com.wireguard.config.Config,
@@ -1459,16 +1459,16 @@ class TunnelListFragment : BaseFragment() {
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
-    private fun clipboardToken(): String? {
+    private fun clipboardConnection(): String? {
         val cm = requireContext().getSystemService(android.content.ClipboardManager::class.java)
             ?: return null
         val text = cm.primaryClip?.getItemAt(0)?.coerceToText(requireContext())
             ?.toString() ?: return null
-        return TokenFormat.extract(text)
+        return ConnectionLink.extractInput(text)
     }
 
-    private fun pasteTokenFromClipboard(b: TunnelListFragmentBinding) {
-        val token = clipboardToken()
+    private fun pasteConnectionFromClipboard(b: TunnelListFragmentBinding) {
+        val token = clipboardConnection()
         if (token != null) {
             b.wgkTokenInput.setText(token)
             b.wgkTokenInput.setSelection(token.length)
