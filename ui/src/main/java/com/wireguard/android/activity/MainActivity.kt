@@ -36,10 +36,9 @@ import com.wireguard.android.fragment.TunnelDetailFragment
 import com.wireguard.android.fragment.TunnelListFragment
 import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.turn.ConnectionMode
-import com.wireguard.android.util.ApiClient
+import com.wireguard.android.util.ConnectionImport
 import com.wireguard.android.util.AuthStore
-import com.wireguard.android.util.TokenFormat
-import com.wireguard.config.Config
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -179,49 +178,28 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         val uri = intent.data ?: return
         if (uri.scheme != "wgkeybot" || uri.host != "config") return
 
-        val rawToken = uri.getQueryParameter("token")?.takeIf { it.isNotBlank() } ?: run {
-            Toast.makeText(this, getString(R.string.wgk_deeplink_missing_token), Toast.LENGTH_SHORT).show()
-            return
-        }
-        val oneTimeToken = TokenFormat.extract(rawToken) ?: run {
-            Toast.makeText(this, getString(R.string.wgk_token_error_format), Toast.LENGTH_SHORT).show()
-            return
-        }
-        // Consume the intent so a configuration change (rotation) doesn't replay
-        // the same one-time token, which would fail server-side.
+        val connectionInput = uri.toString()
+        // Consume before importing, including offline links, so rotation cannot replay.
         intent.data = null
-
-        val auth = AuthStore.getInstance(this)
 
         lifecycleScope.launch {
             try {
-                val resp = withContext(Dispatchers.IO) { ApiClient.init(oneTimeToken) }
-
-                auth.saveAccessToken(resp.accessToken)
-                auth.saveSubscriptionExpiresAt(resp.subscriptionExpiresAt)
-
-                if (!resp.config.contains("[Interface]") || !resp.config.contains("[Peer]")) {
-                    throw IllegalArgumentException(getString(R.string.wgk_server_bad_config))
+                val prepared = withContext(Dispatchers.IO) {
+                    ConnectionImport.prepare(connectionInput)
                 }
-
-                val config = Config.parse(resp.config.byteInputStream())
-
-                // Pop detail/dialog screens so the list fragment is on top —
-                // otherwise findFragmentById would return the detail fragment and
-                // we'd drop the new config silently.
                 if (supportFragmentManager.backStackEntryCount > 0) {
                     supportFragmentManager.popBackStackImmediate(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
                     selectedTunnel = null
                 }
+                // TV installs the list asynchronously on cold start.
+                supportFragmentManager.executePendingTransactions()
                 val listFragment = supportFragmentManager.fragments
                     .filterIsInstance<TunnelListFragment>()
-                    .firstOrNull()
-                if (listFragment != null) {
-                    listFragment.applyConfig(config)
-                    listFragment.refreshState()
-                }
+                    .firstOrNull() ?: throw IllegalStateException()
+                listFragment.applyConnection(prepared)
             } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, getString(R.string.wgk_auth_error_format, e.message ?: ""), Toast.LENGTH_LONG).show()
+                if (e is CancellationException) throw e
+                Toast.makeText(this@MainActivity, R.string.wgk_connection_import_error, Toast.LENGTH_LONG).show()
             }
         }
     }

@@ -33,6 +33,15 @@ class AuthStore private constructor(context: Context) {
     fun saveSubscriptionExpiresAt(date: String) =
         prefs.edit().putString(KEY_EXPIRES_AT, date).apply()
 
+    /** Commit the matching config session together; bootstrap needs no API refresh. */
+    fun saveConnection(token: String, expiresAt: String, configHash: String) =
+        prefs.edit()
+            .putString(KEY_ACCESS_TOKEN, token)
+            .putString(KEY_EXPIRES_AT, expiresAt)
+            .putString(KEY_LAST_CONFIG_HASH, configHash)
+            .putLong(KEY_LAST_REFRESH, System.currentTimeMillis())
+            .apply()
+
     fun hasAuth(): Boolean = getAccessToken() != null
 
     fun isSubscriptionExpired(): Boolean {

@@ -112,15 +112,15 @@
     <string name="wgk_expired_title">Subscription expired</string>
     <string name="wgk_expired_subtitle">Contact the bot to renew your subscription</string>
     <string name="wgk_check_subscription_action">Check payment</string>
-    <string name="wgk_token_hint">Connection token</string>
-    <string name="wgk_token_error_empty">Enter a token</string>
-    <string name="wgk_token_error_format">This does not look like a connection token</string>
+    <string name="wgk_token_hint">Connection token or link</string>
+    <string name="wgk_token_error_empty">Enter a token or connection link</string>
+    <string name="wgk_token_error_format">This does not look like a connection token or link</string>
     <string name="wgk_tv_kb_case">Letter case</string>
     <string name="wgk_paste_cd">Paste from clipboard</string>
-    <string name="wgk_pasted_from_clipboard">Token pasted from clipboard</string>
-    <string name="wgk_clipboard_no_token">No token in clipboard</string>
+    <string name="wgk_pasted_from_clipboard">Connection details pasted from clipboard</string>
+    <string name="wgk_clipboard_no_token">No connection token or link in clipboard</string>
     <string name="wgk_connect_action">Connect</string>
-    <string name="wgk_or_divider">or enter a token</string>
+    <string name="wgk_or_divider">or paste a token or connection link</string>
     <string name="wgk_connect_cd_connect">Connect VPN</string>
     <string name="wgk_connect_cd_disconnect">Disconnect VPN</string>
     <string name="wgk_connect_cd_cancel">Cancel connection</string>
@@ -186,4 +186,6 @@
     <string name="wgk_update_settings_unavailable">This device could not open the installation permission settings.</string>
     <string name="wgk_update_installer_unavailable">The Android installer could not be opened.</string>
     <string name="wgk_update_store_unavailable">Google Play could not be opened.</string>
+    <string name="wgk_connection_import_error">Could not import the connection. Get a new link from the bot and try again.</string>
+    <string name="wgk_connection_link_ready">Connection link pasted</string>
 </resources>
