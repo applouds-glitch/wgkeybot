@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pion/stun/v3"
 	"github.com/pion/turn/v5"
 )
 
@@ -221,6 +222,29 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 // candidates simply drop theirs — a permWatch owns no goroutine, so an unwatched
 // one costs nothing.
 func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cfg WorkerGroupConfig) (*turn.Client, net.Conn, net.PacketConn, time.Duration, *permWatch, error) {
+	usedLocal := make(map[string]bool)
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, 0, nil, err
+		}
+		if serverAllocationMismatchPaused(addr, time.Now()) {
+			return nil, nil, nil, 0, nil, fmt.Errorf("TURN Allocate 437 retry pause on %s", addr)
+		}
+		client, raw, relay, rtt, perm, err := dialAndAllocateOnce(ctx, s, user, pass, addr, cfg, usedLocal)
+		code, _ := turnErrorCode(err)
+		if ctx.Err() != nil || code != stun.CodeAllocMismatch {
+			return client, raw, relay, rtt, perm, err
+		}
+		if attempt == 3 {
+			noteServerAllocationMismatch(addr, time.Now())
+			turnLog("[STREAM %d] TURN Allocate 437 on %s after 3 local addresses — pausing new allocations for 2m", s.id, addr)
+			return nil, nil, nil, 0, nil, err
+		}
+		turnLog("[STREAM %d] TURN Allocate 437 on %s (attempt %d/3) — retrying with a new local port, keeping credentials", s.id, addr, attempt)
+	}
+}
+
+func dialAndAllocateOnce(ctx context.Context, s *stream, user, pass, addr string, cfg WorkerGroupConfig, usedLocal map[string]bool) (*turn.Client, net.Conn, net.PacketConn, time.Duration, *permWatch, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, nil, 0, nil, err
 	}
@@ -238,28 +262,45 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 
 	var turnConn net.PacketConn
 	var raw net.Conn
+	network := "tcp"
 	if cfg.UseUDP {
-		c, err := dialer.DialContext(ctx, "udp", addr)
-		if err != nil {
-			return nil, nil, nil, 0, nil, fmt.Errorf("TURN UDP dial: %w", err)
-		}
-		raw = c
-		turnConn = &connectedUDPConn{c.(*net.UDPConn)}
-	} else {
-		c, err := dialer.DialContext(ctx, "tcp", addr)
-		if err != nil {
-			return nil, nil, nil, 0, nil, fmt.Errorf("TURN TCP dial: %w", err)
-		}
-		raw = c
-		turnConn = turn.NewSTUNConn(c)
+		network = "udp"
 	}
+	// The OS may recycle a recently closed UDP port. Do not resend Allocate on
+	// a local address already rejected in this retry sequence (RFC 8656 7.4).
+	for dial := 0; dial < 4; dial++ {
+		c, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, nil, nil, 0, nil, fmt.Errorf("TURN %s dial: %w", network, err)
+		}
+		local := c.LocalAddr().String()
+		if usedLocal[local] {
+			c.Close()
+			continue
+		}
+		usedLocal[local] = true
+		raw = c
+		break
+	}
+	if raw == nil {
+		return nil, nil, nil, 0, nil, fmt.Errorf("TURN %s dial: could not select a fresh local address", network)
+	}
+	if cfg.UseUDP {
+		turnConn = &connectedUDPConn{raw.(*net.UDPConn)}
+	} else {
+		turnConn = turn.NewSTUNConn(raw)
+	}
+	responses := &allocateResponseConn{PacketConn: turnConn, remote: raw.RemoteAddr().String()}
 
+	// This socket is only used for TURN, never STUN Binding discovery. Setting
+	// STUNServerAddr makes Pion stop its receive loop on unrelated UDP packets
+	// from the relay, losing Allocate replies and leaving server-side allocations
+	// occupied until expiry. With only TURNServerAddr those packets are ignored.
 	client, err := newTURNClient(&turn.ClientConfig{
-		STUNServerAddr: addr,
 		TURNServerAddr: addr,
 		Username:       user,
 		Password:       pass,
-		Conn:           turnConn,
+		Conn:           responses,
 		// pion refreshes the peer permission every 120s by default. That is
 		// twice as often as it needs to be: the permission's lifetime is a
 		// fixed 300s (RFC 8656 section 9), so 240s renews it with a full 60s of
@@ -321,6 +362,7 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 	relay, err := allocateWithDeadline(ctx, allocateHandshakeTimeout, client.Allocate, func() {
 		closeFailedAllocation(client, raw)
 	})
+	err = responses.allocationError(err)
 	<-allocSemaphore
 	if err != nil {
 		closeFailedAllocation(client, raw)
@@ -334,7 +376,7 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		if ctx.Err() == nil {
 			if isQuotaError(err) {
 				noteCredentialRelayQuota(user, pass, addr, time.Now())
-			} else if !classifyCredError(err) {
+			} else if code, _ := turnErrorCode(err); code != stun.CodeAllocMismatch && !classifyCredError(err) {
 				noteServerFailure(addr)
 			}
 		}

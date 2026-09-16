@@ -29,8 +29,12 @@ func TestMarkersExistInVendoredPion(t *testing.T) {
 	}
 
 	sources := map[string]string{}
-	for _, name := range []string{"udp_conn.go", "allocation.go"} {
-		b, readErr := os.ReadFile(filepath.Join(dir, "internal", "client", name))
+	for _, name := range []string{"udp_conn.go", "allocation.go", "client.go"} {
+		path := filepath.Join(dir, "internal", "client", name)
+		if name == "client.go" {
+			path = filepath.Join(dir, name)
+		}
+		b, readErr := os.ReadFile(path)
 		if readErr != nil {
 			t.Fatalf("read %s: %v", name, readErr)
 		}
@@ -38,13 +42,15 @@ func TestMarkersExistInVendoredPion(t *testing.T) {
 	}
 
 	markers := map[string]string{
-		bindFailMarker:    "udp_conn.go",
-		bindOKMarker:      "udp_conn.go",
-		allocClosedMarker: "udp_conn.go",
-		allocFailMarker:   "allocation.go",
-		allocOKMarker:     "allocation.go",
-		permFailMarker:    "allocation.go",
-		permOKMarker:      "allocation.go",
+		bindFailMarker:     "udp_conn.go",
+		bindOKMarker:       "udp_conn.go",
+		allocClosedMarker:  "udp_conn.go",
+		allocFailMarker:    "allocation.go",
+		allocOKMarker:      "allocation.go",
+		permFailMarker:     "allocation.go",
+		permOKMarker:       "allocation.go",
+		pionReadLoopFailed: "client.go",
+		pionInboundFailed:  "client.go",
 	}
 	for marker, file := range markers {
 		if !strings.Contains(sources[file], marker) {

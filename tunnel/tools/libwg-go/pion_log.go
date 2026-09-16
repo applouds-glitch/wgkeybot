@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"net"
 
 	"github.com/pion/logging"
 )
@@ -17,17 +19,9 @@ import (
 // stream is recycled on (see turn_permwatch.go).
 //
 // pionLogFactory routes pion's own logs into turnLog with the stream ID
-// attached. Only Warn and above are forwarded: pion Tracef's on the per-packet
-// path (client.go:789 formats the peer address for every inbound packet), so
-// the lower levels stay no-ops that never format their arguments.
-// Debug was forwarded too for one diagnostic build, to answer what lifetime VK
-// grants an allocation (600s, refreshed by pion at half that) and whether it
-// answers a stale nonce with 438 (which pion retries) or something else (which
-// it would not). Both settled, so Debug stays unlogged: on 18 streams it was
-// ~10 formatted lines every two minutes carrying nothing actionable. It is
-// still *inspected*, because pion reports a successful channel bind and a
-// successful allocation refresh at Debug level and permWatch needs those to
-// clear its failure counters — see the note calls below.
+// attached. Warn and above are forwarded, plus fatal receive-loop failures that
+// Pion logs at Debug. Trace/per-packet Debug arguments remain unformatted.
+// Successful refreshes are still inspected to reset permWatch failure counters.
 //
 // watch is optional; a nil watcher turns every note into a no-op, which is what
 // callers that only want logging get.
@@ -56,11 +50,33 @@ type pionLogger struct {
 func (l pionLogger) Trace(string)          {}
 func (l pionLogger) Tracef(string, ...any) {}
 
-// Debug/Debugf are inspected but never logged. The format string is matched
-// unsubstituted so the per-call cost stays a couple of substring scans with no
-// formatting and no allocation — every marker lives in the literal part.
-func (l pionLogger) Debug(msg string)          { l.watch.note(msg) }
-func (l pionLogger) Debugf(f string, _ ...any) { l.watch.note(f) }
+const (
+	pionReadLoopFailed = "Failed to read: %s. Exiting loop"
+	pionInboundFailed  = "Failed to handle inbound message: %s. Exiting loop"
+)
+
+func (l pionLogger) Debug(msg string) { l.watch.note(msg) }
+func (l pionLogger) Debugf(f string, args ...any) {
+	l.watch.note(f)
+	if l.scope == permWatchScope && pionReceiveFailure(f, args...) {
+		l.log("WARN", f, args...)
+	}
+}
+
+// A closed socket is expected during cancellation/teardown. Other read errors
+// and malformed inbound packets stop Pion's reader and must not be hidden behind
+// the later Allocate/Refresh timeout. Match exact formats, never arbitrary data.
+func pionReceiveFailure(format string, args ...any) bool {
+	if format != pionReadLoopFailed && format != pionInboundFailed {
+		return false
+	}
+	if format == pionReadLoopFailed && len(args) > 0 {
+		if err, ok := args[0].(error); ok && errors.Is(err, net.ErrClosed) {
+			return false
+		}
+	}
+	return true
+}
 
 func (l pionLogger) Info(string)          {}
 func (l pionLogger) Infof(string, ...any) {}
