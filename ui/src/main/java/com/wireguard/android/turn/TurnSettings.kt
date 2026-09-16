@@ -48,6 +48,8 @@ data class TurnSettings(
     }
 
     companion object {
+        const val MAX_STREAMS_PER_CREDENTIAL = 10
+
         fun fromComments(comments: List<String>): TurnSettings? {
             var enabled = false
             var peer = ""
@@ -87,7 +89,7 @@ data class TurnSettings(
                     "watchdogtimeout"-> watchdogTimeout  = (value.toIntOrNull() ?: 0).let { if (it == 0) 0 else it.coerceIn(5, Int.MAX_VALUE) }
                     "nodtls"         -> noDtlsLegacy     = value.toBoolean()
                     "peertype"       -> peerType         = value
-                    "streamspercred" -> streamsPerCred   = (value.toIntOrNull() ?: 4).coerceIn(1, 16)
+                    "streamspercred" -> streamsPerCred   = (value.toIntOrNull() ?: 4).coerceIn(1, MAX_STREAMS_PER_CREDENTIAL)
                     "wrapkey"        -> wrapKey = value
                     "fallbackstreamnum" -> fallbackStreams = (value.toIntOrNull() ?: 0).coerceIn(0, 128)
                 }
@@ -126,7 +128,7 @@ data class TurnSettings(
             require(settings.streams in 1..128) { "Streams must be between 1 and 128" }
             require(settings.localPort in 1..65535) { "Local port must be between 1 and 65535" }
             require(settings.peerType in listOf("proxy_v2", "proxy_v1", "wireguard", "srtp")) { "Invalid peer type: ${settings.peerType}" }
-            require(settings.streamsPerCred in 1..16) { "Streams per credentials must be between 1 and 16" }
+            require(settings.streamsPerCred in 1..MAX_STREAMS_PER_CREDENTIAL) { "Streams per credentials must be between 1 and $MAX_STREAMS_PER_CREDENTIAL" }
 
             if (settings.turnPort != 0) {
                 require(settings.turnPort in 1..65535) { "TURN port must be between 1 and 65535" }

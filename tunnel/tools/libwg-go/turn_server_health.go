@@ -10,19 +10,9 @@ import (
 	"time"
 )
 
-// Per-server failure accounting for the static stream→server assignment.
-//
-// assignServers pins every stream to one of the TURN servers VK returned, round
-// robin by stream ID, and the rest of the list acts as failover for a single
-// attempt only. That is deliberate — a stream returns to its own server on the
-// next reconnect instead of sticking to whichever host won a race — but it left
-// no way out of a server that is simply down: the stream kept going back to it
-// forever, and the only thing that grew was its reconnect backoff.
-//
-// A server that fails repeatedly now serves a penalty, during which assignServers
-// hands its streams to the next healthy server in canonical order. The penalty is
-// short and self-clearing: this is a "stop hammering the dead host for a few
-// minutes" rule, not a reputation system.
+// Per-server failure accounting for assignServers. Repeated failures temporarily
+// exclude a host; failed data-plane handshakes exclude it until a later proof.
+// The surviving addresses keep VK's response order.
 const (
 	// serverFailThreshold is the consecutive-failure count that stands a server
 	// down. The first two are within the noise of a lost UDP packet or a brief
@@ -78,13 +68,8 @@ type serverHealth struct {
 
 	// demotedAt is when this server last failed a data-plane handshake. Compared
 	// against lastGood — a failure newer than the proof means the server is out
-	// of this session's rotation. Read by turn_server_election.go, which owns the
-	// meaning of these two stamps together.
+	// of this session's rotation until it proves itself again.
 	demotedAt time.Time
-
-	// rtt is the last Dial→Allocate latency measured against this server. The
-	// election ranks proven servers by it.
-	rtt time.Duration
 }
 
 var serverHealthState = struct {
@@ -97,7 +82,6 @@ var serverHealthState = struct {
 func resetServerHealth() {
 	serverHealthState.Lock()
 	serverHealthState.byAddr = make(map[string]*serverHealth)
-	resetElectionLocked()
 	serverHealthState.Unlock()
 }
 
@@ -190,12 +174,6 @@ func noteServerHandshakeOKAt(addr string, now time.Time) {
 	defer serverHealthState.Unlock()
 
 	healthEntryLocked(addr).lastGood = now
-	// The first proof of the session starts the election's settle window: from
-	// here we know the uplink works and can wait a moment for the other servers
-	// to report before picking one (see electionSettleWindow).
-	if firstProofAt.IsZero() {
-		firstProofAt = now
-	}
 }
 
 // noteServerHandshakeFailure reports that addr allocated a relay and then failed
@@ -223,9 +201,8 @@ func noteServerHandshakeFailureAt(addr string, attemptStart, now time.Time) {
 		return
 	}
 	// Out of the rotation immediately, whatever the stand-down decides below.
-	// The election needs no alibi because it punishes nothing: if the uplink is
-	// what died, every server ends up demoted and assignServers falls back to the
-	// full list. See turn_server_election.go.
+	// If the uplink is what died, every server ends up demoted and assignServers
+	// falls back to the full list.
 	noteServerDemotedAt(addr, now)
 
 	if !siblingProvedAnotherServer(addr, attemptStart, now) {
@@ -275,8 +252,7 @@ func serverPenalized(addr string, now time.Time) bool {
 }
 
 // penalizedLocked is serverPenalized's body for callers that already hold the
-// mutex (the election reads health and penalty together in one critical
-// section). Note it mutates: an expired window is cleared here, on the read.
+// mutex. Note it mutates: an expired window is cleared here, on the read.
 func penalizedLocked(h *serverHealth, now time.Time) bool {
 	if h == nil || h.penalizedTil.IsZero() {
 		return false
@@ -291,4 +267,32 @@ func penalizedLocked(h *serverHealth, now time.Time) bool {
 	h.lastStrike = time.Time{}
 	h.penalizedTil = time.Time{}
 	return false
+}
+
+// A failed data-plane handshake excludes this host while alternatives remain.
+// If every host fails, assignServers retries the full list; a later successful
+// handshake clears the exclusion without a timer or a tunnel restart.
+func noteServerDemotedAt(addr string, now time.Time) {
+	if addr == "" {
+		return
+	}
+	serverHealthState.Lock()
+	defer serverHealthState.Unlock()
+
+	h := healthEntryLocked(addr)
+	first := !demotedLocked(h)
+	h.demotedAt = now
+	if first {
+		turnLog("[TURN HEALTH] %s failed its data-plane handshake — skipping while alternatives remain", addr)
+	}
+}
+
+func serverDemoted(addr string) bool {
+	serverHealthState.Lock()
+	defer serverHealthState.Unlock()
+	return demotedLocked(serverHealthState.byAddr[addr])
+}
+
+func demotedLocked(h *serverHealth) bool {
+	return h != nil && h.demotedAt.After(h.lastGood)
 }

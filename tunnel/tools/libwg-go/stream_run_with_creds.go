@@ -80,21 +80,24 @@ func sessionOutcome(cancelled, blackholed bool, dur time.Duration, err error) se
 // runWithCreds. The fields are the live resources handed off to the session:
 // runSession owns them and is responsible for closing them.
 type winner struct {
-	client *turn.Client
-	raw    net.Conn       // underlying dialed UDP/TCP conn
-	relay  net.PacketConn // relay allocation from client.Allocate()
-	addr   string         // TURN server the session runs on
-	rtt    time.Duration  // Dial → Allocate latency
-	perm   *permWatch     // control-plane blackhole detector for this session
+	client            *turn.Client
+	raw               net.Conn       // underlying dialed UDP/TCP conn
+	relay             net.PacketConn // relay allocation from client.Allocate()
+	addr              string         // TURN server the session runs on
+	rtt               time.Duration  // Dial → Allocate latency
+	perm              *permWatch     // control-plane blackhole detector for this session
+	releaseCredential func()         // returned only after the allocation closes
 }
 
 // runWithCreds establishes one TURN session with pre-fetched credentials on the
-// stream's assigned server, addrs[0] (see assignServers). There is no latency
+// first available server, addrs[0] (see assignServers). There is no latency
 // race: only if that server fails to Allocate are the remaining candidates
 // dialed, all at once, and the first of those to complete Allocate takes the
-// session while the others are cancelled/closed. The assignment is per attempt,
-// so the next reconnect goes back to the stream's own server. Retry and
-// credential rotation are managed by the calling WorkerGroup.
+// session while the others are cancelled/closed. Each reconnect uses VK's
+// response order with unavailable servers filtered out. A failed data-plane
+// handshake also tries the remaining candidates: after an uplink outage every
+// host may be excluded, so assignServers has to return the full list again.
+// Retry and credential rotation are managed by the calling WorkerGroup.
 func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []string, cfg WorkerGroupConfig) error {
 	s.ready.Store(false)
 	defer s.ready.Store(false)
@@ -114,8 +117,14 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 		wg.Add(1)
 		go func(addr string) {
 			defer wg.Done()
+			release, err := acquireCredentialAllocation(raceCtx, user, pass)
+			if err != nil {
+				errCh <- err
+				return
+			}
 			client, raw, relay, rtt, perm, err := dialAndAllocate(raceCtx, s, user, pass, addr, cfg)
 			if err != nil {
+				release()
 				errCh <- err
 				return
 			}
@@ -123,7 +132,7 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			once.Do(func() {
 				claimed = true
 				cancelRace()
-				winCh <- winner{client: client, raw: raw, relay: relay, addr: addr, rtt: rtt, perm: perm}
+				winCh <- winner{client: client, raw: raw, relay: relay, addr: addr, rtt: rtt, perm: perm, releaseCredential: release}
 			})
 			if !claimed {
 				// Another failover candidate got there first: log this
@@ -133,6 +142,7 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 				relay.Close()
 				client.Close()
 				raw.Close()
+				release()
 			}
 		}(addr)
 	}
@@ -157,7 +167,22 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 	for {
 		select {
 		case w := <-winCh:
-			return s.runSession(ctx, w, cfg)
+			err := s.runSession(ctx, w, cfg)
+			if ctx.Err() != nil || !errors.Is(err, errDataPlaneHandshake) {
+				return err
+			}
+			remaining := make([]string, 0, len(addrs)-1)
+			for _, addr := range addrs {
+				if addr != w.addr {
+					remaining = append(remaining, addr)
+				}
+			}
+			if len(remaining) == 0 {
+				return err
+			}
+			turnLog("[STREAM %d] %s failed its data-plane handshake — trying %v (group %d)",
+				s.id, w.addr, remaining, cfg.GroupID)
+			return s.runWithCreds(ctx, user, pass, remaining, cfg)
 		case err := <-errCh:
 			lastErr = err
 			errCount++
@@ -165,7 +190,7 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 				// The assigned server failed: try the failover candidates. Say
 				// why before moving on — a failover that succeeds swallows this
 				// error otherwise (only "all servers failed" ever surfaces it),
-				// and an elected server refusing Allocate on every reconnect was
+				// and a primary server refusing Allocate on every reconnect was
 				// invisible in the log except as a second Dial line one RTT later.
 				turnLog("[STREAM %d] %s failed (%v) — fanning out to %v (group %d)",
 					s.id, addrs[0], err, addrs[1:], cfg.GroupID)
@@ -353,6 +378,7 @@ func allocateWithDeadline(ctx context.Context, timeout time.Duration, allocate f
 // runSession runs the relay session on the connected server and owns its
 // lifecycle: it closes the relay, client and underlying conn on exit.
 func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig) error {
+	defer w.releaseCredential()
 	defer w.raw.Close()
 	defer w.client.Close()
 	defer w.relay.Close()
@@ -383,10 +409,6 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// the uplink when another server fails its handshake in the same window.
 	s.serverAddr = w.addr
 
-	// Stamped before the transport runs, so a server that goes on to prove its
-	// data plane already has a latency the election can rank it by.
-	noteServerRTT(w.addr, w.rtt)
-
 	started := time.Now()
 	var err error
 	switch cfg.PeerType {
@@ -398,7 +420,7 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 		err = s.runDTLS(ctx, w.relay, cfg.PeerAddr, true)
 	}
 
-	// Health accounting for the static assignment (see turn_server_health.go).
+	// Health accounting for subsequent attempts (see turn_server_health.go).
 	switch sessionOutcome(ctx.Err() != nil, w.perm.fired(), time.Since(started), err) {
 	case verdictSuccess:
 		noteServerSuccess(w.addr)
@@ -443,6 +465,7 @@ func reapRace(wg *sync.WaitGroup, winCh chan winner) {
 		w.relay.Close()
 		w.client.Close()
 		w.raw.Close()
+		w.releaseCredential()
 	default:
 	}
 }

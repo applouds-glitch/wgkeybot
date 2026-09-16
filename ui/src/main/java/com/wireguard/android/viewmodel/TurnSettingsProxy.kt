@@ -198,7 +198,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
                 throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, watchdogTimeout)
             }
 
-            if (parsedStreamsPerCred !in 1..16) {
+            if (parsedStreamsPerCred !in 1..TurnSettings.MAX_STREAMS_PER_CREDENTIAL) {
                 throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, streamsPerCred)
             }
 

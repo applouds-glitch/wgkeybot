@@ -91,10 +91,9 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 // times in a row. Giving up is reported through reportWorkerGaveUp, which
 // escalates to a user-visible terminal failure once no worker is left.
 //
-// The TURN server is assigned statically, round-robin by stream ID (see
-// assignServers), so the streams are spread evenly across every server VK
-// returned. The other servers are failover only: runWithCreds dials them just
-// for this attempt, and only after the assigned one errors. failStreak only
+// Every stream starts with the first available server in VK's response order
+// (see assignServers). The other servers are failover only: runWithCreds dials
+// them just for this attempt, and only after the primary errors. failStreak only
 // counts consecutive connect failures to drive the retry backoff. A session
 // that stayed up for a while (or was closed cleanly by the server) resets the
 // streak for a fast retry.
@@ -198,10 +197,9 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		// Apply optional manual TurnIP/TurnPort override to the fetched list.
 		addrs = applyTurnOverride(addrs, cfg)
 
-		// Where this stream runs: the session's elected server once one is
-		// chosen, otherwise round-robin by stream ID. The rest of the list
-		// follows only as failover for this attempt.
-		addrs = assignServers(addrs, s.id)
+		// Keep VK's first available server primary for every stream.
+		// The rest of the list is only failover for this attempt.
+		addrs = assignServers(addrs)
 		attemptHead := addrs[0]
 
 		start := time.Now()
@@ -253,13 +251,13 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		}
 
 		// A failure on a server the next attempt will not even dial is not a
-		// repeat of the same failure: the election (or a stand-down) has just
+		// repeat of the same failure: health accounting has just
 		// moved this stream to a different host, and that host deserves a first
 		// attempt, not the backoff the dead one earned. Without this a stream
 		// that failed twice on a dead relay waited 7-17s before trying the
 		// working one — most of TunnelManager's 25s connect budget, spent
 		// sleeping next to a server that was already known to work.
-		if assignServers(addrs, s.id)[0] != attemptHead {
+		if assignServers(addrs)[0] != attemptHead {
 			failStreak = 0
 		}
 
