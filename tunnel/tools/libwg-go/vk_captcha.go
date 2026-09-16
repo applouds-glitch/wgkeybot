@@ -284,6 +284,11 @@ func ParseVkCaptchaError(errData map[string]interface{}) *VkCaptchaError {
 		if parsed, err := neturl.Parse(RedirectURI); err == nil {
 			sessionToken = parsed.Query().Get("session_token")
 		} else {
+			// url.Error includes the original URL, which can carry session tokens.
+			var urlErr *neturl.Error
+			if errors.As(err, &urlErr) {
+				err = urlErr.Err
+			}
 			turnLog("failed to parse redirect_uri: %v", err)
 			return nil
 		}
@@ -1252,7 +1257,7 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash, debugInfo stri
 
 	respObj, ok := checkResp["response"].(map[string]interface{})
 	if !ok {
-		return "", fmt.Errorf("invalid check response: %v", checkResp)
+		return "", fmt.Errorf("invalid check response (keys=%s)", responseKeys(checkResp))
 	}
 	status, _ := respObj["status"].(string)
 	switch strings.ToUpper(status) {

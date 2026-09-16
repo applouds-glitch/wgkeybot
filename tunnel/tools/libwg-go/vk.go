@@ -388,6 +388,14 @@ func fetchVkCreds(ctx context.Context, link string) (string, string, []string, i
 	return "", "", nil, 0, fmt.Errorf("all VK credentials failed: %w", lastErr)
 }
 
+// VK errors may echo request_params containing tokens and client secrets.
+// Keep the error_code spelling used by the rate-limit check in fetchVkCreds.
+func vkAPIErrorDescription(errObj map[string]interface{}) string {
+	code, _ := errObj["error_code"].(float64)
+	message, _ := errObj["error_msg"].(string)
+	return fmt.Sprintf("error_code:%d error_msg:%s", int(code), message)
+}
+
 // getTokenChain performs the VK/OK API token chain with given credentials.
 // Returns (username, password, serverAddrs, lifetimeSecs, error).
 func getTokenChain(ctx context.Context, link string, creds VKCredentials, client tlsclient.HttpClient, profile Profile) (string, string, []string, int, error) {
@@ -453,7 +461,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 			return "", err
 		}
 		if errMsg, ok := resp["error"].(map[string]interface{}); ok {
-			return "", fmt.Errorf("VK API error: %v", errMsg)
+			return "", fmt.Errorf("VK API error: %s", vkAPIErrorDescription(errMsg))
 		}
 		dataRaw, ok := resp["data"]
 		if !ok {
@@ -461,7 +469,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 		}
 		dataMap, ok := dataRaw.(map[string]interface{})
 		if !ok || dataMap == nil {
-			return "", fmt.Errorf("invalid response structure: %v", resp)
+			return "", fmt.Errorf("invalid response structure (keys=%s)", responseKeys(resp))
 		}
 		token, ok := dataMap["access_token"]
 		if !ok {
@@ -469,7 +477,7 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 		}
 		tokenStr, ok := token.(string)
 		if !ok {
-			return "", fmt.Errorf("access_token is not a string: %v", token)
+			return "", fmt.Errorf("access_token is not a string: %T", token)
 		}
 		return tokenStr, nil
 	}
@@ -488,8 +496,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 		return "", "", nil, 0, err
 	}
 	if errMsg, ok := resp["error"].(map[string]interface{}); ok {
-		turnLog("[VK Auth] Token 1 VK API error: %v", errMsg)
-		return "", "", nil, 0, fmt.Errorf("VK API error (token1): %v", errMsg)
+		turnLog("[VK Auth] Token 1 VK API error: %s", vkAPIErrorDescription(errMsg))
+		return "", "", nil, 0, fmt.Errorf("VK API error (token1): %s", vkAPIErrorDescription(errMsg))
 	}
 	dataRaw, ok := resp["data"]
 	if !ok {
@@ -497,15 +505,15 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	}
 	dataMap, ok := dataRaw.(map[string]interface{})
 	if !ok || dataMap == nil {
-		return "", "", nil, 0, fmt.Errorf("invalid response structure for token1: %v", resp)
+		return "", "", nil, 0, fmt.Errorf("invalid response structure for token1 (keys=%s)", responseKeys(resp))
 	}
 	token1Raw, ok := dataMap["access_token"]
 	if !ok {
-		return "", "", nil, 0, fmt.Errorf("token1 not found in response: %v", resp)
+		return "", "", nil, 0, fmt.Errorf("token1 not found in response (keys=%s)", responseKeys(resp))
 	}
 	token1, ok := token1Raw.(string)
 	if !ok {
-		return "", "", nil, 0, fmt.Errorf("token1 is not a string: %v", token1Raw)
+		return "", "", nil, 0, fmt.Errorf("token1 is not a string: %T", token1Raw)
 	}
 	turnLog("[VK Auth] Token 1 (anonym_token) received")
 
@@ -565,17 +573,11 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 		if errObj, hasErr := resp["error"].(map[string]interface{}); hasErr {
 			captchaErr := ParseVkCaptchaError(errObj)
 			if captchaErr != nil {
-				turnLog("[STREAM %d] [Captcha] VK error parsed: code=%d redirect_uri=%q session_token=%q captcha_sid=%q",
+				turnLog("[STREAM %d] [Captcha] VK error parsed: code=%d has_redirect_uri=%t has_session_token=%t has_captcha_sid=%t",
 					streamID, captchaErr.ErrorCode,
-					func() string {
-						if len(captchaErr.RedirectURI) > 60 {
-							return captchaErr.RedirectURI[:60] + "..."
-						}
-						return captchaErr.RedirectURI
-					}(),
-					captchaErr.SessionToken, captchaErr.CaptchaSid)
+					captchaErr.RedirectURI != "", captchaErr.SessionToken != "", captchaErr.CaptchaSid != "")
 			} else if errCode, ok := errObj["error_code"].(float64); ok {
-				turnLog("[STREAM %d] VK API error %d (not a parseable captcha): %v", streamID, int(errCode), errObj)
+				turnLog("[STREAM %d] VK API error %d (not a parseable captcha): %s", streamID, int(errCode), vkAPIErrorDescription(errObj))
 			}
 			if errCode, ok := errObj["error_code"].(float64); ok && int(errCode) == 9005 {
 				return "", "", nil, 0, errCallRequiresAuth
@@ -768,27 +770,27 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 				attempt = -1 // loop header will increment to 0
 				continue
 			}
-			return "", "", nil, 0, fmt.Errorf("VK API error: %v", errObj)
+			return "", "", nil, 0, fmt.Errorf("VK API error: %s", vkAPIErrorDescription(errObj))
 		}
 
 		responseRaw, okLoop := resp["response"]
 		if !okLoop {
-			return "", "", nil, 0, fmt.Errorf("invalid response structure for token2: 'response' not found, response: %v", resp)
+			return "", "", nil, 0, fmt.Errorf("invalid response structure for token2: 'response' not found (keys=%s)", responseKeys(resp))
 		}
 
 		respMap, okLoop := responseRaw.(map[string]interface{})
 		if !okLoop {
-			return "", "", nil, 0, fmt.Errorf("unexpected getAnonymousToken response: %v", resp)
+			return "", "", nil, 0, fmt.Errorf("unexpected getAnonymousToken response (keys=%s)", responseKeys(resp))
 		}
 
 		token2Raw, okToken2 := respMap["token"]
 		if !okToken2 {
-			return "", "", nil, 0, fmt.Errorf("token2 not found in response: %v", resp)
+			return "", "", nil, 0, fmt.Errorf("token2 not found in response (keys=%s)", responseKeys(resp))
 		}
 
 		token2, okLoop = token2Raw.(string)
 		if !okLoop {
-			return "", "", nil, 0, fmt.Errorf("token2 is not a string: %v", token2Raw)
+			return "", "", nil, 0, fmt.Errorf("token2 is not a string: %T", token2Raw)
 		}
 
 		break
@@ -810,11 +812,11 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	}
 	token3Raw, ok := resp["session_key"]
 	if !ok {
-		return "", "", nil, 0, fmt.Errorf("token3 not found in response: %v", resp)
+		return "", "", nil, 0, fmt.Errorf("token3 not found in response (keys=%s)", responseKeys(resp))
 	}
 	token3, ok := token3Raw.(string)
 	if !ok {
-		return "", "", nil, 0, fmt.Errorf("token3 is not a string: %v", token3Raw)
+		return "", "", nil, 0, fmt.Errorf("token3 is not a string: %T", token3Raw)
 	}
 	turnLog("[VK Auth] Token 3 (session_key) received")
 
@@ -833,19 +835,19 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 
 	tsRaw, ok := resp["turn_server"]
 	if !ok {
-		return "", "", nil, 0, fmt.Errorf("turn_server not found in response: %v", resp)
+		return "", "", nil, 0, fmt.Errorf("turn_server not found in response (keys=%s)", responseKeys(resp))
 	}
 	ts, ok := tsRaw.(map[string]interface{})
 	if !ok || ts == nil {
-		return "", "", nil, 0, fmt.Errorf("invalid turn_server type: %v", tsRaw)
+		return "", "", nil, 0, fmt.Errorf("invalid turn_server type: %T", tsRaw)
 	}
 	urlsRaw, ok := ts["urls"]
 	if !ok {
-		return "", "", nil, 0, fmt.Errorf("urls not found in turn_server: %v", ts)
+		return "", "", nil, 0, fmt.Errorf("urls not found in turn_server (keys=%s)", responseKeys(ts))
 	}
 	urls, ok := urlsRaw.([]interface{})
 	if !ok || len(urls) == 0 {
-		return "", "", nil, 0, fmt.Errorf("invalid urls in turn_server: %v", ts)
+		return "", "", nil, 0, fmt.Errorf("invalid urls in turn_server (keys=%s)", responseKeys(ts))
 	}
 
 	// Parse and resolve EVERY TURN URL the API returns. Streams are later
@@ -876,24 +878,24 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 		addresses = append(addresses, address)
 	}
 	if len(addresses) == 0 {
-		return "", "", nil, 0, fmt.Errorf("invalid urls in turn_server: %v", ts)
+		return "", "", nil, 0, fmt.Errorf("invalid urls in turn_server (keys=%s)", responseKeys(ts))
 	}
 
 	usernameRaw, ok := ts["username"]
 	if !ok {
-		return "", "", nil, 0, fmt.Errorf("username not found in turn_server: %v", ts)
+		return "", "", nil, 0, fmt.Errorf("username not found in turn_server (keys=%s)", responseKeys(ts))
 	}
 	username, ok := usernameRaw.(string)
 	if !ok || username == "" {
-		return "", "", nil, 0, fmt.Errorf("username not found in turn_server: %v", ts)
+		return "", "", nil, 0, fmt.Errorf("username not found in turn_server (keys=%s)", responseKeys(ts))
 	}
 	credentialRaw, ok := ts["credential"]
 	if !ok {
-		return "", "", nil, 0, fmt.Errorf("credential not found in turn_server: %v", ts)
+		return "", "", nil, 0, fmt.Errorf("credential not found in turn_server (keys=%s)", responseKeys(ts))
 	}
 	credential, ok := credentialRaw.(string)
 	if !ok || credential == "" {
-		return "", "", nil, 0, fmt.Errorf("credential not found in turn_server: %v", ts)
+		return "", "", nil, 0, fmt.Errorf("credential not found in turn_server (keys=%s)", responseKeys(ts))
 	}
 
 	// Parse TTL from turn_server response (VK returns "lifetime" or "ttl" in seconds).
@@ -903,13 +905,6 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 	} else if v, ok := ts["ttl"].(float64); ok && v > 0 {
 		lifetimeSecs = int(v)
 	}
-	turnLog("[VK Auth] turn_server keys: %v", func() []string {
-		keys := make([]string, 0, len(ts))
-		for k, v := range ts {
-			keys = append(keys, fmt.Sprintf("%s=%v", k, v))
-		}
-		return keys
-	}())
 	turnLog("[VK Auth] TURN lifetime from API: %ds", lifetimeSecs)
 
 	return username, credential, addresses, lifetimeSecs, nil

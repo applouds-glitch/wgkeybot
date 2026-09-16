@@ -11,6 +11,7 @@ require (
 	github.com/pion/dtls/v3 v3.1.5
 	github.com/pion/logging v0.2.4
 	github.com/pion/stun/v3 v3.1.6
+	github.com/pion/transport/v4 v4.1.0
 	github.com/pion/turn/v5 v5.0.13
 	golang.org/x/sys v0.47.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
@@ -32,7 +33,6 @@ require (
 	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.17 // indirect
-	github.com/pion/transport/v4 v4.1.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/tam7t/hpkp v0.0.0-20160821193359-2b70b4024ed5 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect

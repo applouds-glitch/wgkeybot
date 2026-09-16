@@ -223,7 +223,7 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		turnConn = turn.NewSTUNConn(c)
 	}
 
-	client, err := turn.NewClient(&turn.ClientConfig{
+	client, err := newTURNClient(&turn.ClientConfig{
 		STUNServerAddr: addr,
 		TURNServerAddr: addr,
 		Username:       user,
