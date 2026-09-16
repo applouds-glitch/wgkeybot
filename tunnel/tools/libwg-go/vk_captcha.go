@@ -178,6 +178,7 @@ func (ep captchaEndpoints) methodURL(method string) string {
 }
 
 var captchaFormFieldOrder = map[string][]string{
+	"captchaNotRobot.initSession": {"session_token", "domain", "lang", "access_token"},
 	"captchaNotRobot.settings": {
 		"session_token", "domain", "adFp", "access_token",
 	},
@@ -487,12 +488,15 @@ func solveVkCaptchaOnce(ctx context.Context, captchaErr *VkCaptchaError, streamI
 	}
 	turnLog("[STREAM %d] [Captcha] PoW solved", streamID)
 
-	debugInfo, err := fetchDebugInfoFromScript(ctx, bootstrap.ScriptURL, client, profile, endpoints)
-	if err != nil {
-		turnLog("[STREAM %d] [Captcha] Warning: could not fetch debug_info dynamically: %v — using fallback", streamID, err)
-		debugInfo = captchaDebugInfo
-	}
+	debugInfo := bootstrap.DebugInfo
+	if debugInfo == "" {
+		debugInfo, err = fetchDebugInfoFromScript(ctx, bootstrap.ScriptURL, client, profile, endpoints)
+		if err != nil {
+			turnLog("[STREAM %d] [Captcha] Warning: could not fetch debug_info dynamically: %v — using fallback", streamID, err)
+			debugInfo = captchaDebugInfo
+		}
 
+	}
 	bootstrapHasSlider := false
 	if bootstrap.Settings != nil {
 		_, bootstrapHasSlider = bootstrap.Settings.SettingsByType[sliderCaptchaType]
@@ -506,9 +510,9 @@ func solveVkCaptchaOnce(ctx context.Context, captchaErr *VkCaptchaError, streamI
 	// then spun up a *second* session for the slider, duplicating
 	// settings/componentDone/check on the same token — which tripped VK's
 	// per-token rate limit (ERROR_LIMIT) before the slider image could load.
-	if useSliderPOC || bootstrapHasSlider {
+	if useSliderPOC || bootstrapHasSlider || bootstrap.IsBFF {
 		successToken, err := callCaptchaNotRobotWithSliderPOC(
-			ctx, captchaErr.SessionToken, hash, debugInfo, streamID, client, profile, bootstrap.Settings, endpoints,
+			ctx, captchaErr.SessionToken, hash, debugInfo, streamID, client, profile, bootstrap.Settings, endpoints, bootstrap,
 		)
 		if err != nil {
 			return "", fmt.Errorf("captchaNotRobot slider POC failed: %w", err)
