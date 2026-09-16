@@ -169,8 +169,8 @@ func (w *permWatch) fired() bool {
 
 // why returns the pion log line that tripped the detector. It is folded into
 // the error runWithCreds returns, so classifyCredError still sees pion's own
-// wording ("allocation mismatch", "401", …) and can rotate the credential when
-// the blackhole was really an auth/quota problem.
+// wording and can distinguish auth/quota problems (rotate credentials) from
+// allocation mismatch (reconnect the transport with the same credentials).
 func (w *permWatch) why() string {
 	if w == nil {
 		return ""

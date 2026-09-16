@@ -83,7 +83,7 @@ func TestClassifyCredErrorTurnCodes(t *testing.T) {
 	}{
 		{stun.CodeUnauthorized, true, false},         // 401
 		{stun.CodeStaleNonce, true, false},           // 438
-		{stun.CodeAllocMismatch, true, false},        // 437
+		{stun.CodeAllocMismatch, false, false},       // 437: reconnect the socket
 		{stun.CodeWrongCredentials, true, false},     // 441
 		{stun.CodeAllocQuotaReached, true, true},     // 486
 		{stun.CodeInsufficientCapacity, true, false}, // 508
@@ -111,6 +111,9 @@ func TestClassifyCredErrorTextFallback(t *testing.T) {
 		{"allocate error response (error 401: Unauthorized)", true},
 		{"allocate error response (error 486: Allocation Quota Reached)", true},
 		{"stale nonce", true},
+		{"allocate error response (error 437: Allocation Mismatch)", false},
+		{"Failed to refresh allocation: error 437: Allocation Mismatch", false},
+		{"attribute not found", false},
 		{"vk: error 29 rate limit", true},
 		{"dead-stream: no RX for >30s", false},
 		{"session handshake wrap #1: short buffer", false},

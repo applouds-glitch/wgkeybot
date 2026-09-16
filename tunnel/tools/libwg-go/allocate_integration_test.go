@@ -26,6 +26,76 @@ type delayedAllocateReplies struct {
 	delay time.Duration
 }
 
+// Live relays can send unrelated UDP datagrams before the Allocate response.
+// The server has already reserved an allocation at this point: losing the
+// response leaves it occupied even though the client reports a timeout.
+type noisyAllocateReplies struct {
+	net.PacketConn
+	injected atomic.Int32
+}
+
+func (c *noisyAllocateReplies) WriteTo(b []byte, addr net.Addr) (int, error) {
+	m := &stun.Message{Raw: append([]byte(nil), b...)}
+	if m.Decode() == nil && m.Type == stun.NewType(stun.MethodAllocate, stun.ClassSuccessResponse) {
+		noise := make([]byte, 1200)
+		// Same non-STUN/non-ChannelData header shape observed on the phone.
+		copy(noise, []byte{0xc3, 0, 0, 0, 1, 8})
+		if _, err := c.PacketConn.WriteTo(noise, addr); err != nil {
+			return 0, err
+		}
+		c.injected.Add(1)
+	}
+	return c.PacketConn.WriteTo(b, addr)
+}
+
+func TestDialAndAllocateIgnoresUnrelatedDatagrams(t *testing.T) {
+	pc := listenFakeRelay(t)
+	noisy := &noisyAllocateReplies{PacketConn: pc}
+	server, err := turn.NewServer(turn.ServerConfig{
+		Realm: "noisy-allocate-test",
+		AuthHandler: func(a *turn.RequestAttributes) (string, []byte, bool) {
+			return a.Username, turn.GenerateAuthKey(a.Username, "noisy-allocate-test", "pass"), true
+		},
+		PacketConnConfigs: []turn.PacketConnConfig{{
+			PacketConn: noisy,
+			RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
+				RelayAddress: net.ParseIP("127.0.0.1"),
+				Address:      "127.0.0.1",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	defer resetServerHealth()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	client, raw, relay, _, _, err := dialAndAllocate(ctx, &stream{}, "noisy-user", "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})
+	if err != nil {
+		t.Fatalf("Allocate lost after unrelated datagram: %v (server allocations: %d, injected: %d)", err, server.AllocationCount(), noisy.injected.Load())
+	}
+	defer closeFailedAllocation(client, raw)
+	defer relay.Close()
+	if noisy.injected.Load() == 0 {
+		t.Fatal("server did not inject the unrelated datagram")
+	}
+	if got := server.AllocationCount(); got != 1 {
+		t.Fatalf("active allocations=%d, want 1", got)
+	}
+	if err := relay.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for server.AllocationCount() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("Refresh(lifetime=0) did not release the allocation after noise")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (c *delayedAllocateReplies) WriteTo(b []byte, addr net.Addr) (int, error) {
 	m := &stun.Message{Raw: append([]byte(nil), b...)}
 	if m.Decode() == nil && m.Type.Method == stun.MethodAllocate && c.delay > 0 {

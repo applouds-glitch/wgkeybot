@@ -14,7 +14,7 @@ import (
 // Exercise the real Pion client with an empty interface inventory, including
 // authentication, allocation, permission creation and data in both directions.
 // These tests run on a host without the Android JNI layer:
-// go test turn_client_net.go turn_client_net_test.go
+// go test turn_client_net.go turn_allocate_response.go turn_client_net_test.go
 func TestTURNClientWithoutInterfaceDiscovery(t *testing.T) {
 	for _, network := range []string{"udp4", "tcp4", "udp6", "tcp6"} {
 		t.Run(network, func(t *testing.T) {
@@ -80,7 +80,8 @@ func exerciseTURNClient(t *testing.T, network, addr, listenAddr string, server *
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	config := &turn.ClientConfig{Conn: conn, STUNServerAddr: addr, TURNServerAddr: addr, Username: "user", Password: "pass"}
+	responses := &allocateResponseConn{PacketConn: conn, remote: raw.RemoteAddr().String()}
+	config := &turn.ClientConfig{Conn: responses, STUNServerAddr: addr, TURNServerAddr: addr, Username: "user", Password: "pass"}
 	client, err := newTURNClient(config)
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +95,7 @@ func exerciseTURNClient(t *testing.T, network, addr, listenAddr string, server *
 		t.Fatal(err)
 	}
 	relay, err := client.Allocate()
+	err = responses.allocationError(err)
 	if err != nil {
 		t.Fatal(err)
 	}

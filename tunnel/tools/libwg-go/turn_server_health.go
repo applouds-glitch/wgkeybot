@@ -57,9 +57,10 @@ const (
 )
 
 type serverHealth struct {
-	failures     int
-	lastStrike   time.Time
-	penalizedTil time.Time
+	failures              int
+	lastStrike            time.Time
+	penalizedTil          time.Time
+	allocationMismatchTil time.Time // RFC 8656 7.4: three addresses refused, pause 2m
 
 	// lastGood is when this server last completed a data-plane handshake. It is
 	// the evidence noteServerHandshakeFailure weighs, so entries are cleared in
@@ -254,6 +255,9 @@ func serverPenalized(addr string, now time.Time) bool {
 // penalizedLocked is serverPenalized's body for callers that already hold the
 // mutex. Note it mutates: an expired window is cleared here, on the read.
 func penalizedLocked(h *serverHealth, now time.Time) bool {
+	if h != nil && now.Before(h.allocationMismatchTil) {
+		return true
+	}
 	if h == nil || h.penalizedTil.IsZero() {
 		return false
 	}
@@ -267,6 +271,19 @@ func penalizedLocked(h *serverHealth, now time.Time) bool {
 	h.lastStrike = time.Time{}
 	h.penalizedTil = time.Time{}
 	return false
+}
+
+func noteServerAllocationMismatch(addr string, now time.Time) {
+	serverHealthState.Lock()
+	defer serverHealthState.Unlock()
+	healthEntryLocked(addr).allocationMismatchTil = now.Add(2 * time.Minute)
+}
+
+func serverAllocationMismatchPaused(addr string, now time.Time) bool {
+	serverHealthState.Lock()
+	defer serverHealthState.Unlock()
+	h := serverHealthState.byAddr[addr]
+	return h != nil && now.Before(h.allocationMismatchTil)
 }
 
 // A failed data-plane handshake excludes this host while alternatives remain.

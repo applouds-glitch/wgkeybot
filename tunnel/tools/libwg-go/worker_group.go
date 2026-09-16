@@ -409,6 +409,8 @@ func quotaCooldown() time.Duration {
 // credential should be re-fetched: TURN allocation quota (486) or stale/invalid
 // credentials (401/stale nonce/etc.). Other errors (dial failures, watchdog,
 // transient drops) are handled by a plain reconnect that keeps the credential.
+// Allocation mismatch (437) concerns the transport/allocation, not the identity.
+// Missing attributes alone likewise do not establish a credential refusal.
 //
 // Classification is code-driven where possible: pion surfaces a server error
 // response as *stun.TurnError, so the numeric code is authoritative. Bare
@@ -426,7 +428,6 @@ func classifyCredError(err error) bool {
 		switch code {
 		case stun.CodeUnauthorized, // 401
 			stun.CodeStaleNonce,           // 438
-			stun.CodeAllocMismatch,        // 437
 			stun.CodeWrongCredentials,     // 441
 			stun.CodeAllocQuotaReached,    // 486
 			stun.CodeInsufficientCapacity: // 508
@@ -444,8 +445,6 @@ func classifyCredError(err error) bool {
 		strings.Contains(e, "error 401") ||
 		strings.Contains(e, "unauthorized") ||
 		strings.Contains(e, "stale nonce") ||
-		strings.Contains(e, "allocation mismatch") ||
-		strings.Contains(e, "attribute not found") ||
 		strings.Contains(e, "error 508") ||
 		strings.Contains(e, "error 29")
 }
