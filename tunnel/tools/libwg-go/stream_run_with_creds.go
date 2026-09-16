@@ -221,6 +221,12 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 // candidates simply drop theirs — a permWatch owns no goroutine, so an unwatched
 // one costs nothing.
 func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cfg WorkerGroupConfig) (*turn.Client, net.Conn, net.PacketConn, time.Duration, *permWatch, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, 0, nil, err
+	}
+	if err := checkCredentialRelayQuota(user, pass, addr, time.Now()); err != nil {
+		return nil, nil, nil, 0, nil, err
+	}
 	turnLog("[STREAM %d] Dial TURN %s (group %d)", s.id, addr, cfg.GroupID)
 	dialStart := time.Now()
 	perm := newPermWatch(s.id)
@@ -300,6 +306,17 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		closeFailedAllocation(client, raw)
 		return nil, nil, nil, 0, nil, ctx.Err()
 	}
+	if err := checkCredentialRelayQuota(user, pass, addr, time.Now()); err != nil {
+		<-allocSemaphore
+		closeFailedAllocation(client, raw)
+		return nil, nil, nil, 0, nil, err
+	}
+	finishUse, err := beginCredentialUse(ctx, user, pass, time.Now())
+	if err != nil {
+		<-allocSemaphore
+		closeFailedAllocation(client, raw)
+		return nil, nil, nil, 0, nil, err
+	}
 	allocStart := time.Now()
 	relay, err := allocateWithDeadline(ctx, allocateHandshakeTimeout, client.Allocate, func() {
 		closeFailedAllocation(client, raw)
@@ -307,16 +324,25 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 	<-allocSemaphore
 	if err != nil {
 		closeFailedAllocation(client, raw)
+		// A definite TURN error created no allocation; transport failure or
+		// cancellation may have lost an already-successful response.
+		_, definiteRefusal := turnErrorCode(err)
+		finishUse(!definiteRefusal)
 		// Only a genuine refusal counts against the server. A losing failover
 		// candidate — or any dial during a teardown — fails because we cancelled
 		// its context, which says nothing about the host.
 		if ctx.Err() == nil {
-			noteServerFailure(addr)
+			if isQuotaError(err) {
+				noteCredentialRelayQuota(user, pass, addr, time.Now())
+			} else if !classifyCredError(err) {
+				noteServerFailure(addr)
+			}
 		}
 		return nil, nil, nil, 0, nil, fmt.Errorf("TURN allocate: %w", err)
 	}
 
-	return client, raw, relay, dialed + time.Since(allocStart), perm, nil
+	noteCredentialAllocationAccepted(user, pass)
+	return client, raw, &credentialTrackedRelay{PacketConn: relay, finish: finishUse}, dialed + time.Since(allocStart), perm, nil
 }
 
 // allocateHandshakeTimeout is a watchdog for blocked transport operations.

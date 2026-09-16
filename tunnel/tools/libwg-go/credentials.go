@@ -29,8 +29,10 @@ type StreamCredentialsCache struct {
 
 	// refreshMu guards lastRefresh and serialises the throttle decision in
 	// refreshGroupCreds independently of the creds lock above.
-	refreshMu   sync.Mutex
-	lastRefresh time.Time // guarded by refreshMu
+	refreshMu      sync.Mutex
+	lastRefresh    time.Time // guarded by refreshMu
+	fetchNotBefore time.Time // guarded by mutex; VK returned quarantined credentials
+	fetchRetryLink string    // guarded by mutex; do not pause a different call link
 }
 
 const (
@@ -118,44 +120,28 @@ func invalidateAllCaches() {
 	turnLog("[Auth] All credential caches cleared (streamsPerCred=%d)", streamsPerCredValue())
 }
 
-// invalidateGroupCreds force-expires the cached credential for a single group so
-// the next getCredsCached goes back to the VK API for a fresh one. Unlike
-// invalidateAllCaches it does NOT delete the slot: keeping the same
-// *StreamCredentialsCache pointer means the per-slot cache.mutex in
-// getCredsCached still single-flights the re-fetch across the group's workers
-// (the first re-fetches, the rest get a cache hit). Called when the TURN server
-// rejects allocations for this credential (stale/401/486).
-func invalidateGroupCreds(groupID int) {
-	cache := getStreamCache(groupID * streamsPerCredValue())
-	cache.mutex.Lock()
-	var lived time.Duration
-	if !cache.creds.FetchedAt.IsZero() {
-		lived = time.Since(cache.creds.FetchedAt).Round(time.Second)
-	}
-	cache.creds.ExpiresAt = time.Now().Add(-time.Second)
-	cache.mutex.Unlock()
-	turnLog("[Auth] Credential cache for group %d force-expired (lived %v)", groupID, lived)
-}
-
 // refreshGroupCreds is the throttled, error-driven re-fetch entry point used by
 // workers. The first worker in a slot to hit an auth/quota error force-expires
 // the slot; siblings that fail within credRefreshThrottle become no-ops and
 // reuse the credential the first worker's next getCredsCached fetches. Throttle
 // state lives behind refreshMu so the decision is independent of the creds lock.
-func refreshGroupCreds(groupID int) {
+func refreshGroupCreds(groupID int, user, pass string) {
 	cache := getStreamCache(groupID * streamsPerCredValue())
-
 	cache.refreshMu.Lock()
+	defer cache.refreshMu.Unlock()
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	// A late failure belongs to the credential that actually failed. It must
+	// never expire the replacement fetched by a sibling in the meantime.
+	if cache.creds.Username != user || cache.creds.Password != pass {
+		return
+	}
 	if !cache.lastRefresh.IsZero() && time.Since(cache.lastRefresh) < credRefreshThrottle {
-		ago := time.Since(cache.lastRefresh).Round(time.Second)
-		cache.refreshMu.Unlock()
-		turnLog("[Auth] Group %d creds refreshed %v ago — skipping re-fetch", groupID, ago)
 		return
 	}
 	cache.lastRefresh = time.Now()
-	cache.refreshMu.Unlock()
-
-	invalidateGroupCreds(groupID)
+	cache.creds.ExpiresAt = time.Now().Add(-time.Second)
+	turnLog("[Auth] Credential cache for group %d force-expired (lived %v)", groupID, time.Since(cache.creds.FetchedAt).Round(time.Second))
 }
 
 // fetchFunc is the raw credential retrieval function (no cache logic).
@@ -177,7 +163,7 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
-	if cache.creds.Link == link && time.Now().Before(cache.creds.ExpiresAt) {
+	if cache.creds.Link == link && time.Now().Before(cache.creds.ExpiresAt) && checkCredentialReconnect(cache.creds.Username, cache.creds.Password, time.Now()) == nil {
 		ttl := time.Until(cache.creds.ExpiresAt).Round(time.Second)
 		turnLog("[STREAM %d] Cache hit (cache=%d, ttl=%v)", streamID, cacheID, ttl)
 		return cache.creds.Username, cache.creds.Password, cache.creds.ServerAddrs, nil
@@ -197,10 +183,26 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 	default:
 	}
 
+	if cache.fetchRetryLink == link && time.Now().Before(cache.fetchNotBefore) {
+		return "", "", nil, &credentialReuseWaitError{cache.fetchNotBefore}
+	}
+	if err := checkCredentialMintPause(time.Now()); err != nil {
+		return "", "", nil, err
+	}
+
 	user, pass, addrs, lifetimeSecs, err := fn(ctx, link)
 	if err != nil {
 		return "", "", nil, err
 	}
+
+	if err := checkCredentialReconnect(user, pass, time.Now()); err != nil {
+		cache.fetchNotBefore = err.(*credentialReconnectError).until
+		cache.fetchRetryLink = link
+		return "", "", nil, &credentialReuseWaitError{cache.fetchNotBefore}
+	}
+	cache.fetchNotBefore = time.Time{}
+	cache.fetchRetryLink = ""
+	registerCredentialQuota(user, pass, time.Now())
 
 	// Compute ExpiresAt from the real API lifetime; fall back to credentialLifetime.
 	expiry := time.Now().Add(credentialLifetime - cacheSafetyMargin)

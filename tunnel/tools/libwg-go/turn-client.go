@@ -105,6 +105,7 @@ func clearTransientState() {
 
 //export wgNotifyNetworkChange
 func wgNotifyNetworkChange() {
+	quarantineRecentlyUsedCredentials(time.Now())
 	resetNetworkPathProof()
 	ClearCache()
 	turnLog("[NETWORK] Network change: path proof and DNS cache reset (creds preserved)")
@@ -1184,6 +1185,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		// screen (nor keep holding captchaMutex) while this start runs.
 		abortPendingCaptcha()
 	}
+	quarantineRecentlyUsedCredentials(time.Now())
 	ctx, cancel := context.WithCancel(context.Background())
 	currentTurnCancel = cancel
 	turnMutex.Unlock()
@@ -1374,6 +1376,7 @@ func wgTurnProxyStop() {
 	if cancel != nil {
 		turnLog("[PROXY] Stopping TURN proxy")
 		cancel()
+		quarantineRecentlyUsedCredentials(time.Now())
 		// Wait (bounded) for worker goroutines to unwind so each stream's
 		// relayConn.Close() runs and sends TURN Refresh(lifetime=0) — this frees
 		// the server-side allocation now instead of letting it linger until its
@@ -1387,11 +1390,9 @@ func wgTurnProxyStop() {
 			}
 		}
 	}
-	// Credential caches are intentionally preserved across stops so an immediate
-	// reconnect gets a cache hit and avoids a fresh VK API round-trip (and captcha).
-	// If old TURN allocations lingered (drain timed out) and the quota is exhausted,
-	// a worker hitting 486 calls refreshGroupCreds → its next reconnect re-fetches
-	// a fresh credential automatically.
+	// Keep unused cache entries, but recent allocations are held aside until
+	// their server lifetime can expire. A quick restart fetches fresh credentials.
+
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

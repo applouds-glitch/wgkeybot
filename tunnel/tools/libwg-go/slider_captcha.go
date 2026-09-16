@@ -44,6 +44,7 @@ type captchaNotRobotSession struct {
 	adFp            string
 	viewport        captchaViewport
 	componentDoneAt time.Time
+	bff             bool
 }
 
 type captchaSettingsResponse struct {
@@ -79,6 +80,9 @@ type captchaBootstrap struct {
 	Difficulty int
 	Settings   *captchaSettingsResponse
 	ScriptURL  string
+	IsBFF      bool
+	DebugInfo  string
+	Lang       string
 	// PowV2 marks the current page format, where the captcha page embeds an
 	// obfuscated inline PoW solver that receives the challenge as IIFE arguments
 	// and expects the check's hash param to be a "v2."-prefixed payload instead
@@ -164,6 +168,20 @@ func (s *captchaNotRobotSession) request(method string, values neturl.Values) (m
 	return resp, nil
 }
 
+// BFF creates the session before settings/componentDone and returns the opaque
+// settings keys used by getContent. Do not repeat initSession on slider fallback.
+func (s *captchaNotRobotSession) requestInitSession(lang string) (*captchaSettingsResponse, error) {
+	if lang == "" {
+		lang = "0"
+	}
+	values := neturl.Values{"session_token": {s.sessionToken}, "domain": {s.endpoints.Domain}, "lang": {lang}, "access_token": {""}}
+	resp, err := s.request("captchaNotRobot.initSession", values)
+	if err != nil {
+		return nil, fmt.Errorf("initSession failed: %w", err)
+	}
+	return parseCaptchaSettingsResponse(resp)
+}
+
 func (s *captchaNotRobotSession) requestSettings() (*captchaSettingsResponse, error) {
 	resp, err := s.request("captchaNotRobot.settings", s.baseValues())
 	if err != nil {
@@ -246,8 +264,10 @@ func (s *captchaNotRobotSession) requestCheck(cursor string, answer string) (*ca
 	values.Set("motion", "[]")
 	values.Set("cursor", cursor)
 	values.Set("taps", "[]")
-	values.Set("connectionRtt", connRtt)
-	values.Set("connectionDownlink", connDownlink)
+	if !s.bff {
+		values.Set("connectionRtt", connRtt)
+		values.Set("connectionDownlink", connDownlink)
+	}
 	values.Set("browser_fp", s.browserFp)
 	values.Set("hash", s.hash)
 	values.Set("answer", answer)
@@ -277,15 +297,29 @@ func callCaptchaNotRobotWithSliderPOC(
 	profile Profile,
 	initialSettings *captchaSettingsResponse,
 	endpoints captchaEndpoints,
+	bootstrap ...*captchaBootstrap,
 ) (string, error) {
 	session := newCaptchaNotRobotSession(ctx, sessionToken, endpoints, hash, debugInfo, streamID, client, profile)
+
+	if len(bootstrap) > 0 && bootstrap[0] != nil && bootstrap[0].IsBFF {
+		session.bff = true
+		initSettings, err := session.requestInitSession(bootstrap[0].Lang)
+		if err != nil {
+			return "", err
+		}
+		initialSettings = mergeCaptchaSettings(initSettings, initialSettings)
+	}
 
 	turnLog("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
 	settingsResp, err := session.requestSettings()
 	if err != nil {
 		return "", err
 	}
-	settingsResp = mergeCaptchaSettings(settingsResp, initialSettings)
+	if session.bff {
+		settingsResp = mergeCaptchaSettings(initialSettings, settingsResp)
+	} else {
+		settingsResp = mergeCaptchaSettings(settingsResp, initialSettings)
+	}
 
 	time.Sleep(time.Duration(500+mathrand.Intn(300)) * time.Millisecond)
 
@@ -382,7 +416,17 @@ func parseCaptchaSettingsResponse(resp map[string]interface{}) (*captchaSettings
 	}
 	settings.ShowCaptchaType, _ = respObj["show_captcha_type"].(string)
 
-	rawSettings, ok := expandCaptchaSettings(respObj["captcha_settings"])
+	if status, _ := respObj["status"].(string); status != "" && status != "OK" {
+		if status == "ERROR_LIMIT" {
+			return nil, errCaptchaRateLimit
+		}
+		return nil, fmt.Errorf("settings status: %s", status)
+	}
+	raw := respObj["content_settings"]
+	if raw == nil {
+		raw = respObj["captcha_settings"]
+	}
+	rawSettings, ok := expandCaptchaSettings(raw)
 	if !ok {
 		return settings, nil
 	}
@@ -398,7 +442,11 @@ func parseCaptchaSettingsResponse(resp map[string]interface{}) (*captchaSettings
 			continue
 		}
 
-		normalized, err := normalizeCaptchaSettings(item["settings"])
+		value := item["settings"]
+		if key, _ := item["settings_key"].(string); key != "" {
+			value = key
+		}
+		normalized, err := normalizeCaptchaSettings(value)
 		if err != nil {
 			return nil, fmt.Errorf("invalid captcha_settings for %s: %w", captchaType, err)
 		}
@@ -421,6 +469,14 @@ var (
 
 func parseCaptchaBootstrapHTML(html string) (*captchaBootstrap, error) {
 	bootstrap := &captchaBootstrap{Difficulty: 2}
+	block := captchaVKGlobal(html)
+	bootstrap.IsBFF = block != "" || regexp.MustCompile(`window\.isBFF\s*=\s*true`).MatchString(html)
+	if m := regexp.MustCompile(`(?:["']?[\w$]+["']?)\s*:\s*["']([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})["']`).FindStringSubmatch(block); len(m) > 1 {
+		bootstrap.DebugInfo = m[1]
+	}
+	if m := regexp.MustCompile(`["']?\blang["']?\s*:\s*["']?(\d+)`).FindStringSubmatch(block); len(m) > 1 {
+		bootstrap.Lang = m[1]
+	}
 
 	// The v2 solver is the inline script that writes window.captchaPowResult.
 	for _, scriptMatch := range reInlineScript.FindAllStringSubmatch(html, -1) {
@@ -1284,4 +1340,38 @@ func describeCaptchaTypes(settingsByType map[string]string) string {
 	}
 	sort.Strings(types)
 	return strings.Join(types, ",")
+}
+
+// Bound metadata lookup to window.vk, respecting braces inside quoted strings.
+// The property carrying debug_info is renamed between widget builds.
+func captchaVKGlobal(page string) string {
+	loc := regexp.MustCompile(`window\.vk\s*=\s*\{`).FindStringIndex(page)
+	if loc == nil {
+		return ""
+	}
+	start, depth := loc[1]-1, 0
+	var quote byte
+	for i := start; i < len(page); i++ {
+		ch := page[i]
+		if quote != 0 {
+			if ch == '\\' {
+				i++
+			} else if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return page[start : i+1]
+			}
+		}
+	}
+	return ""
 }

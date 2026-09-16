@@ -148,6 +148,19 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 				return
 			}
 
+			var paused interface {
+				error
+				RetryAt() time.Time
+			}
+			if errors.As(err, &paused) {
+				turnLog("[WORKER %d] %v", s.id, paused)
+				select {
+				case <-time.After(max(time.Millisecond, time.Until(paused.RetryAt()))):
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
 			credFailStreak++
 			var wait time.Duration
 			switch {
@@ -237,8 +250,11 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		// reconnects (with backoff) rather than giving up, so a stream always
 		// recovers on its own — WireGuard and the sibling streams keep running
 		// while just this stream is recreated.
+		if isQuotaError(runErr) {
+			noteFreshCredentialRefusal(user, pass, addrs, time.Now())
+		}
 		if classifyCredError(runErr) {
-			refreshGroupCreds(cfg.GroupID)
+			refreshGroupCreds(cfg.GroupID, user, pass)
 		}
 
 		// A session that stayed up for a while was healthy; treat its drop as a
@@ -402,6 +418,10 @@ func quotaCooldown() time.Duration {
 // patterns (see isTransportError). The surviving numeric patterns are anchored
 // on "error " for the same reason.
 func classifyCredError(err error) bool {
+	var reconnect *credentialReconnectError
+	if errors.As(err, &reconnect) {
+		return true
+	}
 	if code, ok := turnErrorCode(err); ok {
 		switch code {
 		case stun.CodeUnauthorized, // 401

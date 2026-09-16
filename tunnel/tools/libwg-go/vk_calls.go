@@ -376,6 +376,12 @@ func vkCallsOKError(step string, resp map[string]interface{}) error {
 		return nil
 	}
 	msg, _ := resp["error_msg"].(string)
+	// The preceding step just minted this token. A missing token at join can
+	// be a transient VK/OK handoff failure, not a request for a captcha.
+	// Retry the entire anonymous flow within its existing three-attempt budget.
+	if int(code) == 100 && strings.Contains(msg, "error.webrtc.auth.anonym_token.not_found") {
+		return transientVKCallsf("%s: OK CDN error_code=%d: %s", step, int(code), msg)
+	}
 	return fmt.Errorf("%s: OK CDN error_code=%d: %s", step, int(code), msg)
 }
 
