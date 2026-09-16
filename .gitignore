@@ -20,12 +20,10 @@ maint/
 CLAUDE.md
 .claude/
 /.codegraph/
-info/TURN_INTEGRATION_DETAILS.md
-info/VK_TLS_TRUST_ANCHORS.md
 docs/superpowers/
 # собранные бинарники captcha-probe (go build в tunnel/tools/captcha-probe/)
 tunnel/tools/captcha-probe/captcha-probe
 tunnel/tools/captcha-probe/captcha-probe-arm64
-# локальная диагностика TURN: сырые логи остаются на машине, не в репозитории
-info/TURN_RECEIVE_LOOP_DIAGNOSTICS_2026-09-16.md
-info/diagnostics/
+# info/ — внутренние заметки, диагностические логи и разборы: живут локально,
+# в репозиторий не выкладываются (старые файлы остаются в истории до чистки)
+info/
