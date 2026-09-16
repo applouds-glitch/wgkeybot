@@ -8,105 +8,117 @@ package main
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
-// A typical device runs 8 streams (2 groups × 4) against the 2 TURN servers VK
-// returns. Until one of them is elected the load must land 4/4 rather than
-// piling onto one host: a server nobody dials never proves itself, and the
-// election would have nothing to choose from. resetServerHealth puts every test
-// in this file back into that probing state.
-func TestAssignServersSpreadsEvenly(t *testing.T) {
+// Every worker, including workers from another credential group, must keep
+// that group's VK response order. Startup must not probe a second host merely
+// because another worker is already connecting to the first one.
+func TestAssignServersPreservesVKOrderForEveryStream(t *testing.T) {
 	resetServerHealth()
 	defer resetServerHealth()
 
-	addrs := []string{"1.1.1.1:3478", "2.2.2.2:3478"}
-
-	counts := map[string]int{}
-	for id := 0; id < 8; id++ {
-		counts[assignServers(addrs, id)[0]]++
+	groups := [][]string{
+		{"3.3.3.3:3478", "1.1.1.1:3478", "2.2.2.2:3478"},
+		{"2.2.2.2:3478", "3.3.3.3:3478"},
 	}
-
-	for _, a := range addrs {
-		if counts[a] != 4 {
-			t.Errorf("server %s got %d of 8 streams, want 4 (counts: %v)", a, counts[a], counts)
-		}
-	}
-}
-
-// The assigned server must be the same for a given stream ID no matter what
-// order VK happened to return the urls in for that group's link — otherwise
-// group 0 and group 1 would disagree on which server is index 0 and the split
-// would drift.
-func TestAssignServersCanonicalOrder(t *testing.T) {
-	resetServerHealth()
-	defer resetServerHealth()
-
-	forward := []string{"1.1.1.1:3478", "2.2.2.2:3478"}
-	reversed := []string{"2.2.2.2:3478", "1.1.1.1:3478"}
-
-	for id := 0; id < 8; id++ {
-		if got, want := assignServers(reversed, id), assignServers(forward, id); !reflect.DeepEqual(got, want) {
-			t.Errorf("stream %d: reversed input gave %v, want %v", id, got, want)
-		}
-	}
-}
-
-// Every server with no verdict against it stays in the returned list — the ones
-// after index 0 are the failover candidates runWithCreds falls back to when the
-// assigned one errors.
-func TestAssignServersKeepsFailoverCandidates(t *testing.T) {
-	resetServerHealth()
-	defer resetServerHealth()
-
-	addrs := []string{"3.3.3.3:3478", "1.1.1.1:3478", "2.2.2.2:3478"}
-
-	for id := 0; id < 6; id++ {
-		got := assignServers(addrs, id)
-		if len(got) != len(addrs) {
-			t.Fatalf("stream %d: got %d servers, want %d", id, len(got), len(addrs))
-		}
-		seen := map[string]bool{}
-		for _, a := range got {
-			seen[a] = true
-		}
-		for _, a := range addrs {
-			if !seen[a] {
-				t.Errorf("stream %d: server %s missing from %v", id, a, got)
+	for streamID := 0; streamID < 10; streamID++ {
+		for _, addrs := range groups {
+			if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
+				t.Fatalf("stream %d: got %v, want VK order %v", streamID, got, addrs)
 			}
 		}
 	}
 }
 
-// addrs may alias the cached TurnCredentials.ServerAddrs slice (getCredsCached
-// returns it by reference on a hit), so assignServers must never reorder in
-// place — that would corrupt the cache for every other stream in the group.
-func TestAssignServersDoesNotMutateInput(t *testing.T) {
+// Proof from a fallback or another credential group must not replace a primary
+// that has not failed. There is no startup election after the first handshake.
+func TestAssignServersKeepsVKOrderAfterHandshakeProof(t *testing.T) {
 	resetServerHealth()
 	defer resetServerHealth()
 
 	addrs := []string{"3.3.3.3:3478", "1.1.1.1:3478"}
-	orig := append([]string(nil), addrs...)
-
-	for id := 0; id < 4; id++ {
-		assignServers(addrs, id)
+	noteServerHandshakeOKAt(addrs[1], time.Now().Add(-time.Minute))
+	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
+		t.Fatalf("fallback proof changed primary: got %v, want %v", got, addrs)
 	}
-
-	if !reflect.DeepEqual(addrs, orig) {
-		t.Errorf("input mutated: got %v, want %v", addrs, orig)
+	noteServerHandshakeOK(addrs[0])
+	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
+		t.Fatalf("both servers proving themselves changed order: got %v, want %v", got, addrs)
 	}
 }
 
-// A single server (VK returned one url, or TurnIP is pinned) must pass through
-// untouched — applyTurnOverride collapses the list before we get here.
+// Failed hosts are excluded entirely, including from Allocate failover; the
+// remaining candidates retain the API order rather than alphabetical order.
+func TestAssignServersSkipsUnavailableServers(t *testing.T) {
+	for _, failure := range []string{"data-plane", "repeated-allocate"} {
+		t.Run(failure, func(t *testing.T) {
+			resetServerHealth()
+			defer resetServerHealth()
+			addrs := []string{"2.2.2.2:3478", "3.3.3.3:3478", "1.1.1.1:3478"}
+			now := time.Now()
+			if failure == "data-plane" {
+				noteServerHandshakeFailureAt(addrs[0], now.Add(-time.Second), now)
+			} else {
+				for i := 0; i < serverFailThreshold; i++ {
+					age := time.Duration(serverFailThreshold-1-i) * (serverFailCoalesce + time.Second)
+					noteServerFailureAt(addrs[0], now.Add(-age))
+				}
+			}
+			if got := assignServers(addrs); !reflect.DeepEqual(got, addrs[1:]) {
+				t.Fatalf("got %v, want available servers %v", got, addrs[1:])
+			}
+		})
+	}
+}
+
+// An uplink outage must not leave an empty candidate list or reintroduce
+// round-robin probing. A new tunnel session must also forget old exclusions.
+func TestAssignServersRetriesVKOrderAfterOutage(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	addrs := []string{"3.3.3.3:3478", "1.1.1.1:3478"}
+	now := time.Now()
+	for _, addr := range addrs {
+		noteServerHandshakeFailureAt(addr, now.Add(-time.Second), now)
+	}
+	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
+		t.Fatalf("outage fallback: got %v, want %v", got, addrs)
+	}
+
+	// Only the fallback recovers, so it temporarily becomes the primary.
+	noteServerHandshakeOKAt(addrs[1], now.Add(time.Second))
+	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs[1:]) {
+		t.Fatalf("got %v, want recovered server %v", got, addrs[1:])
+	}
+	resetServerHealth()
+	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
+		t.Fatalf("new session retained exclusions: got %v, want %v", got, addrs)
+	}
+}
+
+func TestAssignServersDoesNotMutateCachedAddresses(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	addrs := []string{"3.3.3.3:3478", "1.1.1.1:3478", "2.2.2.2:3478"}
+	orig := append([]string(nil), addrs...)
+	noteServerDemotedAt(addrs[0], time.Now())
+	assignServers(addrs)
+	if !reflect.DeepEqual(addrs, orig) {
+		t.Fatalf("cached list mutated: got %v, want %v", addrs, orig)
+	}
+}
+
+// A manual TurnIP pin has no alternative. Keep retrying it even after failures.
 func TestAssignServersSingleServer(t *testing.T) {
 	resetServerHealth()
 	defer resetServerHealth()
 
 	addrs := []string{"1.1.1.1:3478"}
-
-	for id := 0; id < 4; id++ {
-		if got := assignServers(addrs, id); !reflect.DeepEqual(got, addrs) {
-			t.Errorf("stream %d: got %v, want %v", id, got, addrs)
-		}
+	noteServerDemotedAt(addrs[0], time.Now())
+	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
+		t.Fatalf("got %v, want pinned server %v", got, addrs)
 	}
 }

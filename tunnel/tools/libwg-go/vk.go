@@ -850,11 +850,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 		return "", "", nil, 0, fmt.Errorf("invalid urls in turn_server (keys=%s)", responseKeys(ts))
 	}
 
-	// Parse and resolve EVERY TURN URL the API returns. Streams are later
-	// round-robined across this list (worker_group.go) so allocations from a
-	// single client IP are spread over all available TURN servers instead of
-	// piling onto urls[0] — which a single overloaded server silently drops
-	// ("all retransmissions failed").
+	// Preserve the API's TURN URL order. Every stream starts with the first
+	// available address; the remaining addresses provide failover.
 	var addresses []string
 	for _, u := range urls {
 		urlStr, ok := u.(string)

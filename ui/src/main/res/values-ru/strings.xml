@@ -338,7 +338,7 @@
     <string name="turn_streams">Потоков (-n)</string>
     <string name="turn_streams_hint">1-16 (по умолчанию 4)</string>
     <string name="turn_streams_per_cred">Потоков на учётные данные</string>
-    <string name="turn_streams_per_cred_hint">1-16 (по умолчанию 4)</string>
+    <string name="turn_streams_per_cred_hint">1-10 (по умолчанию 4)</string>
     <string name="turn_use_udp">Использовать UDP</string>
     <string name="turn_watchdog_timeout">Таймаут watchdog</string>
     <string name="turn_watchdog_timeout_hint">0=отключено, ≥5 с</string>

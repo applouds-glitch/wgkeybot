@@ -34,6 +34,9 @@ type StreamCredentialsCache struct {
 }
 
 const (
+	// One credential may hold at most ten concurrent TURN allocations.
+	maxStreamsPerCredential = 10
+
 	// credentialLifetime is the fallback TTL used when the VK API reports no
 	// lifetime of its own — which is what it always does in practice
 	// (api_ttl=0s in every "Credentials cached until" log line), so this is the
@@ -70,11 +73,10 @@ func init() { streamsPerCred.Store(4) }
 func streamsPerCredValue() int { return int(streamsPerCred.Load()) }
 
 func setStreamsPerCred(n int) {
-	if n < 1 {
-		n = 1
-	}
-	streamsPerCred.Store(int64(n))
+	streamsPerCred.Store(int64(clampStreamsPerCred(n)))
 }
+
+func clampStreamsPerCred(n int) int { return max(1, min(n, maxStreamsPerCredential)) }
 
 // getCacheID maps a stream ID to its shared credential cache slot.
 func getCacheID(streamID int) int {

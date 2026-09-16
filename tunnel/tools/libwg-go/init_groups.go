@@ -87,6 +87,9 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	if n <= 0 {
 		n = streamsPerCredValue()
 	}
+	if n > maxStreamsPerCredential {
+		return nil, nil, nil, fmt.Errorf("a credential supports at most %d streams", maxStreamsPerCredential)
+	}
 	wd := cfg.WatchdogTimeout
 	dispatchDropCount.Store(0)
 

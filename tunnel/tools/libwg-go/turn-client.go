@@ -348,10 +348,9 @@ const (
 	// window the ClientHello goes out four times; a relay that swallowed all
 	// four is not going to answer a fifth. It used to be 30s, longer than
 	// TunnelManager's 25s connect budget: on the default proxy_v2 peer type a
-	// blackholed relay failed its handshake — and was demoted, see
-	// turn_server_election.go — only after the tunnel had already been torn
-	// down, so the election effectively ran only for peerType "wireguard". A
-	// healthy handshake over these relays measures 130-220ms, so the window
+	// blackholed relay failed its handshake only after the tunnel had already
+	// been torn down, leaving no time for failover. A healthy handshake over
+	// these relays measures 130-220ms, so the window
 	// keeps an order of magnitude of headroom for a bad mobile RTT plus a lost
 	// flight or two.
 	dataPlaneHandshakeTimeout = 8 * time.Second
@@ -1211,43 +1210,9 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		return getCredsCached(ctx, lk, streamID, fetchVkCreds)
 	}
 
-	// ── Apply StreamNum cap / expand ─────────────────────────────────────────
-	// StreamNum (n) is the total stream count. streamsPerCred is a group's
-	// capacity — the most streams one credential may carry — not its exact size.
-	//   • n < total: reduce streamsPerCred so total matches n.
-	//   • n > total: add groups by cycling links until they hold n streams, and
-	//     let the last group take the remainder rather than rounding the total
-	//     up to a multiple of streamsPerCred (n=12, streamsPerCred=9 gives 9 + 3,
-	//     not 9 + 9). A short trailing group needs no special handling
-	//     elsewhere: streamID/streamsPerCred — the credential cache key in
-	//     credentials.go:getCacheID — already maps streams 9-11 to slot 1.
-	// streamsPerCred must stay in sync with that division either way. The value is
-	// computed locally and published once, at the end: the global is read by the
-	// previous session's departing workers, so intermediate values must never be
-	// visible to them.
-	perCred := int(streamsPerCredC)
-	if perCred < 1 {
-		perCred = 1
-	}
-	totalStreams := len(links) * perCred
-	if maxTotal := int(n); maxTotal > 0 {
-		if maxTotal < totalStreams {
-			perGroup := maxTotal / len(links)
-			if perGroup < 1 {
-				perGroup = 1
-			}
-			perCred = perGroup
-			totalStreams = len(links) * perCred
-		} else if maxTotal > totalStreams {
-			numGroups := (maxTotal + perCred - 1) / perCred
-			origLinks := links
-			links = make([]string, numGroups)
-			for i := range links {
-				links[i] = origLinks[i%len(origLinks)]
-			}
-			totalStreams = maxTotal
-		}
-	}
+	// Bound each credential before expanding groups. The cache stride and the
+	// worker layout must use the same value, including for legacy settings >10.
+	links, perCred, totalStreams := planCredentialGroups(links, int(n), int(streamsPerCredC))
 	setStreamsPerCred(perCred)
 
 	turnLog("[PROXY] Starting: listen=%s StreamNum=%d streamsPerGroup=%d links=%d actualTotal=%d mode=%s peerType=%s watchdog=%ds",

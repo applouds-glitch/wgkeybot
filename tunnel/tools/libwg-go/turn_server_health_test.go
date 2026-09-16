@@ -142,3 +142,31 @@ func TestHandshakeFailureIgnoresProofOlderThanTheAttempt(t *testing.T) {
 		t.Fatal("proof from before the attempt authorised a stand-down")
 	}
 }
+
+func TestDemotionEndsWhenTheServerProvesItselfAgain(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	noteServerDemotedAt(healthTestAddr, time.Now().Add(-time.Minute))
+	if !serverDemoted(healthTestAddr) {
+		t.Fatal("a failed handshake did not exclude the server")
+	}
+	noteServerHandshakeOK(healthTestAddr)
+	if serverDemoted(healthTestAddr) {
+		t.Fatal("a server that carried a round trip is still excluded")
+	}
+}
+
+func TestHandshakeFailureDemotesWithoutPenalising(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	attemptStart := time.Now()
+	noteServerHandshakeFailureAt(healthTestAddr, attemptStart, attemptStart.Add(2*time.Second))
+	if serverPenalized(healthTestAddr, attemptStart.Add(3*time.Second)) {
+		t.Fatal("an unproven failure stood the server down on one strike")
+	}
+	if !serverDemoted(healthTestAddr) {
+		t.Fatal("a failed data-plane handshake left the server in the candidate list")
+	}
+}

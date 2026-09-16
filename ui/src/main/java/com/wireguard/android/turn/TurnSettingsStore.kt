@@ -45,7 +45,7 @@ class TurnSettingsStore(private val context: Context) {
                 turnIp = json.optString("turnIp", ""),
                 turnPort = json.optInt("turnPort", 0),
                 peerType = json.optString("peerType", peerTypeDefault),
-                streamsPerCred = json.optInt("streamsPerCred", 4),
+                streamsPerCred = json.optInt("streamsPerCred", 4).coerceIn(1, TurnSettings.MAX_STREAMS_PER_CREDENTIAL),
                 wrapKey = json.optString("wrapKey", ""),
                 fallbackStreams = json.optInt("fallbackStreams", 0),
             )
