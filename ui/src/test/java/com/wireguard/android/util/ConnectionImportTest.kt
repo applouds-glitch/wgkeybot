@@ -10,6 +10,10 @@ import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.util.Base64
 import java.util.zip.DeflaterOutputStream
+import java.io.IOException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 class ConnectionImportTest {
     private fun fixture(): JSONObject = javaClass.getResourceAsStream("/python-connection-link.json")!!
@@ -57,5 +61,57 @@ class ConnectionImportTest {
         assertEquals("Invalid connection link", failure.message)
         assertFalse(failure.toString().contains(secret))
         assertNull(failure.cause)
+    }
+
+    @Test
+    fun `failed persistence keeps old session and retry commits only after saving`() = runBlocking {
+        val prepared = ConnectionImport.prepare(fixture().getString("link"))
+        var session = "old session"
+        var saved = false
+        try {
+            ConnectionImport.apply(prepared, { throw IOException("disk full") }) {
+                session = it.response.accessToken
+            }
+            org.junit.Assert.fail("failed persistence must propagate")
+        } catch (_: IOException) {
+            assertEquals("old session", session)
+        }
+        val result = ConnectionImport.apply(prepared, {
+            assertEquals("old session", session)
+            saved = true
+            "stored tunnel"
+        }) {
+            assertTrue(saved)
+            session = it.response.accessToken
+        }
+        assertEquals("stored tunnel", result)
+        assertEquals(prepared.response.accessToken, session)
+    }
+
+    @Test
+    fun `activity cancellation cannot leave saved config without its session`() = runBlocking {
+        val prepared = ConnectionImport.prepare(fixture().getString("link"))
+        val saving = CompletableDeferred<Unit>()
+        val finishWrite = CompletableDeferred<Unit>()
+        var saved = false
+        var committed = false
+        var returnedToUi = false
+        val import = launch {
+            ConnectionImport.apply(prepared, {
+                saving.complete(Unit)
+                finishWrite.await()
+                saved = true
+            }) {
+                assertTrue(saved)
+                committed = true
+            }
+            returnedToUi = true
+        }
+        saving.await()
+        import.cancel()
+        finishWrite.complete(Unit)
+        import.join()
+        assertTrue(committed)
+        assertFalse(returnedToUi)
     }
 }

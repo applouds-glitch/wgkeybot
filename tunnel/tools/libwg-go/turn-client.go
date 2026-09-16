@@ -42,6 +42,13 @@ func turnLog(format string, args ...interface{}) {
 	l.Printf(format, args...)
 }
 
+// Keep failure causes visible when the device or exported log filters out INFO.
+// Otherwise Java's generic "error -1" is the only diagnostic left at startup.
+func turnErrorLog(format string, args ...interface{}) {
+	l := AndroidLogger{level: C.ANDROID_LOG_ERROR, tag: turnClientTag}
+	l.Printf(format, args...)
+}
+
 // errSocketNotProtected aborts a dial whose socket VpnService.protect() refused.
 // This app is deliberately kept inside its own tunnel (GoBackend never excludes
 // its own package), and the WireGuard endpoint is the local TURN listener, so an
@@ -481,7 +488,9 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			if hasWrap {
 				m, unwrapErr := unwrapPacket(s.wrapKey, wire[:n], plain)
 				if unwrapErr != nil {
-					turnLog("[STREAM %d] WRAP RX skip: %v", s.id, unwrapErr)
+					if debugWrapRX {
+						turnLog("[STREAM %d] WRAP RX skip: %v", s.id, unwrapErr)
+					}
 					continue
 				}
 				// Only a successfully parsed WRAP packet is inbound liveness
@@ -780,8 +789,10 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 				if s.wrapKey != nil {
 					m, unwrapErr := unwrapPacket(s.wrapKey, wire[:n], plain)
 					if unwrapErr != nil {
-						// Corrupted or unrecognised packet — skip silently.
-						turnLog("[STREAM %d] WRAP RX skip: %v", s.id, unwrapErr)
+						// Corrupted or unrecognised packet — silent in release.
+						if debugWrapRX {
+							turnLog("[STREAM %d] WRAP RX skip: %v", s.id, unwrapErr)
+						}
 						continue
 					}
 					if m == 0 {
@@ -1160,7 +1171,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	if wrapKeyStr := C.GoString(wrapKeyC); wrapKeyStr != "" {
 		decoded, err := decodeWrapKey(true, wrapKeyStr)
 		if err != nil {
-			turnLog("[PROXY] Invalid wrapKey: %v", err)
+			turnErrorLog("[PROXY] Invalid wrapKey: %v", err)
 			return -1
 		}
 		wrapKey = decoded
@@ -1246,14 +1257,14 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	// ── DNS resolution ────────────────────────────────────────────────────────
 	peer, err := resolvePeer(peerAddr)
 	if err != nil {
-		turnLog("[PROXY] Cannot resolve peer %s: %v", peerAddr, err)
+		turnErrorLog("[PROXY] Cannot resolve peer %s: %v", peerAddr, err)
 		return -1
 	}
 
 	// ── Local listener ────────────────────────────────────────────────────────
 	lc, err := listenUDP(listenAddr)
 	if err != nil {
-		turnLog("[PROXY] ListenPacket failed: %v", err)
+		turnErrorLog("[PROXY] ListenPacket failed: %v", err)
 		return -1
 	}
 	context.AfterFunc(ctx, func() { lc.Close() })
@@ -1261,7 +1272,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	sessionID, _ := uuid.New().MarshalBinary()
 	cert, err := selfsign.GenerateSelfSigned()
 	if err != nil {
-		turnLog("[PROXY] DTLS cert generation failed: %v", err)
+		turnErrorLog("[PROXY] DTLS cert generation failed: %v", err)
 		return -1
 	}
 
@@ -1293,12 +1304,12 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 				if ctx.Err() == nil {
 					if strings.Contains(prefetchErr.Error(), "CALL_REQUIRES_AUTH") {
 						atomic.StoreInt32(&callRequiresAuth, 1)
-						turnLog("[PROXY] Pre-fetch group %d: CALL_REQUIRES_AUTH — aborting", groupID)
+						turnErrorLog("[PROXY] Pre-fetch group %d: CALL_REQUIRES_AUTH — aborting", groupID)
 					} else if strings.Contains(prefetchErr.Error(), "CALL_UNAVAILABLE") {
 						atomic.StoreInt32(&callUnavailable, 1)
-						turnLog("[PROXY] Pre-fetch group %d: CALL_UNAVAILABLE (call ended/deleted or invalid link)", groupID)
+						turnErrorLog("[PROXY] Pre-fetch group %d: CALL_UNAVAILABLE (call ended/deleted or invalid link)", groupID)
 					} else {
-						turnLog("[PROXY] Pre-fetch group %d failed: %v (WorkerGroup will retry)", groupID, prefetchErr)
+						turnErrorLog("[PROXY] Pre-fetch group %d failed: %v (WorkerGroup will retry)", groupID, prefetchErr)
 						if strings.Contains(prefetchErr.Error(), "CAPTCHA_WAIT_REQUIRED") {
 							atomic.StoreInt32(&prefetchLockout, 1)
 						}
@@ -1316,12 +1327,12 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		return -2
 	}
 	if atomic.LoadInt32(&prefetchOk) == 0 && atomic.LoadInt32(&callUnavailable) == 1 {
-		turnLog("[PROXY] All pre-fetches failed: call unavailable (ended/deleted or invalid link) — aborting startup")
+		turnErrorLog("[PROXY] All pre-fetches failed: call unavailable (ended/deleted or invalid link) — aborting startup")
 		cancel()
 		return -4 // distinct code: dead call — caller must not retry other stream counts
 	}
 	if atomic.LoadInt32(&prefetchOk) == 0 && atomic.LoadInt32(&prefetchLockout) == 1 {
-		turnLog("[PROXY] All pre-fetches failed due to CAPTCHA_WAIT_REQUIRED — aborting startup")
+		turnErrorLog("[PROXY] All pre-fetches failed due to CAPTCHA_WAIT_REQUIRED — aborting startup")
 		cancel()
 		return -3 // distinct code: captcha lockout — caller must not retry other stream counts
 	}
@@ -1343,7 +1354,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		NetworkGeneration: networkGeneration,
 	})
 	if err != nil {
-		turnLog("[PROXY] StartTunnelGroups failed: %v", err)
+		turnErrorLog("[PROXY] StartTunnelGroups failed: %v", err)
 		cancel()
 		return -1
 	}
@@ -1369,7 +1380,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		turnLog("[PROXY] Startup cancelled")
 		return -1
 	case <-time.After(startupTimeout):
-		turnLog("[PROXY] Startup timeout — no DTLS handshake within %v", startupTimeout)
+		turnErrorLog("[PROXY] Startup timeout — no stream proved its data plane within %v", startupTimeout)
 		cancel()
 		return -1
 	}
