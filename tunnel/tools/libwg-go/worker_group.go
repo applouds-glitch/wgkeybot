@@ -176,7 +176,7 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 				wait = credRetryDelay(credFailStreak)
 			}
 
-			turnLog("[WORKER %d] Credential error (streak %d, captcha %d/%d): %v — retry in %v",
+			turnErrorLog("[WORKER %d] Credential error (streak %d, captcha %d/%d): %v — retry in %v",
 				s.id, credFailStreak, captchaFailureStreak(), maxCaptchaFailStreak, err, wait.Round(time.Second))
 			select {
 			case <-time.After(wait):
@@ -275,7 +275,7 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		if isQuotaError(runErr) {
 			retryDelay = quotaCooldown()
 		}
-		turnLog("[WORKER %d] Error (streak %d): %v → retry in %v", s.id, failStreak, runErr, retryDelay)
+		turnErrorLog("[WORKER %d] Error (streak %d): %v → retry in %v", s.id, failStreak, runErr, retryDelay)
 		select {
 		case <-time.After(retryDelay):
 		case <-ctx.Done():

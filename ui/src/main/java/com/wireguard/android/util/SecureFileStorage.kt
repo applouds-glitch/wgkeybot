@@ -8,6 +8,8 @@ import android.content.Context
 import android.util.Log
 import androidx.security.crypto.EncryptedFile
 import androidx.security.crypto.MasterKey
+import com.wireguard.config.Config
+import org.json.JSONObject
 import java.io.File
 import java.io.FileNotFoundException
 
@@ -52,6 +54,7 @@ object SecureFileStorage {
      * file doesn't exist.
      */
     @Throws(Exception::class)
+    @Synchronized
     fun read(context: Context, file: File): ByteArray {
         if (!file.isFile) throw FileNotFoundException(file.path)
         return try {
@@ -65,38 +68,39 @@ object SecureFileStorage {
             } catch (_: Exception) {
                 throw cryptoError
             }
+            // A failed decryption is not proof of legacy plaintext. Never replace
+            // damaged ciphertext (or a file whose key is unavailable) with another
+            // encrypted copy of those bytes.
+            if (!isLegacyPlaintext(file, raw)) throw cryptoError
             Log.i(TAG, "Migrating plaintext file to encrypted: ${file.name}")
-            // Re-encrypt in place. EncryptedFile.openFileOutput requires the
-            // file not to exist, so delete first.
-            if (!file.delete()) Log.w(TAG, "Failed to delete plaintext for migration: ${file.name}")
             try {
-                encryptedFile(context, file).openFileOutput().use { it.write(raw) }
+                write(context, file, raw)
             } catch (rewriteError: Exception) {
-                // Rewrite failed — restore plaintext so the next launch can retry
-                // rather than leaving the user with nothing.
-                file.outputStream().use { it.write(raw) }
-                Log.e(TAG, "Migration write failed; restored plaintext: ${rewriteError.message}")
+                // Atomic replacement kept the original legacy file for a retry.
+                Log.e(TAG, "Migration write failed; original file preserved", rewriteError)
             }
             raw
         }
     }
 
+    internal fun isLegacyPlaintext(file: File, bytes: ByteArray): Boolean = runCatching {
+        when {
+            file.name.endsWith(".conf") -> Config.parse(bytes.inputStream())
+            file.name.endsWith(".turn.json") -> JSONObject(bytes.toString(Charsets.UTF_8))
+            else -> error("Unknown legacy file type")
+        }
+    }.isSuccess
+
     /**
      * Writes [bytes] to [file] encrypted. Replaces existing content atomically
-     * from the caller's perspective — internal keyset rotation is handled by
-     * EncryptedFile.
+     * with a fully written and synced ciphertext. The staging file keeps the
+     * destination's basename so EncryptedFile can decrypt it after the rename.
      */
     @Throws(Exception::class)
+    @Synchronized
     fun write(context: Context, file: File, bytes: ByteArray) {
-        file.parentFile?.mkdirs()
-        // EncryptedFile.openFileOutput requires the destination not to exist.
-        // Synchronize to prevent a TOCTOU race when two coroutines write the same file concurrently:
-        // both could see exists()==false, both proceed to openFileOutput(), and the second one crashes.
-        synchronized(this) {
-            if (file.exists() && !file.delete()) {
-                throw IllegalStateException("Cannot replace existing file: ${file.path}")
-            }
-            encryptedFile(context, file).openFileOutput().use { it.write(bytes) }
+        AtomicFileReplacement.write(file) { staged ->
+            encryptedFile(context, staged).openFileOutput().use { it.write(bytes) }
         }
     }
 }

@@ -1,11 +1,35 @@
 package com.wireguard.android.util
 
 import com.wireguard.config.Config
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 
 /** Resolve and validate everything before replacing a tunnel or its auth state. */
 object ConnectionImport {
     class Prepared(val response: ApiClient.InitResponse, val config: Config)
+
+    /** Finish local persistence even if the importing Activity is destroyed.
+     * A failed write never publishes the new session/hash. Reconnect and UI work
+     * belong after this returns: their failure cannot undo a committed import.
+     */
+    suspend fun <T> apply(
+        prepared: Prepared,
+        persistConfig: suspend (Config) -> T,
+        commitSession: (Prepared) -> Unit,
+    ): T {
+        val result = withContext(NonCancellable) {
+            val stored = persistConfig(prepared.config)
+            commitSession(prepared)
+            stored
+        }
+        // withContext(NonCancellable) keeps the same dispatcher; explicitly stop
+        // the cancelled caller before it touches a detached Activity/Fragment.
+        currentCoroutineContext().ensureActive()
+        return result
+    }
 
     fun prepare(raw: String): Prepared {
         val input = ConnectionLink.parse(raw)

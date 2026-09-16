@@ -1189,9 +1189,12 @@ class TunnelListFragment : BaseFragment() {
 
     /** Every entry point uses the same validated bootstrap and refresh state. */
     suspend fun applyConnection(prepared: ConnectionImport.Prepared) {
-        vm.pendingAutoRefresh = false
-        ConnectionImport.saveSession(AuthStore.getInstance(requireContext()), prepared)
-        applyConfig(prepared.config)
+        val auth = AuthStore.getInstance(requireContext())
+        val tunnel = ConnectionImport.apply(prepared, ::persistConfig) {
+            ConnectionImport.saveSession(auth, it)
+            vm.pendingAutoRefresh = false
+        }
+        finishConfigUpdate(tunnel, reconnect = true, showFeedback = true)
     }
 
     // Shared entry point used by both the refresh button and deeplink import.
@@ -1200,25 +1203,35 @@ class TunnelListFragment : BaseFragment() {
         reconnect: Boolean = true,
         showFeedback: Boolean = true,
     ) {
+        val tunnel = persistConfig(config)
+        finishConfigUpdate(tunnel, reconnect, showFeedback)
+    }
+
+    /** Persist without reconnecting or refreshing UI against an uncommitted session. */
+    private suspend fun persistConfig(config: com.wireguard.config.Config): ObservableTunnel {
         val tunnelManager = Application.getTunnelManager()
         val existing = tunnelManager.getTunnels().firstOrNull { it.name == TunnelManager.PRIMARY_TUNNEL_NAME }
-        if (existing != null) {
+        return if (existing != null) {
             val turnSettings = TurnConfigProcessor.extractTurnSettings(config)
                 ?: existing.turnSettings
             val configWithApps = withSplitTunnelApps(config, existing.getConfigAsync())
-            // setTunnelConfig does DOWN→save→UP when the tunnel was UP. Bridge the
-            // gap in the UI so polling doesn't flip to Failed during the reconnect.
-            // With reconnect=false the running tunnel is left as-is (new config takes
-            // effect on the next connect), so no UI bridging is needed.
-            val wasUp = reconnect && existing.state == Tunnel.State.UP
-            if (wasUp) vm.notifyConnecting()
-            tunnelManager.setTunnelConfig(existing, configWithApps, turnSettings, reconnect = reconnect)
-            if (wasUp) vm.notifyTunnelUp()
+            tunnelManager.setTunnelConfig(existing, configWithApps, turnSettings, reconnect = false)
+            existing
         } else {
             tunnelManager.create(TunnelManager.PRIMARY_TUNNEL_NAME, config)
         }
+    }
+
+    private suspend fun finishConfigUpdate(tunnel: ObservableTunnel, reconnect: Boolean, showFeedback: Boolean) {
         recordConfigLoaded()
         refreshButtonState()
+        if (reconnect && tunnel.state == Tunnel.State.UP) {
+            vm.notifyConnecting()
+            val manager = Application.getTunnelManager()
+            manager.setTunnelState(tunnel, Tunnel.State.DOWN)
+            manager.setTunnelState(tunnel, Tunnel.State.UP)
+            vm.notifyTunnelUp()
+        }
         if (showFeedback) showConfigUpdatedSnackbar()
     }
 

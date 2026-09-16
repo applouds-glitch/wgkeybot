@@ -94,6 +94,8 @@ dependencies {
     coreLibraryDesugaring(libs.desugarJdkLibs)
     testImplementation(libs.junit)
     testImplementation("org.json:json:20240303")
+    // Same primitive/version used internally by security-crypto's EncryptedFile.
+    testImplementation("com.google.crypto.tink:tink-android:1.8.0")
 }
 
 tasks.withType<JavaCompile>().configureEach {
