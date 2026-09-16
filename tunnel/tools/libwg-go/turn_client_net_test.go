@@ -21,6 +21,13 @@ func TestTURNClientWithoutInterfaceDiscovery(t *testing.T) {
 			host := "127.0.0.1"
 			if network[3] == '6' {
 				host = "::1"
+				// CI containers and some dev hosts have no IPv6 loopback; that
+				// says nothing about the client under test.
+				probe, err := net.Listen("tcp6", "[::1]:0")
+				if err != nil {
+					t.Skipf("no IPv6 loopback: %v", err)
+				}
+				probe.Close()
 			}
 			listenAddr := net.JoinHostPort(host, "0")
 			generator := &turn.RelayAddressGeneratorStatic{
