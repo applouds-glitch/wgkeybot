@@ -1252,7 +1252,6 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 
 	turnLog("[PROXY] Starting: listen=%s StreamNum=%d streamsPerGroup=%d links=%d actualTotal=%d mode=%s peerType=%s watchdog=%ds",
 		listenAddr, int(n), perCred, len(links), totalStreams, mode, peerType, watchdogTimeout)
-	turnLog("[PROXY] Identities (%d): %v", len(links), links)
 
 	// ── DNS resolution ────────────────────────────────────────────────────────
 	peer, err := resolvePeer(peerAddr)
@@ -1449,7 +1448,3 @@ func resolvePeer(peerAddr string) (*net.UDPAddr, error) {
 	}
 	return net.ResolveUDPAddr("udp", peerAddr)
 }
-
-type connectedUDPConn struct{ *net.UDPConn }
-
-func (c *connectedUDPConn) WriteTo(p []byte, _ net.Addr) (int, error) { return c.Write(p) }

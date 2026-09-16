@@ -374,7 +374,7 @@ func callCaptchaNotRobotWithSliderPOC(
 func parseCaptchaSettingsResponse(resp map[string]interface{}) (*captchaSettingsResponse, error) {
 	respObj, ok := resp["response"].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("invalid settings response: %v", resp)
+		return nil, fmt.Errorf("invalid settings response (keys=%s)", responseKeys(resp))
 	}
 
 	settings := &captchaSettingsResponse{
@@ -593,7 +593,7 @@ func normalizeCaptchaSettings(raw interface{}) (string, error) {
 func parseCaptchaCheckResult(resp map[string]interface{}) (*captchaCheckResult, error) {
 	respObj, ok := resp["response"].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("invalid check response: %v", resp)
+		return nil, fmt.Errorf("invalid check response (keys=%s)", responseKeys(resp))
 	}
 
 	result := &captchaCheckResult{}
@@ -601,7 +601,7 @@ func parseCaptchaCheckResult(resp map[string]interface{}) (*captchaCheckResult, 
 	result.SuccessToken, _ = respObj["success_token"].(string)
 	result.ShowCaptchaType, _ = respObj["show_captcha_type"].(string)
 	if result.Status == "" {
-		return nil, fmt.Errorf("check status missing: %v", resp)
+		return nil, fmt.Errorf("check status missing (keys=%s)", responseKeys(resp))
 	}
 
 	return result, nil
@@ -610,7 +610,7 @@ func parseCaptchaCheckResult(resp map[string]interface{}) (*captchaCheckResult, 
 func parseSliderCaptchaContentResponse(resp map[string]interface{}) (*sliderCaptchaContent, error) {
 	respObj, ok := resp["response"].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("invalid slider content response: %v", resp)
+		return nil, fmt.Errorf("invalid slider content response (keys=%s)", responseKeys(resp))
 	}
 
 	status, _ := respObj["status"].(string)

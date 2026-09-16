@@ -351,7 +351,7 @@ object CaptchaWebViewManager {
                                 handler.proceed()
                             } else {
                                 handler.cancel()
-                                Log.w(TAG, "SSL error rejected for: $url")
+                                Log.w(TAG, "SSL error rejected (code=${error.primaryError})")
                             }
                         }
                     }
