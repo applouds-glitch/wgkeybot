@@ -301,6 +301,7 @@ func dialAndAllocateOnce(ctx context.Context, s *stream, user, pass, addr string
 		Username:       user,
 		Password:       pass,
 		Conn:           responses,
+		RTO:            turnClientRTO,
 		// pion refreshes the peer permission every 120s by default. That is
 		// twice as often as it needs to be: the permission's lifetime is a
 		// fixed 300s (RFC 8656 section 9), so 240s renews it with a full 60s of
@@ -387,15 +388,28 @@ func dialAndAllocateOnce(ctx context.Context, s *stream, user, pass, addr string
 	return client, raw, &credentialTrackedRelay{PacketConn: relay, finish: finishUse}, dialed + time.Since(allocStart), perm, nil
 }
 
+// turnClientRTO is pion's initial retransmit timer for every TURN transaction.
+// pion's default is 200 ms, which is below the RTT this proxy actually sees:
+// in the 2026-09-16 Pixel 6a logs every successful Allocate was answered in
+// 231-261 ms and none on a retransmit, so at 200 ms the first copy of each
+// request was always back on the wire before its reply could arrive — two
+// copies of the 401 challenge and two of the authenticated Allocate per
+// stream, on a relay whose lost replies leave allocations occupying the
+// credential's quota until they expire. A sequential probe against the same
+// relays with RTO 500 ms saw no loss at all. RFC 8489 section 6.2.1 recommends
+// 500 ms as the default; use it. pion doubles the interval up to its 1600 ms
+// cap, so one transaction retransmits for 500+1000+1600*5 = 9.5 s.
+const turnClientRTO = 500 * time.Millisecond
+
 // allocateHandshakeTimeout is a watchdog for blocked transport operations.
 // Pion already bounds each of Allocate's two transactions (401 challenge, then
-// authenticated request) to about 7.8s of retransmissions. Let both finish,
-// including scheduler headroom. A 2s total budget cut off answering servers on
-// slow or lossy links, sometimes after they had created an allocation whose
-// response we could no longer receive or use to release it.
+// authenticated request) to about 9.5s of retransmissions at turnClientRTO.
+// Let both finish, including scheduler headroom. A 2s total budget cut off
+// answering servers on slow or lossy links, sometimes after they had created
+// an allocation whose response we could no longer receive or use to release it.
 // Silent servers still fail on Pion's own timer; cancellation need not wait
 // for either timer. Keep semaphore queue time out of this budget and the RTT.
-const allocateHandshakeTimeout = 20 * time.Second
+const allocateHandshakeTimeout = 25 * time.Second
 
 var errAllocateTimeout = errors.New("Allocate timed out")
 
