@@ -131,10 +131,12 @@ type stream struct {
 	watchdogTimeout int
 
 	// serverAddr is the TURN server this attempt runs on, set by runSession
-	// before the transport starts. The transports use it to report their own
-	// handshake verdict to turn_server_health.go; it is rewritten on every
-	// attempt and read only by the single goroutine driving this stream.
+	// before the transport starts and cleared at the start of every attempt.
+	// addrShift moves this stream's starting relay: bumped by a short failed
+	// session, pinned to the relay that carried a lasting one (see runWorker and
+	// serversForAttempt). Both belong to the single goroutine driving the stream.
 	serverAddr string
+	addrShift  int
 
 	// wrapKey is an optional 32-byte ChaCha20 key for WRAP obfuscation.
 	// When non-nil, raw UDP packets to/from the TURN relay are encrypted with
@@ -594,7 +596,6 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				return fmt.Errorf("%w: %w", errDataPlaneHandshake, err)
 			}
 		}
-		noteServerHandshakeOK(s.serverAddr)
 		// The only line this transport prints on success. Without it a live
 		// noDTLS stream is invisible in the log — its server can be recovered
 		// only by pairing "Dial TURN" with the absence of a later worker error.
@@ -822,7 +823,6 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		return fmt.Errorf("%w: DTLS handshake failed: %w", errDataPlaneHandshake, err)
 	}
 	turnLog("[STREAM %d] DTLS handshake OK", s.id)
-	noteServerHandshakeOK(s.serverAddr)
 	markNetworkPathProven(s.networkGeneration)
 
 	// Session + stream ID handshake (proxy_v2 only). Sent as a small burst
@@ -981,7 +981,6 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	defer srtpConn.Close()
 	context.AfterFunc(sCtx, func() { srtpConn.Close() })
 	turnLog("[STREAM %d] SRTP handshake OK", s.id)
-	noteServerHandshakeOK(s.serverAddr)
 	markNetworkPathProven(s.networkGeneration)
 
 	// Session + stream ID handshake (proxy_v2 model). Sent as a small burst
@@ -1145,8 +1144,8 @@ func parseLinks(raw string, maxLinks int) []string {
 //export wgTurnProxyStart
 func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char, networkHandleC C.longlong) int32 {
 	networkGeneration := beginNetworkPathGeneration()
-	clearTransientState()    // flush DNS without clearing credential caches
-	resetServerHealth()      // new credentials, usually a new server list
+	clearTransientState() // flush DNS without clearing credential caches
+	resetAllocationMismatchPauses()
 	resetWorkerFatalState(0) // re-armed with the real worker count in StartTunnelGroups
 
 	if networkHandleC != 0 {
@@ -1211,6 +1210,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	globalGetCreds = func(ctx context.Context, lk string, streamID int) (string, string, []string, error) {
 		return getCredsCached(ctx, lk, streamID, fetchVkCreds)
 	}
+	globalFetchSpare = fetchVkCredsNoCaptcha
 
 	// Bound each credential before expanding groups. The cache stride and the
 	// worker layout must use the same value, including for legacy settings >10.

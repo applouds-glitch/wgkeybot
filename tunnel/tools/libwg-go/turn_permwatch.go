@@ -6,9 +6,12 @@
 package main
 
 import (
+	"fmt"
+	"math/rand"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // pion never returns an error when a TURN allocation stops working underneath a
@@ -45,6 +48,11 @@ const (
 	permFailMarker  = "Failed to refresh permissions"
 	permOKMarker    = "Refresh permissions successful"
 
+	// retransmitTimeoutMarker is pion's wording for a transaction nobody answered
+	// (errAllRetransmissionsFailed, errors.go). It separates "the relay said no"
+	// from "nothing came back", and only the first is a statement about the relay.
+	retransmitTimeoutMarker = "all retransmissions failed"
+
 	// pion closes the relay itself when the server answers ChannelBind with 400
 	// (closeAfterChannelBindBadRequest, udp_conn.go:538). Watching for it does
 	// not change the outcome, but it lets the teardown carry a real reason
@@ -61,10 +69,29 @@ const (
 	bindFailThreshold = 2
 
 	// Allocation refresh: pion fires it at lifetime/2 — 300s for the 600s VK
-	// grants. Waiting for a second failure is pointless because the allocation
-	// expires before it happens, so one hard failure (already 7 retransmits
-	// deep) recycles the stream ~5 minutes before it would have died anyway.
-	allocFailThreshold = 1
+	// grants — and after a failure does not try again until the next tick, which
+	// is the moment the allocation expires. So one failure does decide the
+	// allocation's fate, but not when the stream has to go.
+	//
+	// A relay that answers the refresh with an error (401 on an expired
+	// credential, 437 on an allocation it no longer has) has spoken: recycle now.
+	// A refresh nobody answered is a different thing. It used to recycle on the
+	// spot too, and in the 2026-09-17 log that is where the cascade started: the
+	// uplink went dark for forty seconds, three refreshes timed out, three
+	// working allocations were thrown away, and their replacements met 486 on a
+	// relay still holding the originals. pion's log was the only witness, and it
+	// cannot tell a dead relay from a dead uplink. (vk-turn-proxy-ios dropped its
+	// pion-log reconnect trigger for the same reason — "all 5 were false
+	// positives... zero true positives".)
+	//
+	// So the echo is the judge. An allocation that really is gone stops echoing:
+	// the dispatcher skips it after dispatchStaleAfter and the ChannelBind and
+	// dead-stream detectors take it down. One that still echoes is left to carry
+	// traffic for the five minutes it has left, and is recycled shortly before it
+	// would expire — by which time an uplink flap is long over, and the jitter
+	// keeps a group whose refreshes all failed together from recycling together.
+	allocRecycleDelay  = 230 * time.Second
+	allocRecycleJitter = 40 * time.Second
 
 	// Permission refresh: every 4 minutes (PermissionRefreshInterval, raised
 	// from pion's 120s default in dialAndAllocate — see the rationale there).
@@ -82,10 +109,16 @@ const (
 type permWatch struct {
 	streamID int
 
-	mu         sync.Mutex // guards the counters below
-	bindFails  int
-	allocFails int
-	permFails  int
+	mu        sync.Mutex // guards the counters and the timer below
+	bindFails int
+	permFails int
+
+	// allocTimer is the pending recycle after an unanswered allocation refresh;
+	// stopped keeps a session that has already ended from arming or firing one.
+	allocTimer *time.Timer
+	stopped    bool
+	// recycleAfter overrides the recycle delay; tests only.
+	recycleAfter func() time.Duration
 
 	reason atomic.Pointer[string]
 	dead   chan struct{}
@@ -112,7 +145,7 @@ func (w *permWatch) note(msg string) {
 	case strings.Contains(msg, bindOKMarker):
 		w.bindFails = 0
 	case strings.Contains(msg, allocOKMarker):
-		w.allocFails = 0
+		w.cancelAllocRecycleLocked()
 	case strings.Contains(msg, permOKMarker):
 		w.permFails = 0
 	case strings.Contains(msg, allocClosedMarker):
@@ -121,8 +154,11 @@ func (w *permWatch) note(msg string) {
 		w.bindFails++
 		fire = w.bindFails >= bindFailThreshold
 	case strings.Contains(msg, allocFailMarker):
-		w.allocFails++
-		fire = w.allocFails >= allocFailThreshold
+		if strings.Contains(msg, retransmitTimeoutMarker) {
+			w.deferAllocRecycleLocked(msg)
+		} else {
+			fire = true
+		}
 	case strings.Contains(msg, permFailMarker):
 		w.permFails++
 		fire = w.permFails >= permFailThreshold
@@ -132,6 +168,45 @@ func (w *permWatch) note(msg string) {
 	if fire {
 		w.markDead(msg)
 	}
+}
+
+// deferAllocRecycleLocked arms the recycle for an allocation whose refresh went
+// unanswered (see allocRecycleDelay). A second failure on the same session keeps
+// the first deadline. Callers must hold mu.
+func (w *permWatch) deferAllocRecycleLocked(msg string) {
+	if w.stopped || w.allocTimer != nil {
+		return
+	}
+	delay := allocRecycleDelay + time.Duration(rand.Int63n(int64(allocRecycleJitter)))
+	if w.recycleAfter != nil {
+		delay = w.recycleAfter()
+	}
+	armed := time.Now()
+	w.allocTimer = time.AfterFunc(delay, func() {
+		w.markDead(fmt.Sprintf("allocation refresh went unanswered %v ago and was never renewed: %s",
+			time.Since(armed).Round(time.Second), msg))
+	})
+	turnLog("[STREAM %d] Allocation refresh went unanswered — leaving the stream to its echoes, recycling in %v unless a refresh succeeds",
+		w.streamID, delay.Round(time.Second))
+}
+
+func (w *permWatch) cancelAllocRecycleLocked() {
+	if w.allocTimer != nil {
+		w.allocTimer.Stop()
+		w.allocTimer = nil
+	}
+}
+
+// stop disarms a pending recycle when the session ends for any other reason, so
+// the timer cannot outlive the allocation it was watching. Safe on a nil watch.
+func (w *permWatch) stop() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.stopped = true
+	w.cancelAllocRecycleLocked()
+	w.mu.Unlock()
 }
 
 // markDead latches the blackhole verdict. Idempotent: later failures on a

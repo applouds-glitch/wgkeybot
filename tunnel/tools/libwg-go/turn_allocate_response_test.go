@@ -21,7 +21,7 @@ func TestInitialAllocateErrorMatchesTransactionOverTCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	defer resetServerHealth()
+	defer resetAllocationMismatchPauses()
 	done := make(chan error, 1)
 	go func() {
 		conn, err := l.Accept()

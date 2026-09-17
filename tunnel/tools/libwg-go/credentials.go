@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,11 @@ type StreamCredentialsCache struct {
 	lastRefresh    time.Time // guarded by refreshMu
 	fetchNotBefore time.Time // guarded by mutex; VK returned quarantined credentials
 	fetchRetryLink string    // guarded by mutex; do not pause a different call link
+
+	// spare is an unused identity held in reserve (see credential_spare.go);
+	// guarded by mutex. spareWanted wakes the filler once it has been promoted.
+	spare       TurnCredentials
+	spareWanted chan struct{}
 }
 
 const (
@@ -116,7 +122,7 @@ func getStreamCache(streamID int) *StreamCredentialsCache {
 	if cache, exists = credentialsStore.caches[cacheID]; exists {
 		return cache
 	}
-	cache = &StreamCredentialsCache{}
+	cache = &StreamCredentialsCache{spareWanted: make(chan struct{}, 1)}
 	credentialsStore.caches[cacheID] = cache
 	return cache
 }
@@ -129,12 +135,15 @@ func invalidateAllCaches() {
 	turnLog("[Auth] All credential caches cleared (streamsPerCred=%d)", streamsPerCredValue())
 }
 
-// refreshGroupCreds is the throttled, error-driven re-fetch entry point used by
-// workers. The first worker in a slot to hit an auth/quota error force-expires
-// the slot; siblings that fail within credRefreshThrottle become no-ops and
-// reuse the credential the first worker's next getCredsCached fetches. Throttle
-// state lives behind refreshMu so the decision is independent of the creds lock.
-func refreshGroupCreds(groupID int, user, pass string) {
+// refreshGroupCreds is the throttled, error-driven rotation entry point used by
+// workers. The first worker in a slot to find its identity spent replaces it:
+// with the spare if the slot holds one (reported as true — the new credential is
+// already in the cache, nothing to wait for), otherwise by force-expiring the
+// slot so the next getCredsCached goes to VK. Siblings that fail within
+// credRefreshThrottle become no-ops and reuse whatever the first one landed.
+// Throttle state lives behind refreshMu so the decision is independent of the
+// creds lock.
+func refreshGroupCreds(groupID int, user, pass string) bool {
 	cache := getStreamCache(groupID * streamsPerCredValue())
 	cache.refreshMu.Lock()
 	defer cache.refreshMu.Unlock()
@@ -143,14 +152,31 @@ func refreshGroupCreds(groupID int, user, pass string) {
 	// A late failure belongs to the credential that actually failed. It must
 	// never expire the replacement fetched by a sibling in the meantime.
 	if cache.creds.Username != user || cache.creds.Password != pass {
-		return
+		return false
 	}
 	if !cache.lastRefresh.IsZero() && time.Since(cache.lastRefresh) < credRefreshThrottle {
-		return
+		return false
 	}
-	cache.lastRefresh = time.Now()
-	cache.creds.ExpiresAt = time.Now().Add(-time.Second)
-	turnLog("[Auth] Credential cache for group %d force-expired (lived %v)", groupID, time.Since(cache.creds.FetchedAt).Round(time.Second))
+	now := time.Now()
+	cache.lastRefresh = now
+	lived := now.Sub(cache.creds.FetchedAt).Round(time.Second)
+	if cache.spareUsableLocked(cache.creds.Link, now) {
+		cache.promoteSpareLocked(groupID, fmt.Sprintf("previous identity spent after %v", lived), now)
+		return true
+	}
+	cache.creds.ExpiresAt = now.Add(-time.Second)
+	turnLog("[Auth] Credential cache for group %d force-expired (lived %v)", groupID, lived)
+	return false
+}
+
+// groupCredentialReplaced reports whether the group's slot already holds a live
+// identity other than the one that just failed — a sibling got there first.
+func groupCredentialReplaced(groupID int, user, pass string) bool {
+	cache := getStreamCache(groupID * streamsPerCredValue())
+	cache.mutex.RLock()
+	defer cache.mutex.RUnlock()
+	c := cache.creds
+	return c.Username != "" && (c.Username != user || c.Password != pass) && time.Now().Before(c.ExpiresAt)
 }
 
 // fetchFunc is the raw credential retrieval function (no cache logic).
@@ -175,6 +201,15 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 	if cache.creds.Link == link && time.Now().Before(cache.creds.ExpiresAt) && checkCredentialReconnect(cache.creds.Username, cache.creds.Password, time.Now()) == nil {
 		ttl := time.Until(cache.creds.ExpiresAt).Round(time.Second)
 		turnLog("[STREAM %d] Cache hit (cache=%d, ttl=%v)", streamID, cacheID, ttl)
+		return cache.creds.Username, cache.creds.Password, cache.creds.ServerAddrs, nil
+	}
+
+	// The working identity is expired, held aside after a reconnect, or belongs
+	// to another link. An unused spare answers all three without a trip to VK —
+	// which is what makes a quick stop/start instant: the quarantine sets the
+	// used identity aside, and the spare has never touched a relay.
+	if cache.spareUsableLocked(link, time.Now()) {
+		cache.promoteSpareLocked(cacheID, "working identity unavailable", time.Now())
 		return cache.creds.Username, cache.creds.Password, cache.creds.ServerAddrs, nil
 	}
 
@@ -213,30 +248,34 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 	cache.fetchRetryLink = ""
 	registerCredentialQuota(user, pass, time.Now())
 
-	// Compute ExpiresAt from the real API lifetime, else from the expiry VK
-	// stamps into the username; fall back to credentialLifetime.
-	expiry := time.Now().Add(credentialLifetime - cacheSafetyMargin)
-	if lifetimeSecs > int(cacheSafetyMargin.Seconds()) {
-		d := time.Duration(lifetimeSecs)*time.Second - cacheSafetyMargin
-		if d > time.Duration(defaultCycleSecs)*time.Second {
-			d = time.Duration(defaultCycleSecs) * time.Second
-		}
-		expiry = time.Now().Add(d)
-	} else if until, ok := credentialExpiryFromUsername(user); ok {
-		expiry = credentialCacheExpiry(until, time.Now())
-	}
-
 	cache.creds = TurnCredentials{
 		Username:    user,
 		Password:    pass,
 		ServerAddrs: addrs,
-		ExpiresAt:   expiry,
+		ExpiresAt:   credentialExpiry(user, lifetimeSecs, time.Now()),
 		FetchedAt:   time.Now(),
 		Link:        link,
 	}
 	turnLog("[STREAM %d] Credentials cached until %v (cache=%d, api_ttl=%ds)",
 		streamID, cache.creds.ExpiresAt.Format("15:04:05"), cacheID, lifetimeSecs)
 	return user, pass, addrs, nil
+}
+
+// credentialExpiry is the cache deadline for a freshly fetched identity: from the
+// real API lifetime when VK reports one, else from the expiry VK stamps into the
+// username, else credentialLifetime.
+func credentialExpiry(user string, lifetimeSecs int, now time.Time) time.Time {
+	if lifetimeSecs > int(cacheSafetyMargin.Seconds()) {
+		d := time.Duration(lifetimeSecs)*time.Second - cacheSafetyMargin
+		if d > time.Duration(defaultCycleSecs)*time.Second {
+			d = time.Duration(defaultCycleSecs) * time.Second
+		}
+		return now.Add(d)
+	}
+	if until, ok := credentialExpiryFromUsername(user); ok {
+		return credentialCacheExpiry(until, now)
+	}
+	return now.Add(credentialLifetime - cacheSafetyMargin)
 }
 
 // credentialExpiryFromUsername reads the expiry VK's TURN REST service stamps
