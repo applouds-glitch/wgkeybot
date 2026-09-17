@@ -120,7 +120,7 @@ func newNoDTLSTestStream(t *testing.T) (*stream, net.PacketConn) {
 		in:         make(chan []byte, 8),
 		out:        out,
 		sessionID:  make([]byte, 16),
-		serverAddr: healthTestAddr,
+		serverAddr: "127.0.0.1:3478",
 		okFunc:     func() {},
 	}, relayConn
 }
@@ -130,9 +130,6 @@ func newNoDTLSTestStream(t *testing.T) (*stream, net.PacketConn) {
 // indistinguishable from a working one, so the dispatcher kept feeding it — and
 // WireGuard's handshake retries went into the hole until the tunnel gave up.
 func TestNoDTLSMarksStreamReadyOnlyAfterTheRelayAnswers(t *testing.T) {
-	defer resetServerHealth()
-	resetServerHealth()
-
 	s, relayConn := newNoDTLSTestStream(t)
 	answer := make(chan struct{})
 	peer := fakeRelay(t, answer)
@@ -167,11 +164,9 @@ func TestNoDTLSMarksStreamReadyOnlyAfterTheRelayAnswers(t *testing.T) {
 
 // The blackhole case: Allocate succeeded, so nothing upstream counts this
 // against the server, and the relay answers nothing. The stream must stay out of
-// the dispatcher and fail with a verdict runSession can act on immediately.
+// the dispatcher and fail as a data-plane handshake failure, so the worker's next
+// attempt starts from the next relay.
 func TestNoDTLSFailsTheStreamWhenTheRelayNeverAnswers(t *testing.T) {
-	defer resetServerHealth()
-	resetServerHealth()
-
 	s, relayConn := newNoDTLSTestStream(t)
 	peer := fakeRelay(t, nil)
 
@@ -193,42 +188,10 @@ func TestNoDTLSFailsTheStreamWhenTheRelayNeverAnswers(t *testing.T) {
 	}
 }
 
-// The proof is also what vouches for the uplink when a sibling on another server
-// fails its own handshake in the same window (see noteServerHandshakeFailure).
-func TestNoDTLSRecordsTheHandshakeAgainstItsServer(t *testing.T) {
-	defer resetServerHealth()
-	resetServerHealth()
-
-	s, relayConn := newNoDTLSTestStream(t)
-	answer := make(chan struct{})
-	close(answer)
-	peer := fakeRelay(t, answer)
-
-	attemptStart := time.Now()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { s.runNoDTLS(ctx, relayConn, peer) }()
-
-	deadline := time.Now().Add(relayProofTimeout)
-	for !s.ready.Load() {
-		if time.Now().After(deadline) {
-			t.Fatal("an answering relay never made the stream ready")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if !siblingProvedAnotherServer(healthTestPeerAddr, attemptStart, time.Now()) {
-		t.Fatalf("a completed handshake left no proof against %s", healthTestAddr)
-	}
-}
-
 // The wireguard peer type runs WRAP-obfuscated, and only a packet that unwraps
 // counts as proof there. That branch has its own accounting, so it gets its own
 // test: an echo the key cannot open must not make the stream ready.
 func TestNoDTLSTakesProofOnlyFromPacketsThatUnwrap(t *testing.T) {
-	defer resetServerHealth()
-	resetServerHealth()
-
 	key := make([]byte, 32)
 	for i := range key {
 		key[i] = byte(i)
@@ -264,9 +227,6 @@ func TestNoDTLSTakesProofOnlyFromPacketsThatUnwrap(t *testing.T) {
 // ...and the matching positive case: a relay speaking the same key proves the
 // path exactly as a plain one does.
 func TestNoDTLSTakesProofFromAWrappedEcho(t *testing.T) {
-	defer resetServerHealth()
-	resetServerHealth()
-
 	key := make([]byte, 32)
 	for i := range key {
 		key[i] = byte(i)

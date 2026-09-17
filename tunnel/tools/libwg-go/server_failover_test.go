@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -63,20 +64,11 @@ func startFailoverTestServer(t *testing.T, silent, rejectAuth bool) (string, *at
 }
 
 func TestRunWithCredsUsesFallbackOnlyAfterPrimaryFails(t *testing.T) {
-	for _, failure := range []string{"none", "allocate", "data-plane-after-outage"} {
+	for _, failure := range []string{"none", "allocate"} {
 		t.Run(failure, func(t *testing.T) {
-			resetServerHealth()
-			defer resetServerHealth()
-			primary, primaryRequests := startFailoverTestServer(t, failure == "data-plane-after-outage", failure == "allocate")
+			primary, primaryRequests := startFailoverTestServer(t, false, failure == "allocate")
 			fallback, fallbackRequests := startFailoverTestServer(t, false, false)
 			addrs := []string{primary, fallback}
-			if failure == "data-plane-after-outage" {
-				// Both hosts failed on the old uplink. Retrying the full list
-				// must reach the second host even if the first still blackholes.
-				for _, addr := range addrs {
-					noteServerDemotedAt(addr, time.Now().Add(-time.Minute))
-				}
-			}
 			s, _ := newNoDTLSTestStream(t)
 			ready := make(chan struct{}, 1)
 			s.okFunc = func() { ready <- struct{}{} }
@@ -86,7 +78,7 @@ func TestRunWithCredsUsesFallbackOnlyAfterPrimaryFails(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			done := make(chan error, 1)
 			go func() {
-				done <- s.runWithCreds(ctx, "user", "pass", assignServers(addrs), WorkerGroupConfig{
+				done <- s.runWithCreds(ctx, "user", "pass", addrs, WorkerGroupConfig{
 					UseUDP: true, PeerType: "wireguard", PeerAddr: peer,
 				})
 			}()
@@ -115,12 +107,64 @@ func TestRunWithCredsUsesFallbackOnlyAfterPrimaryFails(t *testing.T) {
 	}
 }
 
+// A relay that allocates and then swallows the data plane ends the attempt; the
+// stream's next one starts from the next relay. No ledger is involved, so the
+// same sequence under a dark uplink leaves nothing behind that could keep a
+// working relay out of the list afterwards.
+func TestSilentRelayCostsOneAttemptThenTheNextRelayCarriesTheStream(t *testing.T) {
+	resetCredentialQuota()
+	defer resetCredentialQuota()
+	silent, silentRequests := startFailoverTestServer(t, true, false)
+	working, workingRequests := startFailoverTestServer(t, false, false)
+	addrs := []string{silent, working}
+	s, _ := newNoDTLSTestStream(t)
+	s.id = 0
+	ready := make(chan struct{}, 1)
+	s.okFunc = func() { ready <- struct{}{} }
+	answer := make(chan struct{})
+	close(answer)
+	peer := fakeRelay(t, answer)
+	cfg := WorkerGroupConfig{UseUDP: true, PeerType: "wireguard", PeerAddr: peer}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	err := s.runWithCreds(ctx, "user", "pass", serversForAttempt(addrs, s.id+s.addrShift, "user", "pass", time.Now()), cfg)
+	if !errors.Is(err, errDataPlaneHandshake) {
+		t.Fatalf("silent relay returned %v, not a data-plane handshake failure", err)
+	}
+	if silentRequests.Load() == 0 || workingRequests.Load() != 0 {
+		t.Fatalf("first attempt dialed silent=%d working=%d", silentRequests.Load(), workingRequests.Load())
+	}
+	if shouldRotateCredentials(err, "user", "pass", addrs, time.Now()) {
+		t.Fatal("a silent relay rotated the credential")
+	}
+	s.noteRelayOutcome(addrs, false)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.runWithCreds(ctx, "user", "pass", serversForAttempt(addrs, s.id+s.addrShift, "user", "pass", time.Now()), cfg)
+	}()
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("the next attempt never reached the working relay")
+	}
+	if s.serverAddr != working {
+		t.Fatalf("stream ready on %s, want %s", s.serverAddr, working)
+	}
+	cancel()
+	select {
+	case <-done:
+		waitCredentialSlots(t, "user", "pass", 0, 0)
+	case <-time.After(5 * time.Second):
+		t.Error("stream did not stop after cancellation")
+	}
+}
+
 // Nine existing allocations leave only one slot for a reconnect. Its two
 // fallback candidates must share that slot instead of both allocating and
 // temporarily taking the credential above quota.
 func TestRunWithCredsCountsFallbackAttemptsAgainstQuota(t *testing.T) {
-	resetServerHealth()
-	defer resetServerHealth()
 	user, pass := t.Name(), "pass"
 	releases := make([]func(), 10)
 	for i := range releases {

@@ -66,6 +66,18 @@ type WorkerGroupConfig struct {
 func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) {
 	var wg sync.WaitGroup
 
+	// The spare identity for this group's slot (credential_spare.go). Not in wg:
+	// it holds no allocation, so the drain in wgTurnProxyStop has nothing to wait
+	// for, and it leaves on ctx like everything else.
+	go runSpareFiller(ctx, cfg, defaultSpareSchedule, func() bool {
+		for _, s := range streams {
+			if s.ready.Load() {
+				return true
+			}
+		}
+		return false
+	})
+
 	// cumStagger accumulates each stream's start delay so consecutive streams are
 	// spaced at least workerStagger (500ms) apart — the jitter is added on top,
 	// never subtracted, so the gap never dips below the floor. Stream 0 starts
@@ -91,12 +103,15 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 // times in a row. Giving up is reported through reportWorkerGaveUp, which
 // escalates to a user-visible terminal failure once no worker is left.
 //
-// Every stream starts with the first available server in VK's response order
-// (see assignServers). The other servers are failover only: runWithCreds dials
-// them just for this attempt, and only after the primary errors. failStreak only
-// counts consecutive connect failures to drive the retry backoff. A session
-// that stayed up for a while (or was closed cleanly by the server) resets the
-// streak for a fast retry.
+// Streams are spread over the relays VK returned: each starts its attempt from
+// relay (id + addrShift) mod n (see serversForAttempt). The other relays are
+// failover only: runWithCreds dials them just for this attempt, and only after
+// the first one errors. A short failed session moves addrShift on by one, so the
+// next attempt starts from the next relay; a session that lasted pins the stream
+// to the relay that carried it. That per-stream shift is all that is remembered
+// about relays. failStreak only counts consecutive connect failures to drive the
+// retry backoff. A session that stayed up for a while (or was closed cleanly by
+// the server) resets the streak for a fast retry.
 func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger time.Duration) {
 	if stagger > 0 {
 		select {
@@ -210,13 +225,19 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		// Apply optional manual TurnIP/TurnPort override to the fetched list.
 		addrs = applyTurnOverride(addrs, cfg)
 
-		// Keep VK's first available server primary for every stream.
-		// The rest of the list is only failover for this attempt.
-		addrs = assignServers(addrs)
-		attemptHead := addrs[0]
+		// This stream's relay order for the attempt. Empty means every relay has
+		// already refused this identity with 486: there is nothing to dial, the
+		// credential is what has to change.
+		vkAddrs := addrs
+		addrs = serversForAttempt(vkAddrs, s.id+s.addrShift, user, pass, time.Now())
 
 		start := time.Now()
-		runErr := s.runWithCreds(ctx, user, pass, addrs, cfg)
+		var runErr error
+		if len(addrs) == 0 {
+			runErr = errCredentialSaturated
+		} else {
+			runErr = s.runWithCreds(ctx, user, pass, addrs, cfg)
+		}
 		sessionDur := time.Since(start)
 		releaseNetworkPermit(permit)
 
@@ -231,9 +252,9 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 
 		if runErr == nil {
 			// runWithCreds returned nil while the tunnel is still up: the TURN
-			// server closed this stream. Reconnect just this worker (racing the
-			// servers afresh) after a brief delay, with the backoff reset (avoids
-			// a hot loop if the server keeps closing immediately).
+			// server closed this stream. Reconnect just this worker after a brief
+			// delay, with the backoff reset (avoids a hot loop if the server keeps
+			// closing immediately).
 			turnLog("[WORKER %d] Stream closed by server → reconnecting", s.id)
 			failStreak = 0
 			select {
@@ -244,49 +265,42 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 			continue
 		}
 
-		// Auth/quota error → throttled, single-flight credential re-fetch so the
-		// next iteration picks up a fresh credential. Healthy siblings untouched.
-		// Every other error is transient from this worker's point of view: it
-		// reconnects (with backoff) rather than giving up, so a stream always
-		// recovers on its own — WireGuard and the sibling streams keep running
-		// while just this stream is recreated.
+		// Auth error, or 486 from every relay → throttled, single-flight credential
+		// rotation so the next iteration picks up a fresh identity. Healthy
+		// siblings untouched. Every other error is transient from this worker's
+		// point of view: it reconnects (with backoff) rather than giving up, so a
+		// stream always recovers on its own — WireGuard and the sibling streams
+		// keep running while just this stream is recreated.
 		if isQuotaError(runErr) {
-			noteFreshCredentialRefusal(user, pass, addrs, time.Now())
+			noteFreshCredentialRefusal(user, pass, vkAddrs, time.Now())
 		}
-		if classifyCredError(runErr) {
-			refreshGroupCreds(cfg.GroupID, user, pass)
+		rotated := false
+		if shouldRotateCredentials(runErr, user, pass, vkAddrs, time.Now()) {
+			rotated = refreshGroupCreds(cfg.GroupID, user, pass)
 		}
 
-		// A session that stayed up for a while was healthy; treat its drop as a
-		// fresh failure (reset the backoff) rather than as part of a failure
-		// streak.
-		if sessionDur > 60*time.Second {
+		// A session that stayed up for a while was healthy: treat its drop as a
+		// fresh failure (reset the backoff) and keep the stream on the relay that
+		// carried it. A short one counts towards the streak and moves the stream's
+		// next attempt on to the next relay — the whole of the failover policy.
+		lasted := sessionDur > 60*time.Second
+		if lasted {
 			failStreak = 0
 		} else {
 			failStreak++
 		}
-
-		// A failure on a server the next attempt will not even dial is not a
-		// repeat of the same failure: health accounting has just
-		// moved this stream to a different host, and that host deserves a first
-		// attempt, not the backoff the dead one earned. Without this a stream
-		// that failed twice on a dead relay waited 7-17s before trying the
-		// working one — most of TunnelManager's 25s connect budget, spent
-		// sleeping next to a server that was already known to work.
-		if assignServers(addrs)[0] != attemptHead {
-			failStreak = 0
-		}
+		s.noteRelayOutcome(vkAddrs, lasted)
 
 		retryDelay := reconnectDelay(failStreak)
-		// 486 (TURN allocation quota) after a mass teardown — say a host freeze
-		// past the relay idle timeout, where the kernel closed our sockets but the
-		// server-side allocations survive as zombies still holding the credential's
-		// quota — is a special case: a fast retry just hits 486 again before the
-		// single-flight refreshGroupCreds can land a fresh credential with a fresh
-		// quota. Replace the 0.5-1s retry with a long jittered cooldown: (a) give
-		// the refetch time to arrive, (b) spread the N workers that failed at the
-		// same instant so they don't hammer the server in lockstep.
-		if isQuotaError(runErr) {
+		// 486 (TURN allocation quota) is a special case: a fast retry just hits
+		// 486 again before the single-flight rotation can land a fresh credential
+		// with a fresh quota. Replace the 0.5-1s retry with a long jittered
+		// cooldown: (a) give the refetch time to arrive, (b) spread the N workers
+		// that failed at the same instant so they don't hammer the server in
+		// lockstep. A rotation that promoted the spare identity — this worker's or
+		// a sibling's a moment earlier — has nothing to wait for: the credential is
+		// already in the cache, and allocSemaphore paces the reconnects.
+		if isQuotaError(runErr) && !rotated && !groupCredentialReplaced(cfg.GroupID, user, pass) {
 			retryDelay = quotaCooldown()
 		}
 		turnErrorLog("[WORKER %d] Error (streak %d): %v → retry in %v", s.id, failStreak, runErr, retryDelay)
@@ -334,8 +348,8 @@ func isTerminalCredError(err error) bool {
 
 // reconnectDelay returns the backoff before a worker's next connect attempt.
 // Transient TURN allocate failures (a lost UDP packet, a brief server-side
-// race) usually clear on a fresh attempt — and the next attempt re-races all
-// servers anyway — so the first couple of retries are fast (~0.5-1s) before
+// race) usually clear on a fresh attempt — and the next attempt starts from the
+// next relay anyway — so the first couple of retries are fast (~0.5-1s) before
 // falling back to jittered exponential backoff for a genuinely dead path.
 func reconnectDelay(failStreak int) time.Duration {
 	if failStreak <= 1 {
@@ -357,6 +371,10 @@ func reconnectDelay(failStreak int) time.Duration {
 // the long quotaCooldown, because the cred IS valid — its allocation slots are
 // just full (usually with our own zombie allocations after a mass teardown).
 func isQuotaError(err error) bool {
+	var cooled *credentialRelayQuotaError
+	if errors.Is(err, errCredentialSaturated) || errors.As(err, &cooled) {
+		return true
+	}
 	if code, ok := turnErrorCode(err); ok {
 		return code == stun.CodeAllocQuotaReached
 	}
@@ -447,6 +465,56 @@ func classifyCredError(err error) bool {
 		strings.Contains(e, "stale nonce") ||
 		strings.Contains(e, "error 508") ||
 		strings.Contains(e, "error 29")
+}
+
+// shouldRotateCredentials decides whether a failed attempt has spent the
+// identity it ran on.
+//
+// An authentication refusal from any relay has: the credential is stale
+// everywhere. A 486 has not, on its own. VK counts allocations per (identity,
+// relay), so the identity is spent only once every relay VK returned has refused
+// it; until then the stream still has somewhere to go with the credential it
+// holds, and serversForAttempt sends it there. The 2026-09-17 log is the case
+// this rule exists for: one relay in quota cooldown, the other timing out under
+// a dark uplink, and the pair read as "quota" — a credential with seven hours
+// left was thrown away for a trip to VK that the same dark uplink then failed
+// twice.
+func shouldRotateCredentials(err error, user, pass string, addrs []string, now time.Time) bool {
+	if hasAuthRefusal(err) {
+		return true
+	}
+	if isQuotaError(err) {
+		return credentialSaturatedEverywhere(user, pass, addrs, now)
+	}
+	return classifyCredError(err)
+}
+
+// hasAuthRefusal reports whether any relay in err's tree answered with a code
+// that condemns the credential itself. It walks joined errors as well as
+// wrapped ones, because errors.As stops at the first *stun.TurnError it meets
+// and an attempt across two relays can carry a 486 next to a 401.
+func hasAuthRefusal(err error) bool {
+	if err == nil {
+		return false
+	}
+	if turnErr, ok := err.(*stun.TurnError); ok {
+		switch turnErr.ErrorCodeAttr.Code {
+		case stun.CodeUnauthorized, stun.CodeStaleNonce, stun.CodeWrongCredentials, stun.CodeInsufficientCapacity:
+			return true
+		}
+		return false
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return hasAuthRefusal(u.Unwrap())
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if hasAuthRefusal(e) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // applyTurnOverride applies the optional manual TurnIP/TurnPort pin to the

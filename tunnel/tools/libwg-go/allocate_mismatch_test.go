@@ -75,7 +75,7 @@ func startInitialRefusalServer(t *testing.T, n int, code stun.ErrorCode) (*initi
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { server.Close() })
-	t.Cleanup(resetServerHealth)
+	t.Cleanup(resetAllocationMismatchPauses)
 	return pc, server
 }
 
@@ -92,8 +92,8 @@ func TestAllocateMismatchRetriesNewPortsWithSameCredentials(t *testing.T) {
 	if pc.count() != 3 || server.AllocationCount() != 1 {
 		t.Fatalf("addresses=%d allocations=%d, want 3 and 1", pc.count(), server.AllocationCount())
 	}
-	if serverPenalized(pc.LocalAddr().String(), time.Now()) {
-		t.Fatal("successful retry penalized the relay")
+	if serverAllocationMismatchPaused(pc.LocalAddr().String(), time.Now()) {
+		t.Fatal("successful retry paused the relay")
 	}
 }
 
@@ -116,11 +116,8 @@ func TestAllocateMismatchBoundsRetriesAndPausesServer(t *testing.T) {
 	if err == nil || classifyCredError(err) || pc.count() != 3 {
 		t.Fatalf("paused server retried/refetched: err=%v count=%d", err, pc.count())
 	}
-	if !serverPenalized(addr, time.Now()) || serverAllocationMismatchPaused(addr, time.Now().Add(2*time.Minute+time.Second)) {
+	if !serverAllocationMismatchPaused(addr, time.Now()) || serverAllocationMismatchPaused(addr, time.Now().Add(allocationMismatchPause+time.Second)) {
 		t.Fatal("wrong mismatch pause lifetime")
-	}
-	if got := assignServers([]string{addr, "other:3478"}); len(got) != 1 || got[0] != "other:3478" {
-		t.Fatalf("paused relay not filtered: %v", got)
 	}
 	if len(allocSemaphore) != 0 {
 		t.Fatal("437 retries leaked Allocate semaphore")

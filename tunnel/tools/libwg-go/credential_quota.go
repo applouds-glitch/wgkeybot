@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -62,6 +63,22 @@ func registerCredentialQuota(user, pass string, now time.Time) {
 	}
 }
 
+// markCredentialQuotaFresh restarts an identity's first-minute window. A spare
+// is registered when it is fetched and promoted much later; the breaker's
+// question — do relays refuse even an identity nobody has used — is asked from
+// the moment it is first put to use.
+func markCredentialQuotaFresh(user, pass string, now time.Time) {
+	credentialQuota.Lock()
+	defer credentialQuota.Unlock()
+	key := credentialAllocationKey{user, pass}
+	identity := credentialQuota.identities[key]
+	if identity.accepted || identity.counted {
+		return
+	}
+	identity.fetchedAt = now
+	credentialQuota.identities[key] = identity
+}
+
 type credentialRelayQuotaError struct{ addr string }
 
 func (e *credentialRelayQuotaError) Error() string {
@@ -80,6 +97,37 @@ func checkCredentialRelayQuota(user, pass, addr string, now time.Time) error {
 	}
 	return nil
 }
+
+// credentialRelaySaturated reports whether addr answered this identity with 486
+// within credentialRelayCooldown. It is always a relay's own answer, never an
+// inference: timeouts and handshake failures do not arm it.
+func credentialRelaySaturated(user, pass, addr string, now time.Time) bool {
+	credentialQuota.Lock()
+	defer credentialQuota.Unlock()
+	return now.Before(credentialQuota.relays[credentialRelayKey{credentialAllocationKey{user, pass}, addr}])
+}
+
+// credentialSaturatedEverywhere reports whether every relay in addrs has refused
+// this identity. Only then is the identity spent. The quota is per (identity,
+// relay), so a 486 from one relay next to a timeout from the other says the
+// credential is still good where it has not been refused — and in the
+// 2026-09-17 log exactly that pair, produced by a dark uplink, burned a
+// credential with seven hours left on it.
+func credentialSaturatedEverywhere(user, pass string, addrs []string, now time.Time) bool {
+	if len(addrs) == 0 {
+		return false
+	}
+	for _, addr := range addrs {
+		if !credentialRelaySaturated(user, pass, addr, now) {
+			return false
+		}
+	}
+	return true
+}
+
+// errCredentialSaturated stands in for a connect attempt that was never made
+// because every relay has already refused this identity.
+var errCredentialSaturated = errors.New("TURN allocation quota reached on every relay for this credential")
 
 func noteCredentialRelayQuota(user, pass, addr string, now time.Time) {
 	credentialQuota.Lock()

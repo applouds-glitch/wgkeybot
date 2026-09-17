@@ -32,7 +32,7 @@ func TestLostAllocateReplyQuarantinesCredentialRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	defer resetServerHealth()
+	defer resetAllocationMismatchPauses()
 	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
 	defer cancel()
 	release, err := acquireCredentialAllocation(ctx, "user", "pass")
@@ -54,12 +54,8 @@ func TestLostAllocateReplyQuarantinesCredentialRelay(t *testing.T) {
 	if !isQuotaError(err) {
 		t.Fatalf("expected 486, got %v", err)
 	}
-	serverHealthState.Lock()
-	health := serverHealthState.byAddr[pc.LocalAddr().String()]
-	charged := health != nil && health.failures > 0
-	serverHealthState.Unlock()
-	if charged {
-		t.Fatal("per-credential quota penalized the whole relay")
+	if credentialRelaySaturated("other", "pass", pc.LocalAddr().String(), time.Now()) {
+		t.Fatal("one identity's quota marked the relay for another identity")
 	}
 	t.Logf("next allocation: %v", err)
 	_, _, _, _, _, err = dialAndAllocate(ctx2, &stream{}, "user", "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})

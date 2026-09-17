@@ -11,114 +11,121 @@ import (
 	"time"
 )
 
-// Every worker, including workers from another credential group, must keep
-// that group's VK response order. Startup must not probe a second host merely
-// because another worker is already connecting to the first one.
-func TestAssignServersPreservesVKOrderForEveryStream(t *testing.T) {
-	resetServerHealth()
-	defer resetServerHealth()
-
-	groups := [][]string{
-		{"3.3.3.3:3478", "1.1.1.1:3478", "2.2.2.2:3478"},
-		{"2.2.2.2:3478", "3.3.3.3:3478"},
+// VK counts its ten allocations per (identity, relay). Ten streams on one relay
+// run at the limit, where any reconnect that cannot confirm its deallocate is a
+// 486; spread over two they sit at five of ten, which also leaves room for a
+// whole group reconnecting on top of its own ghosts.
+func TestStreamsSpreadEvenlyOverTheRelays(t *testing.T) {
+	resetCredentialQuota()
+	defer resetCredentialQuota()
+	addrs := []string{"relay-a:19302", "relay-b:19302"}
+	first := map[string]int{}
+	for id := 0; id < 10; id++ {
+		order := serversForAttempt(addrs, id, "u", "p", time.Now())
+		if len(order) != len(addrs) {
+			t.Fatalf("stream %d lost its failover candidate: %v", id, order)
+		}
+		first[order[0]]++
 	}
-	for streamID := 0; streamID < 10; streamID++ {
-		for _, addrs := range groups {
-			if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
-				t.Fatalf("stream %d: got %v, want VK order %v", streamID, got, addrs)
-			}
+	if first[addrs[0]] != 5 || first[addrs[1]] != 5 {
+		t.Fatalf("streams not spread five and five: %v", first)
+	}
+}
+
+func TestServersForAttemptHandlesDegenerateLists(t *testing.T) {
+	resetCredentialQuota()
+	defer resetCredentialQuota()
+	if got := serversForAttempt(nil, 3, "u", "p", time.Now()); len(got) != 0 {
+		t.Fatalf("empty list produced %v", got)
+	}
+	one := []string{"pinned:3478"}
+	for _, start := range []int{0, 7, -3} {
+		if got := serversForAttempt(one, start, "u", "p", time.Now()); !reflect.DeepEqual(got, one) {
+			t.Fatalf("start=%d: a single pinned relay became %v", start, got)
 		}
 	}
 }
 
-// Proof from a fallback or another credential group must not replace a primary
-// that has not failed. There is no startup election after the first handshake.
-func TestAssignServersKeepsVKOrderAfterHandshakeProof(t *testing.T) {
-	resetServerHealth()
-	defer resetServerHealth()
-
-	addrs := []string{"3.3.3.3:3478", "1.1.1.1:3478"}
-	noteServerHandshakeOKAt(addrs[1], time.Now().Add(-time.Minute))
-	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
-		t.Fatalf("fallback proof changed primary: got %v, want %v", got, addrs)
-	}
-	noteServerHandshakeOK(addrs[0])
-	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
-		t.Fatalf("both servers proving themselves changed order: got %v, want %v", got, addrs)
+// The cached slice is shared by every stream of the group.
+func TestServersForAttemptDoesNotModifyTheCachedList(t *testing.T) {
+	resetCredentialQuota()
+	defer resetCredentialQuota()
+	addrs := []string{"a", "b", "c"}
+	serversForAttempt(addrs, 2, "u", "p", time.Now())
+	if !reflect.DeepEqual(addrs, []string{"a", "b", "c"}) {
+		t.Fatalf("cached address list modified: %v", addrs)
 	}
 }
 
-// Failed hosts are excluded entirely, including from Allocate failover; the
-// remaining candidates retain the API order rather than alphabetical order.
-func TestAssignServersSkipsUnavailableServers(t *testing.T) {
-	for _, failure := range []string{"data-plane", "repeated-allocate"} {
-		t.Run(failure, func(t *testing.T) {
-			resetServerHealth()
-			defer resetServerHealth()
-			addrs := []string{"2.2.2.2:3478", "3.3.3.3:3478", "1.1.1.1:3478"}
-			now := time.Now()
-			if failure == "data-plane" {
-				noteServerHandshakeFailureAt(addrs[0], now.Add(-time.Second), now)
-			} else {
-				for i := 0; i < serverFailThreshold; i++ {
-					age := time.Duration(serverFailThreshold-1-i) * (serverFailCoalesce + time.Second)
-					noteServerFailureAt(addrs[0], now.Add(-age))
-				}
-			}
-			if got := assignServers(addrs); !reflect.DeepEqual(got, addrs[1:]) {
-				t.Fatalf("got %v, want available servers %v", got, addrs[1:])
-			}
-		})
-	}
-}
-
-// An uplink outage must not leave an empty candidate list or reintroduce
-// round-robin probing. A new tunnel session must also forget old exclusions.
-func TestAssignServersRetriesVKOrderAfterOutage(t *testing.T) {
-	resetServerHealth()
-	defer resetServerHealth()
-
-	addrs := []string{"3.3.3.3:3478", "1.1.1.1:3478"}
+// A relay that answered this identity with 486 is not dialed again until the
+// ghost allocations there can have expired — but only for this identity, and
+// the other relay stays a candidate.
+func TestServersForAttemptSkipsRelaysThatRefusedThisIdentity(t *testing.T) {
+	resetCredentialQuota()
+	defer resetCredentialQuota()
 	now := time.Now()
-	for _, addr := range addrs {
-		noteServerHandshakeFailureAt(addr, now.Add(-time.Second), now)
+	addrs := []string{"relay-a", "relay-b"}
+	noteCredentialRelayQuota("u", "p", "relay-a", now)
+
+	if got := serversForAttempt(addrs, 0, "u", "p", now); !reflect.DeepEqual(got, []string{"relay-b"}) {
+		t.Fatalf("refused relay still offered: %v", got)
 	}
-	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
-		t.Fatalf("outage fallback: got %v, want %v", got, addrs)
+	if got := serversForAttempt(addrs, 0, "other", "p", now); !reflect.DeepEqual(got, addrs) {
+		t.Fatalf("one identity's 486 hid the relay from another: %v", got)
+	}
+	if got := serversForAttempt(addrs, 0, "u", "p", now.Add(credentialRelayCooldown)); !reflect.DeepEqual(got, addrs) {
+		t.Fatalf("refusal outlived its cooldown: %v", got)
 	}
 
-	// Only the fallback recovers, so it temporarily becomes the primary.
-	noteServerHandshakeOKAt(addrs[1], now.Add(time.Second))
-	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs[1:]) {
-		t.Fatalf("got %v, want recovered server %v", got, addrs[1:])
+	// Every relay refused: nothing to dial, the identity is what has to change.
+	noteCredentialRelayQuota("u", "p", "relay-b", now)
+	if got := serversForAttempt(addrs, 0, "u", "p", now); len(got) != 0 {
+		t.Fatalf("spent identity still offered relays: %v", got)
 	}
-	resetServerHealth()
-	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
-		t.Fatalf("new session retained exclusions: got %v, want %v", got, addrs)
-	}
-}
-
-func TestAssignServersDoesNotMutateCachedAddresses(t *testing.T) {
-	resetServerHealth()
-	defer resetServerHealth()
-
-	addrs := []string{"3.3.3.3:3478", "1.1.1.1:3478", "2.2.2.2:3478"}
-	orig := append([]string(nil), addrs...)
-	noteServerDemotedAt(addrs[0], time.Now())
-	assignServers(addrs)
-	if !reflect.DeepEqual(addrs, orig) {
-		t.Fatalf("cached list mutated: got %v, want %v", addrs, orig)
+	if !credentialSaturatedEverywhere("u", "p", addrs, now) {
+		t.Fatal("identity refused by every relay not reported as spent")
 	}
 }
 
-// A manual TurnIP pin has no alternative. Keep retrying it even after failures.
-func TestAssignServersSingleServer(t *testing.T) {
-	resetServerHealth()
-	defer resetServerHealth()
+// The whole failover policy: a short failure moves the stream's next attempt to
+// the next relay, a session that lasted pins the stream where it ran. Nothing
+// is shared between streams, so an uplink outage cannot lock a relay out.
+func TestShortFailureMovesTheStreamToTheNextRelay(t *testing.T) {
+	resetCredentialQuota()
+	defer resetCredentialQuota()
+	addrs := []string{"relay-a", "relay-b"}
+	s := &stream{id: 4}
+	head := func() string { return serversForAttempt(addrs, s.id+s.addrShift, "u", "p", time.Now())[0] }
 
-	addrs := []string{"1.1.1.1:3478"}
-	noteServerDemotedAt(addrs[0], time.Now())
-	if got := assignServers(addrs); !reflect.DeepEqual(got, addrs) {
-		t.Fatalf("got %v, want pinned server %v", got, addrs)
+	if head() != "relay-a" {
+		t.Fatalf("stream 4 should start on relay-a, got %s", head())
+	}
+	s.noteRelayOutcome(addrs, false)
+	if head() != "relay-b" {
+		t.Fatalf("a short failure left the stream on the relay that failed: %s", head())
+	}
+
+	// relay-b carries a session that lasts: reconnects go back to it.
+	s.serverAddr = "relay-b"
+	s.noteRelayOutcome(addrs, true)
+	if head() != "relay-b" {
+		t.Fatalf("a lasting session did not pin its relay: %s", head())
+	}
+
+	// A dark uplink fails every attempt alike. The stream only walks the list.
+	for i := 0; i < 6; i++ {
+		s.serverAddr = ""
+		s.noteRelayOutcome(addrs, false)
+	}
+	if got := len(serversForAttempt(addrs, s.id+s.addrShift, "u", "p", time.Now())); got != 2 {
+		t.Fatalf("an outage cost the stream a relay: %d candidates left", got)
+	}
+
+	// An attempt that never allocated ran on no relay and pins nothing.
+	before := s.addrShift
+	s.serverAddr = ""
+	s.noteRelayOutcome(addrs, true)
+	if s.addrShift != before {
+		t.Fatal("an attempt with no relay changed the stream's shift")
 	}
 }

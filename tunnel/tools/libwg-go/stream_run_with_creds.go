@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,64 +19,30 @@ import (
 	"github.com/pion/turn/v5"
 )
 
-// errDataPlaneHandshake marks the one failure the static assignment used to be
-// blind to: Allocate succeeded, so the control plane and the credential are
-// fine, and the transport handshake through the relay still never completed.
-// Every transport wraps its handshake failure with this so runSession can tell
-// it apart from a session that ran and then broke.
+// errDataPlaneHandshake marks a session that allocated a relay and then never
+// completed the transport handshake through it. Allocate succeeded, so the
+// credential and the control plane were fine at that moment; what failed is
+// either the relay's data path or the uplink underneath it, and from one stream
+// the two look the same. Nothing is remembered about the relay: the worker just
+// starts its next attempt from the next one (see runWorker).
 var errDataPlaneHandshake = errors.New("data-plane handshake failed")
 
-// sessionVerdict is what a finished session says about the server it ran on.
-type sessionVerdict int
+// allocateFailedError is a connect attempt in which no relay produced an
+// allocation. It keeps every relay's error rather than the last one to arrive:
+// whether the credential should be rotated depends on what each of them said
+// (see shouldRotateCredentials), and with only the last one a 486 from one relay
+// could hide behind a timeout from the other, or the other way round.
+type allocateFailedError struct{ errs []error }
 
-const (
-	// verdictNone: the session says nothing — we tore it down ourselves, or it
-	// ended cleanly without lasting long enough to prove anything.
-	verdictNone sessionVerdict = iota
-	verdictSuccess
-	verdictFailure
-	// verdictHandshakeFailure: allocated, then never completed the transport
-	// handshake. Acted on immediately rather than through the streak.
-	verdictHandshakeFailure
-)
-
-func (v sessionVerdict) String() string {
-	switch v {
-	case verdictSuccess:
-		return "success"
-	case verdictFailure:
-		return "failure"
-	case verdictHandshakeFailure:
-		return "handshake-failure"
-	default:
-		return "none"
+func (e *allocateFailedError) Error() string {
+	parts := make([]string, len(e.errs))
+	for i, err := range e.errs {
+		parts[i] = err.Error()
 	}
+	return fmt.Sprintf("TURN allocate: all %d servers failed: %s", len(e.errs), strings.Join(parts, "; "))
 }
 
-// sessionOutcome grades a finished session for the health accounting in
-// turn_server_health.go.
-//
-// A blackholed allocation is the clearest verdict there is: the control plane
-// answered, so the credential and the path are fine, and the host still ate the
-// traffic. Otherwise a session that ran for a while proves the server works, and
-// a short one that ended in an error counts against it. Teardowns are excluded —
-// cancelled means cancelled by us, not by the server.
-func sessionOutcome(cancelled, blackholed bool, dur time.Duration, err error) sessionVerdict {
-	switch {
-	case cancelled:
-		return verdictNone
-	case blackholed:
-		return verdictFailure
-	case dur >= healthySessionDuration:
-		return verdictSuccess
-	case errors.Is(err, errDataPlaneHandshake):
-		return verdictHandshakeFailure
-	case err != nil:
-		return verdictFailure
-	default:
-		return verdictNone
-	}
-}
+func (e *allocateFailedError) Unwrap() []error { return e.errs }
 
 // winner holds a successfully allocated TURN session from the race in
 // runWithCreds. The fields are the live resources handed off to the session:
@@ -90,18 +57,17 @@ type winner struct {
 	releaseCredential func()         // returned only after the allocation closes
 }
 
-// runWithCreds establishes one TURN session with pre-fetched credentials on the
-// first available server, addrs[0] (see assignServers). There is no latency
-// race: only if that server fails to Allocate are the remaining candidates
-// dialed, all at once, and the first of those to complete Allocate takes the
-// session while the others are cancelled/closed. Each reconnect uses VK's
-// response order with unavailable servers filtered out. A failed data-plane
-// handshake also tries the remaining candidates: after an uplink outage every
-// host may be excluded, so assignServers has to return the full list again.
+// runWithCreds establishes one TURN session with pre-fetched credentials on
+// addrs[0] (see serversForAttempt). There is no latency race: only if that
+// server fails to Allocate are the remaining candidates dialed, all at once, and
+// the first of those to complete Allocate takes the session while the others
+// are cancelled/closed. A session that allocates and then fails — handshake
+// included — ends the attempt: the worker's next one starts from the next relay.
 // Retry and credential rotation are managed by the calling WorkerGroup.
 func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []string, cfg WorkerGroupConfig) error {
 	s.ready.Store(false)
 	defer s.ready.Store(false)
+	s.serverAddr = "" // set by runSession; an attempt that never allocates ran on no relay
 
 	// raceCtx is cancelled the moment a winner is chosen (or ctx dies) so the
 	// losing failover candidates stop dialing / abort their semaphore wait
@@ -163,30 +129,13 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 		fannedOut = true
 	}
 
-	var lastErr error
-	errCount := 0
+	var errs []error
 	for {
 		select {
 		case w := <-winCh:
-			err := s.runSession(ctx, w, cfg)
-			if ctx.Err() != nil || !errors.Is(err, errDataPlaneHandshake) {
-				return err
-			}
-			remaining := make([]string, 0, len(addrs)-1)
-			for _, addr := range addrs {
-				if addr != w.addr {
-					remaining = append(remaining, addr)
-				}
-			}
-			if len(remaining) == 0 {
-				return err
-			}
-			turnLog("[STREAM %d] %s failed its data-plane handshake — trying %v (group %d)",
-				s.id, w.addr, remaining, cfg.GroupID)
-			return s.runWithCreds(ctx, user, pass, remaining, cfg)
+			return s.runSession(ctx, w, cfg)
 		case err := <-errCh:
-			lastErr = err
-			errCount++
+			errs = append(errs, err)
 			if !fannedOut {
 				// The assigned server failed: try the failover candidates. Say
 				// why before moving on — a failover that succeeds swallows this
@@ -196,8 +145,8 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 				turnLog("[STREAM %d] %s failed (%v) — fanning out to %v (group %d)",
 					s.id, addrs[0], err, addrs[1:], cfg.GroupID)
 				fanOut()
-			} else if errCount == launchedCount {
-				return fmt.Errorf("TURN allocate: all %d servers failed: %w", len(addrs), lastErr)
+			} else if len(errs) == launchedCount {
+				return &allocateFailedError{errs}
 			}
 		case <-ctx.Done():
 			cancelRace()
@@ -326,7 +275,7 @@ func dialAndAllocateOnce(ctx context.Context, s *stream, user, pass, addr string
 		//
 		// permWatch still sees this class of failure, just at 2x240s instead of
 		// 2x120s (~8 min). The faster detectors are unaffected: ChannelBind
-		// latches in ~60s and allocation refresh on a single failure.
+		// latches in ~60s and a refused allocation refresh at once.
 		PermissionRefreshInterval: 240 * time.Second,
 		LoggerFactory:             pionLogFactory{streamID: s.id, watch: perm},
 	})
@@ -371,15 +320,11 @@ func dialAndAllocateOnce(ctx context.Context, s *stream, user, pass, addr string
 		// cancellation may have lost an already-successful response.
 		_, definiteRefusal := turnErrorCode(err)
 		finishUse(!definiteRefusal)
-		// Only a genuine refusal counts against the server. A losing failover
-		// candidate — or any dial during a teardown — fails because we cancelled
-		// its context, which says nothing about the host.
-		if ctx.Err() == nil {
-			if isQuotaError(err) {
-				noteCredentialRelayQuota(user, pass, addr, time.Now())
-			} else if code, _ := turnErrorCode(err); code != stun.CodeAllocMismatch && !classifyCredError(err) {
-				noteServerFailure(addr)
-			}
+		// Only the relay's own 486 is remembered, and only against this identity.
+		// A losing failover candidate — or any dial during a teardown — fails
+		// because we cancelled its context, which says nothing at all.
+		if ctx.Err() == nil && isQuotaError(err) {
+			noteCredentialRelayQuota(user, pass, addr, time.Now())
 		}
 		return nil, nil, nil, 0, nil, fmt.Errorf("TURN allocate: %w", err)
 	}
@@ -464,6 +409,7 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	defer w.raw.Close()
 	defer w.client.Close()
 	defer w.relay.Close()
+	defer w.perm.stop()
 
 	turnLog("[STREAM %d] TURN %s rtt=%v (group %d)", s.id, w.addr, w.rtt, cfg.GroupID)
 	turnLog("[STREAM %d] Relay: %s", s.id, w.relay.LocalAddr())
@@ -486,12 +432,10 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 		}
 	}()
 
-	// The transports report their own handshake success against this address
-	// (noteServerHandshakeOK), which is what lets a sibling's success vouch for
-	// the uplink when another server fails its handshake in the same window.
+	// Which relay this attempt runs on: the transports name it in their log
+	// lines, and runWorker keeps the stream on it once it has carried a session.
 	s.serverAddr = w.addr
 
-	started := time.Now()
 	var err error
 	switch cfg.PeerType {
 	case "wireguard":
@@ -500,16 +444,6 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 		err = s.runSRTP(ctx, w.relay, cfg.PeerAddr)
 	default:
 		err = s.runDTLS(ctx, w.relay, cfg.PeerAddr, true)
-	}
-
-	// Health accounting for subsequent attempts (see turn_server_health.go).
-	switch sessionOutcome(ctx.Err() != nil, w.perm.fired(), time.Since(started), err) {
-	case verdictSuccess:
-		noteServerSuccess(w.addr)
-	case verdictHandshakeFailure:
-		noteServerHandshakeFailure(w.addr, started)
-	case verdictFailure:
-		noteServerFailure(w.addr)
 	}
 
 	// A blackhole teardown surfaces as "use of closed network connection", which

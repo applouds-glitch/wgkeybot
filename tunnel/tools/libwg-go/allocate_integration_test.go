@@ -68,7 +68,7 @@ func TestDialAndAllocateIgnoresUnrelatedDatagrams(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	defer resetServerHealth()
+	defer resetAllocationMismatchPauses()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -127,7 +127,7 @@ func TestDialAndAllocateAcceptsSlowRepliesAndReleasesAllocation(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer server.Close()
-			defer resetServerHealth()
+			defer resetAllocationMismatchPauses()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -164,7 +164,7 @@ func TestDialAndAllocateAcceptsSlowRepliesAndReleasesAllocation(t *testing.T) {
 // watchdog or being cut off by a shorter timer that also hurts slow replies.
 func TestDialAndAllocateLetsPionExhaustRetransmissions(t *testing.T) {
 	pc := listenFakeRelay(t) // accepts datagrams but never replies
-	defer resetServerHealth()
+	defer resetAllocationMismatchPauses()
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	_, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, "user", "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})
@@ -180,7 +180,7 @@ func TestDialAndAllocateLetsPionExhaustRetransmissions(t *testing.T) {
 // even though the server has not replied and Pion's retry budget remains.
 func TestDialAndAllocateCancellationReleasesSlot(t *testing.T) {
 	pc := listenFakeRelay(t)
-	defer resetServerHealth()
+	defer resetAllocationMismatchPauses()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	pc.SetReadDeadline(time.Now().Add(2 * time.Second))

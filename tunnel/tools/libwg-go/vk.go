@@ -271,15 +271,16 @@ func getCustomDialContext(ctx context.Context, network, addr string) (net.Conn, 
 	return dialer.DialContext(ctx, network, net.JoinHostPort(resolvedIP, port))
 }
 
-// fetchVkCreds performs the actual VK/OK API calls to fetch credentials.
-// Returns (username, password, serverAddrs, lifetimeSecs, error).
-func fetchVkCreds(ctx context.Context, link string) (string, string, []string, int, error) {
-	// One identity for the whole session: the mobile Android UA, the client
-	// hints and the ClientHello all come from the same Chrome major
-	// (vkSessionIdentity in profiles.go), so the transport cannot claim a
-	// different browser than the headers do, and the captcha phase cannot claim
-	// a different one than the phase that triggered it. Mobile end-to-end, so
-	// VK's detector never sees a desktop UA paired with accelerometer readings.
+// newVKSessionClient builds the HTTP client one credential fetch runs on, with
+// the identity it presents.
+//
+// One identity for the whole session: the mobile Android UA, the client hints
+// and the ClientHello all come from the same Chrome major (vkSessionIdentity in
+// profiles.go), so the transport cannot claim a different browser than the
+// headers do, and the captcha phase cannot claim a different one than the phase
+// that triggered it. Mobile end-to-end, so VK's detector never sees a desktop UA
+// paired with accelerometer readings.
+func newVKSessionClient() (tlsclient.HttpClient, Profile, int, error) {
 	profile, chromeMajor := vkSessionIdentity()
 
 	client, err := tlsclient.NewHttpClient(
@@ -296,9 +297,32 @@ func fetchVkCreds(ctx context.Context, link string) (string, string, []string, i
 		// migrate onto Russian roots.
 		tlsclient.WithTransportOptions(&tlsclient.TransportOptions{RootCAs: vkRootCAPool()}),
 	)
-
 	if err != nil {
-		return "", "", nil, 0, fmt.Errorf("failed to create tlsclient: %w", err)
+		return nil, Profile{}, 0, fmt.Errorf("failed to create tlsclient: %w", err)
+	}
+	return client, profile, chromeMajor, nil
+}
+
+// fetchVkCredsNoCaptcha fetches an identity down the captcha-free VK Calls path
+// and nowhere else. It is what the spare-identity filler runs on
+// (credential_spare.go): a background fetch nobody is waiting for must never be
+// the reason a solve ladder — let alone a full-screen dialog — opens, so a
+// failure here is just a failure, with no legacy chain behind it.
+func fetchVkCredsNoCaptcha(ctx context.Context, link string) (string, string, []string, int, error) {
+	client, profile, _, err := newVKSessionClient()
+	if err != nil {
+		return "", "", nil, 0, err
+	}
+	defer client.CloseIdleConnections()
+	return getVKCredsViaVKCalls(ctx, link, client, profile)
+}
+
+// fetchVkCreds performs the actual VK/OK API calls to fetch credentials.
+// Returns (username, password, serverAddrs, lifetimeSecs, error).
+func fetchVkCreds(ctx context.Context, link string) (string, string, []string, int, error) {
+	client, profile, chromeMajor, err := newVKSessionClient()
+	if err != nil {
+		return "", "", nil, 0, err
 	}
 	defer client.CloseIdleConnections()
 
