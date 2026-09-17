@@ -135,7 +135,7 @@ func TestDispatchStaleThreshold(t *testing.T) {
 	}
 }
 
-// The handshake bound is what lets failover act inside TunnelManager's 25s
+// The handshake bound is what lets the election act inside TunnelManager's 25s
 // connect budget on the DTLS peer types, and it must still leave pion/dtls its
 // first few retransmits (flights at 0s, 1s, 3s, 7s).
 func TestDataPlaneHandshakeTimeoutFitsConnectBudget(t *testing.T) {

@@ -9,6 +9,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
+	"sort"
 	"time"
 )
 
@@ -41,72 +43,64 @@ func fetchCreds(ctx context.Context, link string, groupID int) (user, pass strin
 	return
 }
 
-// serversForAttempt orders VK's relay list for one connect attempt of one
-// stream: the list rotated by start, minus the relays that have already
-// answered this identity with 486 (see noteCredentialRelayQuota). The first
-// entry is dialed; runWithCreds falls over to the rest only if its Allocate
-// fails.
+// assignServers returns the TURN servers this stream should try, best first.
 //
-// start is the stream's id plus its own failure shift (stream.addrShift), so
-// the streams of a group spread evenly over the relays. That spread is the
-// point, not a throughput trick: VK counts its ten-allocation quota per
-// (identity, relay), so ten streams on two relays sit at five of ten on each.
-// A recycled stream whose old allocation lingers as a ghost still fits, and so
-// does a whole group reconnecting after an uplink outage that turned all ten
-// into ghosts. With every stream on the first relay the group ran at ten of
-// ten, and any reconnect that could not confirm its deallocate was a 486.
+// The list is sorted into a canonical order so the same physical server gets the
+// same index in every group, regardless of the order VK returned the urls in for
+// that group's link. Servers with a verdict against them — demoted for failing a
+// data-plane handshake, or standing down under a penalty — are dropped outright
+// rather than demoted to the back: runWithCreds fans out to addrs[1:] all at
+// once when the head fails to Allocate, so a dead host left anywhere in the list
+// can still win that race and cost the stream another session.
 //
-// Nothing here remembers how a relay behaved. This used to be a health ledger
-// (strikes, penalties, demotions, sibling proof — five rewrites between
-// 2026-06-18 and 2026-09-16), and every rule in it was a way for an uplink
-// outage to leave a scar: in the 2026-09-17 log a dark uplink demoted the one
-// relay the credential still had quota on, for the rest of the connection. A
-// stream that fails on a relay simply starts its next attempt from the next
-// one (see runWorker); a bad relay costs each of its streams one short attempt.
+// What is left is assigned one of two ways:
 //
-// An empty result means every relay has refused this identity: the credential
-// is spent and the caller rotates it without dialing. The cached address slice
-// is never modified.
-func serversForAttempt(addrs []string, start int, user, pass string, now time.Time) []string {
-	n := len(addrs)
-	if n == 0 {
-		return nil
+//   - Once the session has elected a server (see turn_server_election.go), every
+//     stream in every group runs on it.
+//   - Until then, every stream runs on the first server of what is left. The
+//     streams are not spread over the relays: the others are reached only as
+//     failover (runWithCreds fans out to them when the head fails to Allocate),
+//     and a server that proves itself that way becomes eligible for the election
+//     like any other.
+//
+// If every server has a verdict against it the original list stands. That is an
+// outage, not a bad host, and an empty list would leave the stream nothing to
+// dial; the next attempts re-probe all of them.
+//
+// Returns a fresh slice — addrs may alias the cached ServerAddrs slice (returned
+// by reference on a cache hit), so it must not be mutated in place.
+func assignServers(addrs []string) []string {
+	if len(addrs) < 2 {
+		return addrs
 	}
-	start = ((start % n) + n) % n
-	order := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		addr := addrs[(start+i)%n]
-		if credentialRelaySaturated(user, pass, addr, now) {
+	sorted := append([]string(nil), addrs...)
+	sort.Strings(sorted)
+
+	now := time.Now()
+	live := make([]string, 0, len(sorted))
+	for _, addr := range sorted {
+		if serverDemoted(addr) || serverPenalized(addr, now) {
 			continue
 		}
-		order = append(order, addr)
+		live = append(live, addr)
 	}
-	return order
-}
+	if len(live) == 0 {
+		live = sorted
+	}
 
-// noteRelayOutcome is the whole of this client's relay failover policy. A
-// session that lasted pins the stream to the relay that carried it, so a
-// reconnect hours later goes back to what worked; a short one moves the next
-// attempt on to the next relay. The shift is per stream and says nothing about
-// the relay to anyone else: two streams can disagree about a relay, and an
-// uplink outage, which fails every attempt alike, only walks each stream round
-// the list and back.
-func (s *stream) noteRelayOutcome(vkAddrs []string, lasted bool) {
-	if !lasted {
-		s.addrShift++
-		return
-	}
-	if i := addrIndex(vkAddrs, s.serverAddr); i >= 0 {
-		s.addrShift = i - s.id
-	}
-}
-
-// addrIndex returns addr's position in addrs, or -1.
-func addrIndex(addrs []string, addr string) int {
-	for i, a := range addrs {
-		if a == addr {
-			return i
+	if elected := electServer(live, now); elected != "" {
+		if idx := slices.Index(live, elected); idx >= 0 {
+			return rotateServers(live, idx)
 		}
 	}
-	return -1
+	return live
+}
+
+// rotateServers returns list rotated so idx comes first, leaving the rest in
+// canonical order behind it as failover candidates.
+func rotateServers(list []string, idx int) []string {
+	out := make([]string, 0, len(list))
+	out = append(out, list[idx:]...)
+	out = append(out, list[:idx]...)
+	return out
 }

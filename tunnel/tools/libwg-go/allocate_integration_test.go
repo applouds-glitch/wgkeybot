@@ -7,10 +7,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -68,7 +66,7 @@ func TestDialAndAllocateIgnoresUnrelatedDatagrams(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	defer resetAllocationMismatchPauses()
+	defer resetServerHealth()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -76,7 +74,8 @@ func TestDialAndAllocateIgnoresUnrelatedDatagrams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Allocate lost after unrelated datagram: %v (server allocations: %d, injected: %d)", err, server.AllocationCount(), noisy.injected.Load())
 	}
-	defer closeFailedAllocation(client, raw)
+	defer raw.Close()
+	defer client.Close()
 	defer relay.Close()
 	if noisy.injected.Load() == 0 {
 		t.Fatal("server did not inject the unrelated datagram")
@@ -127,7 +126,7 @@ func TestDialAndAllocateAcceptsSlowRepliesAndReleasesAllocation(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer server.Close()
-			defer resetAllocationMismatchPauses()
+			defer resetServerHealth()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -135,7 +134,8 @@ func TestDialAndAllocateAcceptsSlowRepliesAndReleasesAllocation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("answering TURN server rejected: %v (active allocations: %d)", err, server.AllocationCount())
 			}
-			defer closeFailedAllocation(client, raw)
+			defer raw.Close()
+			defer client.Close()
 			defer relay.Close()
 			if rtt < 2*delay {
 				t.Fatalf("rtt=%v, want both delayed round trips (%v)", rtt, 2*delay)
@@ -160,11 +160,11 @@ func TestDialAndAllocateAcceptsSlowRepliesAndReleasesAllocation(t *testing.T) {
 	}
 }
 
-// A silent server must exhaust Pion's retries, without waiting for the outer
-// watchdog or being cut off by a shorter timer that also hurts slow replies.
+// A silent server must exhaust Pion's retries, without being cut off by a
+// shorter timer that also hurts slow replies.
 func TestDialAndAllocateLetsPionExhaustRetransmissions(t *testing.T) {
 	pc := listenFakeRelay(t) // accepts datagrams but never replies
-	defer resetAllocationMismatchPauses()
+	defer resetServerHealth()
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	_, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, "user", "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})
@@ -173,114 +173,5 @@ func TestDialAndAllocateLetsPionExhaustRetransmissions(t *testing.T) {
 	}
 	if len(allocSemaphore) != 0 {
 		t.Fatal("failed Allocate kept a semaphore slot")
-	}
-}
-
-// A stream losing a failover race must release its semaphore slot immediately,
-// even though the server has not replied and Pion's retry budget remains.
-func TestDialAndAllocateCancellationReleasesSlot(t *testing.T) {
-	pc := listenFakeRelay(t)
-	defer resetAllocationMismatchPauses()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	pc.SetReadDeadline(time.Now().Add(2 * time.Second))
-	go func() {
-		buf := make([]byte, 2048)
-		pc.ReadFrom(buf)
-		cancel()
-	}()
-	_, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, "user", "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err=%v, want context.Canceled", err)
-	}
-	if len(allocSemaphore) != 0 {
-		t.Fatal("cancelled Allocate kept a semaphore slot")
-	}
-}
-
-// Pion holds its transaction mutex while retransmitting. Block that write
-// until Close, as a stalled transport can do, to exercise the real lock order.
-type blockedAllocateRetransmit struct {
-	closed    chan struct{}
-	blocked   chan struct{}
-	writes    atomic.Int32
-	closeOnce sync.Once
-	blockOnce sync.Once
-}
-
-func (c *blockedAllocateRetransmit) ReadFrom([]byte) (int, net.Addr, error) {
-	<-c.closed
-	return 0, nil, net.ErrClosed
-}
-
-func (c *blockedAllocateRetransmit) WriteTo(b []byte, _ net.Addr) (int, error) {
-	if c.writes.Add(1) == 1 {
-		return len(b), nil
-	}
-	c.blockOnce.Do(func() { close(c.blocked) })
-	<-c.closed
-	return 0, net.ErrClosed
-}
-
-func (c *blockedAllocateRetransmit) Close() error {
-	c.closeOnce.Do(func() { close(c.closed) })
-	return nil
-}
-
-func (*blockedAllocateRetransmit) LocalAddr() net.Addr {
-	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
-}
-
-func (*blockedAllocateRetransmit) SetDeadline(time.Time) error      { return nil }
-func (*blockedAllocateRetransmit) SetReadDeadline(time.Time) error  { return nil }
-func (*blockedAllocateRetransmit) SetWriteDeadline(time.Time) error { return nil }
-
-func TestAllocateAbortUnblocksPionRetransmit(t *testing.T) {
-	for _, cancelRace := range []bool{false, true} {
-		name := "watchdog"
-		if cancelRace {
-			name = "cancelled-race"
-		}
-		t.Run(name, func(t *testing.T) {
-			raw := &blockedAllocateRetransmit{closed: make(chan struct{}), blocked: make(chan struct{})}
-			client, err := turn.NewClient(&turn.ClientConfig{Conn: raw, TURNServerAddr: "127.0.0.1:3478", Username: "user", Password: "pass"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			// Keep test cleanup able to unblock a regression in the helper itself.
-			defer client.Close()
-			defer raw.Close()
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			timeout := 2 * time.Second
-			if cancelRace {
-				timeout = time.Minute
-			}
-			done := make(chan error, 1)
-			go func() {
-				_, err := allocateWithDeadline(ctx, timeout, client.Allocate, func() { closeFailedAllocation(client, raw) })
-				done <- err
-			}()
-			select {
-			case <-raw.blocked:
-			case <-time.After(time.Second):
-				t.Fatal("Pion never started the retransmission")
-			}
-			want := errAllocateTimeout
-			wait := 3 * time.Second
-			if cancelRace {
-				cancel()
-				want = context.Canceled
-				wait = time.Second
-			}
-			select {
-			case err := <-done:
-				if !errors.Is(err, want) {
-					t.Fatalf("err=%v, want %v", err, want)
-				}
-			case <-time.After(wait):
-				t.Fatal("abort blocked behind Pion's retransmission mutex")
-			}
-		})
 	}
 }

@@ -15,7 +15,7 @@ import (
 )
 
 // Refuse the first N client addresses before auth, exactly like the observed
-// VK 437 response (ERROR-CODE/FINGERPRINT, no NONCE or REALM). Accepted sockets
+// VK refusal (ERROR-CODE/FINGERPRINT, no NONCE or REALM). Accepted sockets
 // go through a real TURN server, including authentication and relay cleanup.
 type initialAllocateRefuser struct {
 	net.PacketConn
@@ -75,57 +75,17 @@ func startInitialRefusalServer(t *testing.T, n int, code stun.ErrorCode) (*initi
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { server.Close() })
-	t.Cleanup(resetAllocationMismatchPauses)
+	t.Cleanup(resetServerHealth)
 	return pc, server
 }
 
-func TestAllocateMismatchRetriesNewPortsWithSameCredentials(t *testing.T) {
-	pc, server := startInitialRefusalServer(t, 2, stun.CodeAllocMismatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	client, raw, relay, _, _, err := dialAndAllocate(ctx, &stream{}, t.Name(), "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})
-	if err != nil {
-		t.Fatalf("two 437s should recover on the third socket: %v", err)
-	}
-	defer closeFailedAllocation(client, raw)
-	defer relay.Close()
-	if pc.count() != 3 || server.AllocationCount() != 1 {
-		t.Fatalf("addresses=%d allocations=%d, want 3 and 1", pc.count(), server.AllocationCount())
-	}
-	if serverAllocationMismatchPaused(pc.LocalAddr().String(), time.Now()) {
-		t.Fatal("successful retry paused the relay")
-	}
-}
-
-func TestAllocateMismatchBoundsRetriesAndPausesServer(t *testing.T) {
-	pc, server := startInitialRefusalServer(t, 100, stun.CodeAllocMismatch)
-	addr := pc.LocalAddr().String()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, t.Name(), "pass", addr, WorkerGroupConfig{UseUDP: true})
-	if code, ok := turnErrorCode(err); !ok || code != stun.CodeAllocMismatch {
-		t.Fatalf("lost 437: %v", err)
-	}
-	if classifyCredError(err) || isQuotaError(err) {
-		t.Fatalf("437 should preserve credentials: %v", err)
-	}
-	if pc.count() != 3 || server.AllocationCount() != 0 {
-		t.Fatalf("addresses=%d allocations=%d", pc.count(), server.AllocationCount())
-	}
-	_, _, _, _, _, err = dialAndAllocate(ctx, &stream{}, t.Name(), "pass", addr, WorkerGroupConfig{UseUDP: true})
-	if err == nil || classifyCredError(err) || pc.count() != 3 {
-		t.Fatalf("paused server retried/refetched: err=%v count=%d", err, pc.count())
-	}
-	if !serverAllocationMismatchPaused(addr, time.Now()) || serverAllocationMismatchPaused(addr, time.Now().Add(allocationMismatchPause+time.Second)) {
-		t.Fatal("wrong mismatch pause lifetime")
-	}
-	if len(allocSemaphore) != 0 {
-		t.Fatal("437 retries leaked Allocate semaphore")
-	}
-}
-
+// VK answers a refused initial Allocate with ERROR-CODE and FINGERPRINT only.
+// pion reads NONCE/REALM before the code and reports a missing attribute; the
+// code is restored from the reply itself (allocateResponseConn), so the worker
+// classifies what the relay actually said. One socket per attempt: a refusal is
+// retried by the worker's own loop, not inside the dial.
 func TestInitialAllocateErrorKeepsActualCode(t *testing.T) {
-	for _, code := range []stun.ErrorCode{stun.CodeAllocQuotaReached, stun.CodeForbidden} {
+	for _, code := range []stun.ErrorCode{stun.CodeAllocMismatch, stun.CodeAllocQuotaReached, stun.CodeForbidden} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
 			pc, _ := startInitialRefusalServer(t, 100, code)
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -135,42 +95,23 @@ func TestInitialAllocateErrorKeepsActualCode(t *testing.T) {
 				t.Fatalf("want %d, got %v", code, err)
 			}
 			if pc.count() != 1 {
-				t.Fatalf("non-437 retried %d sockets", pc.count())
+				t.Fatalf("Allocate retried on %d sockets", pc.count())
+			}
+			if len(allocSemaphore) != 0 {
+				t.Fatal("refused Allocate kept a semaphore slot")
 			}
 		})
 	}
 }
 
-func TestRunWithCredsMismatchFallsBackAfterBoundedRetries(t *testing.T) {
-	primary, _ := startInitialRefusalServer(t, 100, stun.CodeAllocMismatch)
-	fallback, _ := startInitialRefusalServer(t, 0, stun.CodeAllocMismatch)
-	s, _ := newNoDTLSTestStream(t)
-	ready := make(chan struct{}, 1)
-	s.okFunc = func() { ready <- struct{}{} }
-	answer := make(chan struct{})
-	close(answer)
-	peer := fakeRelay(t, answer)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// 437 rotates the credential, as it always has: the refusal now arrives with
+// its code instead of as a missing attribute, and both classify the same way.
+func TestAllocateMismatchRotatesCredentials(t *testing.T) {
+	pc, _ := startInitialRefusalServer(t, 100, stun.CodeAllocMismatch)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		done <- s.runWithCreds(ctx, t.Name(), "pass", []string{primary.LocalAddr().String(), fallback.LocalAddr().String()}, WorkerGroupConfig{UseUDP: true, PeerType: "wireguard", PeerAddr: peer})
-	}()
-	defer func() {
-		cancel()
-		select {
-		case <-done:
-			waitCredentialSlots(t, t.Name(), "pass", 0, 0)
-		case <-time.After(3 * time.Second):
-			t.Error("mismatch/fallback leaked a credential slot or socket")
-		}
-	}()
-	select {
-	case <-ready:
-	case <-ctx.Done():
-		t.Fatal("fallback failed to carry a relay handshake after 437 retries")
-	}
-	if primary.count() != 3 || fallback.count() != 1 {
-		t.Fatalf("primary/fallback addresses = %d/%d, want 3/1", primary.count(), fallback.count())
+	_, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, t.Name(), "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})
+	if !classifyCredError(err) || isQuotaError(err) {
+		t.Fatalf("437 should rotate the credential without the quota cooldown: %v", err)
 	}
 }

@@ -105,7 +105,6 @@ func clearTransientState() {
 
 //export wgNotifyNetworkChange
 func wgNotifyNetworkChange() {
-	quarantineRecentlyUsedCredentials(time.Now())
 	resetNetworkPathProof()
 	ClearCache()
 	turnLog("[NETWORK] Network change: path proof and DNS cache reset (creds preserved)")
@@ -131,12 +130,10 @@ type stream struct {
 	watchdogTimeout int
 
 	// serverAddr is the TURN server this attempt runs on, set by runSession
-	// before the transport starts and cleared at the start of every attempt.
-	// addrShift moves this stream's starting relay: bumped by a short failed
-	// session, pinned to the relay that carried a lasting one (see runWorker and
-	// serversForAttempt). Both belong to the single goroutine driving the stream.
+	// before the transport starts. The transports use it to report their own
+	// handshake verdict to turn_server_health.go; it is rewritten on every
+	// attempt and read only by the single goroutine driving this stream.
 	serverAddr string
-	addrShift  int
 
 	// wrapKey is an optional 32-byte ChaCha20 key for WRAP obfuscation.
 	// When non-nil, raw UDP packets to/from the TURN relay are encrypted with
@@ -154,9 +151,7 @@ type stream struct {
 	// stream, published by the transport before it flips ready. The dispatcher
 	// reads it to keep chunks off a stream whose relay has gone quiet (see
 	// dispatchStale); the transports own it and replace it per session.
-	activity        atomic.Pointer[streamActivity]
-	control         atomic.Pointer[clientStreamControl]
-	feedbackEnabled bool
+	activity atomic.Pointer[streamActivity]
 
 	// wrapTx carries this stream's outbound WRAP SSRC and counter. Both are
 	// per-stream, so each stream (and each device) uses a distinct keystream
@@ -351,9 +346,10 @@ const (
 	// window the ClientHello goes out four times; a relay that swallowed all
 	// four is not going to answer a fifth. It used to be 30s, longer than
 	// TunnelManager's 25s connect budget: on the default proxy_v2 peer type a
-	// blackholed relay failed its handshake only after the tunnel had already
-	// been torn down, leaving no time for failover. A healthy handshake over
-	// these relays measures 130-220ms, so the window
+	// blackholed relay failed its handshake — and was demoted, see
+	// turn_server_election.go — only after the tunnel had already been torn
+	// down, so the election effectively ran only for peerType "wireguard". A
+	// healthy handshake over these relays measures 130-220ms, so the window
 	// keeps an order of magnitude of headroom for a bad mobile RTT plus a lost
 	// flight or two.
 	dataPlaneHandshakeTimeout = 8 * time.Second
@@ -422,8 +418,6 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 
 	activity := newStreamActivity(time.Now(), s.kaPhase)
 	s.activity.Store(activity)
-	control := s.newFeedbackControl()
-	defer s.control.CompareAndSwap(control, nil)
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -504,7 +498,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				if m == 0 {
 					continue
 				}
-				if control.receive(plain[:m]) || isStunKeepalive(plain[:m]) {
+				if isStunKeepalive(plain[:m]) {
 					continue
 				}
 				a := s.peer.Load()
@@ -523,7 +517,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				activity.noteRx(time.Now())
 				markNetworkPathProven(s.networkGeneration)
 				proven()
-				if control.receive(wire[:n]) || isStunKeepalive(wire[:n]) {
+				if isStunKeepalive(wire[:n]) {
 					continue
 				}
 				a := s.peer.Load()
@@ -551,7 +545,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		s.runKeepalive(sCtx, activity, reportErr, func(tick int) error {
 			var sendErr error
 			if hasWrap {
-				if enc, err := wrapPacket(s.wrapKey, control.keepalive(), s.wrapTx); err == nil {
+				if enc, err := wrapPacket(s.wrapKey, stunBindingIndication, s.wrapTx); err == nil {
 					_, sendErr = relayConn.WriteTo(enc, peer)
 				} else {
 					sendErr = err
@@ -562,7 +556,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 					}
 				}
 			} else {
-				_, sendErr = relayConn.WriteTo(control.keepalive(), peer)
+				_, sendErr = relayConn.WriteTo(stunBindingIndication, peer)
 			}
 			if sessionHS != nil {
 				if hasWrap {
@@ -596,6 +590,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				return fmt.Errorf("%w: %w", errDataPlaneHandshake, err)
 			}
 		}
+		noteServerHandshakeOK(s.serverAddr)
 		// The only line this transport prints on success. Without it a live
 		// noDTLS stream is invisible in the log — its server can be recovered
 		// only by pairing "Dial TURN" with the absence of a later worker error.
@@ -608,9 +603,6 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	}
 
 	s.ready.Store(true)
-	if control != nil {
-		s.enqueueControl(control.keepalive())
-	}
 	s.okFunc()
 	wg.Wait()
 	select {
@@ -823,6 +815,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		return fmt.Errorf("%w: DTLS handshake failed: %w", errDataPlaneHandshake, err)
 	}
 	turnLog("[STREAM %d] DTLS handshake OK", s.id)
+	noteServerHandshakeOK(s.serverAddr)
 	markNetworkPathProven(s.networkGeneration)
 
 	// Session + stream ID handshake (proxy_v2 only). Sent as a small burst
@@ -852,13 +845,8 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// the previous one's liveness clock (see dispatchStale).
 	activity := newStreamActivity(time.Now(), s.kaPhase)
 	s.activity.Store(activity)
-	control := s.newFeedbackControl()
-	defer s.control.CompareAndSwap(control, nil)
 
 	s.ready.Store(true)
-	if control != nil {
-		s.enqueueControl(control.keepalive())
-	}
 	s.okFunc()
 
 	wg.Add(3)
@@ -899,7 +887,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			// is valid inbound liveness evidence.
 			activity.noteRx(time.Now())
 			markNetworkPathProven(s.networkGeneration)
-			if control.receive(buf[:n]) || isStunKeepalive(buf[:n]) {
+			if isStunKeepalive(buf[:n]) {
 				continue
 			}
 			if n == 0 {
@@ -927,7 +915,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		defer wg.Done()
 		defer sCancel()
 		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
-			_, err := dtlsConn.Write(control.keepalive())
+			_, err := dtlsConn.Write(stunBindingIndication)
 			return err
 		})
 	}()
@@ -981,6 +969,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	defer srtpConn.Close()
 	context.AfterFunc(sCtx, func() { srtpConn.Close() })
 	turnLog("[STREAM %d] SRTP handshake OK", s.id)
+	noteServerHandshakeOK(s.serverAddr)
 	markNetworkPathProven(s.networkGeneration)
 
 	// Session + stream ID handshake (proxy_v2 model). Sent as a small burst
@@ -1009,13 +998,8 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// the previous one's liveness clock (see dispatchStale).
 	activity := newStreamActivity(time.Now(), s.kaPhase)
 	s.activity.Store(activity)
-	control := s.newFeedbackControl()
-	defer s.control.CompareAndSwap(control, nil)
 
 	s.ready.Store(true)
-	if control != nil {
-		s.enqueueControl(control.keepalive())
-	}
 	s.okFunc()
 
 	var wg sync.WaitGroup
@@ -1057,7 +1041,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 			// srtpConn.Read has already authenticated and decrypted this packet.
 			activity.noteRx(time.Now())
 			markNetworkPathProven(s.networkGeneration)
-			if control.receive(buf[:n]) || isStunKeepalive(buf[:n]) {
+			if isStunKeepalive(buf[:n]) {
 				continue
 			}
 			if n == 0 {
@@ -1084,7 +1068,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 		defer wg.Done()
 		defer sCancel()
 		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
-			_, err := srtpConn.Write(control.keepalive())
+			_, err := srtpConn.Write(stunBindingIndication)
 			return err
 		})
 	}()
@@ -1144,8 +1128,8 @@ func parseLinks(raw string, maxLinks int) []string {
 //export wgTurnProxyStart
 func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char, networkHandleC C.longlong) int32 {
 	networkGeneration := beginNetworkPathGeneration()
-	clearTransientState() // flush DNS without clearing credential caches
-	resetAllocationMismatchPauses()
+	clearTransientState()    // flush DNS without clearing credential caches
+	resetServerHealth()      // new credentials, usually a new server list
 	resetWorkerFatalState(0) // re-armed with the real worker count in StartTunnelGroups
 
 	if networkHandleC != 0 {
@@ -1184,7 +1168,6 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		// screen (nor keep holding captchaMutex) while this start runs.
 		abortPendingCaptcha()
 	}
-	quarantineRecentlyUsedCredentials(time.Now())
 	ctx, cancel := context.WithCancel(context.Background())
 	currentTurnCancel = cancel
 	turnMutex.Unlock()
@@ -1210,11 +1193,44 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	globalGetCreds = func(ctx context.Context, lk string, streamID int) (string, string, []string, error) {
 		return getCredsCached(ctx, lk, streamID, fetchVkCreds)
 	}
-	globalFetchSpare = fetchVkCredsNoCaptcha
 
-	// Bound each credential before expanding groups. The cache stride and the
-	// worker layout must use the same value, including for legacy settings >10.
-	links, perCred, totalStreams := planCredentialGroups(links, int(n), int(streamsPerCredC))
+	// ── Apply StreamNum cap / expand ─────────────────────────────────────────
+	// StreamNum (n) is the total stream count. streamsPerCred is a group's
+	// capacity — the most streams one credential may carry — not its exact size.
+	//   • n < total: reduce streamsPerCred so total matches n.
+	//   • n > total: add groups by cycling links until they hold n streams, and
+	//     let the last group take the remainder rather than rounding the total
+	//     up to a multiple of streamsPerCred (n=12, streamsPerCred=9 gives 9 + 3,
+	//     not 9 + 9). A short trailing group needs no special handling
+	//     elsewhere: streamID/streamsPerCred — the credential cache key in
+	//     credentials.go:getCacheID — already maps streams 9-11 to slot 1.
+	// streamsPerCred must stay in sync with that division either way. The value is
+	// computed locally and published once, at the end: the global is read by the
+	// previous session's departing workers, so intermediate values must never be
+	// visible to them.
+	perCred := int(streamsPerCredC)
+	if perCred < 1 {
+		perCred = 1
+	}
+	totalStreams := len(links) * perCred
+	if maxTotal := int(n); maxTotal > 0 {
+		if maxTotal < totalStreams {
+			perGroup := maxTotal / len(links)
+			if perGroup < 1 {
+				perGroup = 1
+			}
+			perCred = perGroup
+			totalStreams = len(links) * perCred
+		} else if maxTotal > totalStreams {
+			numGroups := (maxTotal + perCred - 1) / perCred
+			origLinks := links
+			links = make([]string, numGroups)
+			for i := range links {
+				links[i] = origLinks[i%len(origLinks)]
+			}
+			totalStreams = maxTotal
+		}
+	}
 	setStreamsPerCred(perCred)
 
 	turnLog("[PROXY] Starting: listen=%s StreamNum=%d streamsPerGroup=%d links=%d actualTotal=%d mode=%s peerType=%s watchdog=%ds",
@@ -1376,7 +1392,6 @@ func wgTurnProxyStop() {
 	if cancel != nil {
 		turnLog("[PROXY] Stopping TURN proxy")
 		cancel()
-		quarantineRecentlyUsedCredentials(time.Now())
 		// Wait (bounded) for worker goroutines to unwind so each stream's
 		// relayConn.Close() runs and sends TURN Refresh(lifetime=0) — this frees
 		// the server-side allocation now instead of letting it linger until its
@@ -1390,9 +1405,11 @@ func wgTurnProxyStop() {
 			}
 		}
 	}
-	// Keep unused cache entries, but recent allocations are held aside until
-	// their server lifetime can expire. A quick restart fetches fresh credentials.
-
+	// Credential caches are intentionally preserved across stops so an immediate
+	// reconnect gets a cache hit and avoids a fresh VK API round-trip (and captcha).
+	// If old TURN allocations lingered (drain timed out) and the quota is exhausted,
+	// a worker hitting 486 calls refreshGroupCreds → its next reconnect re-fetches
+	// a fresh credential automatically.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
