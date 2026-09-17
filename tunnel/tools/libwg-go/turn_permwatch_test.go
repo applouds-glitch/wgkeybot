@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // The whole detector rests on pion's log wording. If a version bump rephrases a
@@ -30,9 +29,9 @@ func TestMarkersExistInVendoredPion(t *testing.T) {
 	}
 
 	sources := map[string]string{}
-	for _, name := range []string{"udp_conn.go", "allocation.go", "client.go", "errors.go"} {
+	for _, name := range []string{"udp_conn.go", "allocation.go", "client.go"} {
 		path := filepath.Join(dir, "internal", "client", name)
-		if name == "client.go" || name == "errors.go" {
+		if name == "client.go" {
 			path = filepath.Join(dir, name)
 		}
 		b, readErr := os.ReadFile(path)
@@ -43,16 +42,15 @@ func TestMarkersExistInVendoredPion(t *testing.T) {
 	}
 
 	markers := map[string]string{
-		bindFailMarker:          "udp_conn.go",
-		bindOKMarker:            "udp_conn.go",
-		allocClosedMarker:       "udp_conn.go",
-		allocFailMarker:         "allocation.go",
-		allocOKMarker:           "allocation.go",
-		permFailMarker:          "allocation.go",
-		permOKMarker:            "allocation.go",
-		retransmitTimeoutMarker: "errors.go",
-		pionReadLoopFailed:      "client.go",
-		pionInboundFailed:       "client.go",
+		bindFailMarker:     "udp_conn.go",
+		bindOKMarker:       "udp_conn.go",
+		allocClosedMarker:  "udp_conn.go",
+		allocFailMarker:    "allocation.go",
+		allocOKMarker:      "allocation.go",
+		permFailMarker:     "allocation.go",
+		permOKMarker:       "allocation.go",
+		pionReadLoopFailed: "client.go",
+		pionInboundFailed:  "client.go",
 	}
 	for marker, file := range markers {
 		if !strings.Contains(sources[file], marker) {
@@ -64,15 +62,13 @@ func TestMarkersExistInVendoredPion(t *testing.T) {
 // Exact log lines pion emits, with the format verbs already substituted the way
 // pionLogger.Warnf hands them to note().
 const (
-	logBindFail  = "Failed to bind channel 16384: channel bind transaction failed: all retransmissions failed"
-	logBindOK    = "Channel binding successful: 1.2.3.4:56000 16384"
-	logAllocFail = "Failed to refresh allocation: error 437: Allocation Mismatch"
-	logAllocOK   = "Updated lifetime: 600 seconds"
-	// The same failure when nobody answered — what a dark uplink produces.
-	logAllocTimeout = "Failed to refresh allocation: failed to refresh allocation: all retransmissions failed for htjbS/DbWcpzYtFi"
-	logPermFail     = "Failed to refresh permissions: error 403: Forbidden"
-	logPermOK       = "Refresh permissions successful"
-	logAllocClose   = "ChannelBind rejected with 400 for 1.2.3.4:56000 on channel 16384; closing TURN allocation"
+	logBindFail   = "Failed to bind channel 16384: channel bind transaction failed: all retransmissions failed"
+	logBindOK     = "Channel binding successful: 1.2.3.4:56000 16384"
+	logAllocFail  = "Failed to refresh allocation: error 437: Allocation Mismatch"
+	logAllocOK    = "Updated lifetime: 600 seconds"
+	logPermFail   = "Failed to refresh permissions: error 403: Forbidden"
+	logPermOK     = "Refresh permissions successful"
+	logAllocClose = "ChannelBind rejected with 400 for 1.2.3.4:56000 on channel 16384; closing TURN allocation"
 )
 
 func TestChannelBindNeedsTwoConsecutiveFailures(t *testing.T) {
@@ -104,93 +100,19 @@ func TestChannelBindSuccessResetsCounter(t *testing.T) {
 	}
 }
 
-// A relay that answers the refresh with an error has spoken: the allocation is
-// not going to be renewed, and the next attempt only comes at lifetime/2 — by
-// then it is gone. One is enough.
-func TestAllocationRefreshRefusalFiresImmediately(t *testing.T) {
+// A failed allocation refresh is already seven retransmits deep and the next
+// attempt only comes at lifetime/2 — by then the allocation is gone. One is enough.
+func TestAllocationRefreshFailureFiresImmediately(t *testing.T) {
 	w := newPermWatch(0)
 
 	w.note(logAllocFail)
 
 	if !w.fired() {
-		t.Fatal("a refused allocation refresh must recycle the stream")
+		t.Fatal("a single allocation-refresh failure must recycle the stream")
 	}
 	if !strings.Contains(w.why(), "437") {
 		t.Errorf("reason must carry pion's error text for classifyCredError, got %q", w.why())
 	}
-}
-
-// A refresh nobody answered says as much about the uplink as about the relay.
-// In the 2026-09-17 log three of these during a forty-second outage threw away
-// three working allocations, whose replacements then met 486 on a relay still
-// holding the originals. The stream keeps running on its echoes and is recycled
-// only shortly before the allocation would expire.
-func TestUnansweredAllocationRefreshDoesNotRecycleAtOnce(t *testing.T) {
-	w := newPermWatch(0)
-	fire := make(chan struct{})
-	w.recycleAfter = func() time.Duration { <-fire; return time.Millisecond }
-
-	done := make(chan struct{})
-	go func() { w.note(logAllocTimeout); close(done) }()
-	select {
-	case <-done:
-		t.Fatal("note returned before the delay was chosen")
-	case <-time.After(20 * time.Millisecond):
-	}
-	if w.fired() {
-		t.Fatal("an unanswered refresh recycled the stream on the spot")
-	}
-
-	close(fire)
-	<-done
-	select {
-	case <-w.deadCh():
-	case <-time.After(2 * time.Second):
-		t.Fatal("the deferred recycle never came")
-	}
-	if !strings.Contains(w.why(), "never renewed") || !strings.Contains(w.why(), retransmitTimeoutMarker) {
-		t.Errorf("reason lost the cause: %q", w.why())
-	}
-}
-
-func TestDefaultRecycleDelayLeavesTheAllocationMostOfItsLifetime(t *testing.T) {
-	// 600s grants refreshed at 300s: the recycle must land after an outage has had
-	// time to pass and before the allocation expires on its own.
-	if allocRecycleDelay < 2*time.Minute || allocRecycleDelay+allocRecycleJitter >= 5*time.Minute {
-		t.Fatalf("recycle window %v..%v does not fit inside the remaining lifetime",
-			allocRecycleDelay, allocRecycleDelay+allocRecycleJitter)
-	}
-}
-
-func TestLaterRefreshSuccessCancelsTheDeferredRecycle(t *testing.T) {
-	w := newPermWatch(0)
-	w.recycleAfter = func() time.Duration { return 50 * time.Millisecond }
-
-	w.note(logAllocTimeout)
-	w.note(logAllocOK)
-
-	time.Sleep(150 * time.Millisecond)
-	if w.fired() {
-		t.Fatal("an allocation that was renewed after all was still recycled")
-	}
-}
-
-// A session that ends for any other reason takes its timer with it: a recycle
-// firing later would log a blackhole for an allocation that no longer exists.
-func TestStopDisarmsTheDeferredRecycle(t *testing.T) {
-	w := newPermWatch(0)
-	w.recycleAfter = func() time.Duration { return 50 * time.Millisecond }
-
-	w.note(logAllocTimeout)
-	w.stop()
-	w.note(logAllocTimeout) // a late pion line after teardown must not re-arm it
-
-	time.Sleep(150 * time.Millisecond)
-	if w.fired() {
-		t.Fatal("a stopped watch fired")
-	}
-	var nilWatch *permWatch
-	nilWatch.stop()
 }
 
 func TestAllocationRefreshSuccessResetsCounter(t *testing.T) {

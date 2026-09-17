@@ -21,7 +21,7 @@ func TestInitialAllocateErrorMatchesTransactionOverTCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	defer resetAllocationMismatchPauses()
+	defer resetServerHealth()
 	done := make(chan error, 1)
 	go func() {
 		conn, err := l.Accept()
@@ -63,7 +63,7 @@ func TestInitialAllocateErrorMatchesTransactionOverTCP(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, _, _, _, _, err = dialAndAllocateOnce(ctx, &stream{}, t.Name(), "pass", l.Addr().String(), WorkerGroupConfig{}, make(map[string]bool))
+	_, _, _, _, _, err = dialAndAllocate(ctx, &stream{}, t.Name(), "pass", l.Addr().String(), WorkerGroupConfig{})
 	if code, ok := turnErrorCode(err); !ok || code != stun.CodeAllocMismatch {
 		t.Fatalf("unrelated transaction replaced actual 437: %v", err)
 	}

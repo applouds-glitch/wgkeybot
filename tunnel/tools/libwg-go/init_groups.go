@@ -87,9 +87,6 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	if n <= 0 {
 		n = streamsPerCredValue()
 	}
-	if n > maxStreamsPerCredential {
-		return nil, nil, nil, fmt.Errorf("a credential supports at most %d streams", maxStreamsPerCredential)
-	}
 	wd := cfg.WatchdogTimeout
 	dispatchDropCount.Store(0)
 
@@ -133,16 +130,8 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			kaPhase:           keepalivePhase(i, totalStreams),
 			wrapTx:            newWrapTxState(), // per-stream RTP SSRC + counter → distinct ChaCha nonce
 			networkGeneration: cfg.NetworkGeneration,
-			feedbackEnabled:   cfg.PeerType == "proxy_v2" || cfg.PeerType == "wireguard" || cfg.PeerType == "srtp",
 		}
 	}
-
-	feedbackCtx, feedbackCancel := context.WithCancel(gCtx)
-	feedbackDone := make(chan struct{})
-	go func() {
-		defer close(feedbackDone)
-		runDownlinkFeedback(feedbackCtx, allStreams)
-	}()
 
 	var groupsWg sync.WaitGroup
 	// The cascade below sleeps between groups, so it is launched in its own
@@ -211,8 +200,6 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	done := make(chan struct{})
 	go func() {
 		groupsWg.Wait()
-		feedbackCancel()
-		<-feedbackDone
 		close(done)
 	}()
 
