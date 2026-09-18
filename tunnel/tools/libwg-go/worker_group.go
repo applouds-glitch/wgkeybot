@@ -29,13 +29,59 @@ const (
 // hammering VK with unbounded concurrent authentication requests.
 var vkSemaphore = make(chan struct{}, 2)
 
-// allocSemaphore bounds concurrent TURN Allocate() handshakes. Without it,
+// allocSlots bounds concurrent TURN Allocate() handshakes per relay. Without it,
 // streams spaced by stagger still pile up because Allocate retransmits for
 // ~7.8s (RTO=200ms, 7 attempts) — the first alloc hasn't failed before the 6th
 // stream starts, so the server's per-IP path sees a burst and silently drops a
 // share of them. Cap 3 keeps the first stream unblocked while smoothing the
 // fan-out behind it.
-var allocSemaphore = make(chan struct{}, 3)
+//
+// Per relay, not global: the burst being paced is one relay's, and a relay that
+// has gone silent holds its slots for the whole 7.8s. With one shared pool three
+// Allocates hanging on a dark relay blocked every dial to the relay that was
+// answering (see relayHeadStart).
+const allocSlotsPerRelay = 3
+
+var allocSlots = struct {
+	sync.Mutex
+	byRelay map[string]chan struct{}
+}{byRelay: map[string]chan struct{}{}}
+
+func allocSlotsFor(addr string) chan struct{} {
+	allocSlots.Lock()
+	defer allocSlots.Unlock()
+	sem := allocSlots.byRelay[addr]
+	if sem == nil {
+		sem = make(chan struct{}, allocSlotsPerRelay)
+		allocSlots.byRelay[addr] = sem
+	}
+	return sem
+}
+
+// allocSlot is one held Allocate slot. It is released by whichever comes
+// first — the Allocate returning, or the head start on its relay running out
+// (see runWithCreds) — and only once.
+type allocSlot struct {
+	sem  chan struct{}
+	once sync.Once
+}
+
+// acquireAllocSlot waits for a free Allocate slot on addr; nil if ctx ends first.
+func acquireAllocSlot(ctx context.Context, addr string) *allocSlot {
+	sem := allocSlotsFor(addr)
+	select {
+	case sem <- struct{}{}:
+		return &allocSlot{sem: sem}
+	case <-ctx.Done():
+		return nil
+	}
+}
+
+func (s *allocSlot) release() {
+	if s != nil {
+		s.once.Do(func() { <-s.sem })
+	}
+}
 
 // WorkerGroupConfig — parameters for one stream group (one VK link).
 type WorkerGroupConfig struct {

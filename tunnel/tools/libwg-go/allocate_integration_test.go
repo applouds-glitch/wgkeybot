@@ -70,7 +70,7 @@ func TestDialAndAllocateIgnoresUnrelatedDatagrams(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	client, raw, relay, _, _, err := dialAndAllocate(ctx, &stream{}, "noisy-user", "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})
+	client, raw, relay, _, _, err := dialAndAllocate(ctx, &stream{}, "noisy-user", "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true}, dialOpts{})
 	if err != nil {
 		t.Fatalf("Allocate lost after unrelated datagram: %v (server allocations: %d, injected: %d)", err, server.AllocationCount(), noisy.injected.Load())
 	}
@@ -130,7 +130,7 @@ func TestDialAndAllocateAcceptsSlowRepliesAndReleasesAllocation(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			client, raw, relay, rtt, _, err := dialAndAllocate(ctx, &stream{}, "user", "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})
+			client, raw, relay, rtt, _, err := dialAndAllocate(ctx, &stream{}, "user", "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true}, dialOpts{})
 			if err != nil {
 				t.Fatalf("answering TURN server rejected: %v (active allocations: %d)", err, server.AllocationCount())
 			}
@@ -153,7 +153,7 @@ func TestDialAndAllocateAcceptsSlowRepliesAndReleasesAllocation(t *testing.T) {
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
-			if len(allocSemaphore) != 0 {
+			if len(allocSlotsFor(pc.LocalAddr().String())) != 0 {
 				t.Fatal("successful Allocate kept a semaphore slot")
 			}
 		})
@@ -167,11 +167,11 @@ func TestDialAndAllocateLetsPionExhaustRetransmissions(t *testing.T) {
 	defer resetServerHealth()
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	_, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, "user", "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})
+	_, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, "user", "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true}, dialOpts{})
 	if err == nil || !strings.Contains(err.Error(), "all retransmissions failed") {
 		t.Fatalf("want Pion's retransmission failure, got %v", err)
 	}
-	if len(allocSemaphore) != 0 {
+	if len(allocSlotsFor(pc.LocalAddr().String())) != 0 {
 		t.Fatal("failed Allocate kept a semaphore slot")
 	}
 }
