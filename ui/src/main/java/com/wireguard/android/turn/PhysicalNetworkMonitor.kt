@@ -10,11 +10,13 @@ import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Build
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.net.Inet4Address
 import java.net.Inet6Address
+import java.net.NetworkInterface
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -80,6 +82,35 @@ class PhysicalNetworkMonitor(context: Context) {
         if (network == null) return ""
         val lp = cm.getLinkProperties(network) ?: return ""
         return lp.dnsServers.mapNotNull { it.hostAddress }.joinToString(",")
+    }
+
+    /**
+     * The MTU of [network], for the log: the one set on its interface, followed by
+     * the one the network advertised (LinkProperties, API 29+) when that differs —
+     * a carrier's value that did not make it onto the interface is worth seeing.
+     * "unknown" when neither can be read.
+     *
+     * Every TURN packet leaves through this interface wrapped several times over
+     * (see TurnConfigProcessor.TURN_MAX_MTU), so this is the number to compare with
+     * the tunnel MTU when big transfers stall while handshakes still pass.
+     */
+    fun mtuOf(network: Network?): String {
+        if (network == null) return "none"
+        val lp = cm.getLinkProperties(network) ?: return "unknown"
+        val advertised = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) lp.mtu else 0
+        val onInterface = lp.interfaceName?.let { name ->
+            try {
+                NetworkInterface.getByName(name)?.mtu?.takeIf { it > 0 }
+            } catch (_: Exception) {
+                null
+            }
+        }
+        return when {
+            onInterface == null && advertised > 0 -> "$advertised (advertised)"
+            onInterface == null -> "unknown"
+            advertised > 0 && advertised != onInterface -> "$onInterface (network advertises $advertised)"
+            else -> "$onInterface"
+        }
     }
 
     /**
