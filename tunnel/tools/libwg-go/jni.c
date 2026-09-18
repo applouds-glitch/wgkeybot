@@ -24,6 +24,7 @@ extern char *wgVersion();
 extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, const char *mode, int n, int udp, const char *listen_addr, const char *turn_ip, int turn_port, const char *peer_type, int streams_per_cred, int watchdog_timeout, const char *wrap_key);
 extern void wgTurnProxyStop();
 extern void wgSetNetworkAvailable(int available);
+extern void wgTurnDropCredentials(void);
 extern void wgSetSystemDns(const char *dns_servers);
 extern void wgSetPhysicalNetwork(long long handle);
 extern int wgTetherStart(const char *bind_ip, int port, const char *dns_servers, const char *tunnel_addrs, const char *routing_dir, const char *direct_dns);
@@ -596,6 +597,11 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetwo
 	// handle, not just "is there one", because leaving a network also marks the
 	// relays our allocations on it can no longer release.
 	wgSetPhysicalNetwork(network != NULL ? (long long)handle : 0);
+}
+
+JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnDropCredentials(JNIEnv *env, jclass c)
+{
+	wgTurnDropCredentials();
 }
 
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetworkAvailable(JNIEnv *env, jclass c, jint available)

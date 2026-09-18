@@ -380,6 +380,13 @@ public final class TurnBackend {
     public static native void wgSetNetworkAvailable(int available);
 
     /**
+     * Forgets every cached TURN credential, so the next proxy start fetches a new
+     * VK identity. One VK request, so a potential captcha: the background
+     * watchdog's second rebuild is the only caller.
+     */
+    public static native void wgTurnDropCredentials();
+
+    /**
      * Starts the internet-sharing proxy on the access point interface.
      *
      * {@code tunnelAddrs} is the tunnel's own Interface.Address list (comma

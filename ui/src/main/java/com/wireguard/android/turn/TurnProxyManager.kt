@@ -11,6 +11,7 @@ import android.net.NetworkCapabilities
 import android.util.Log
 import com.wireguard.android.R
 import com.wireguard.android.backend.TurnBackend
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -107,6 +108,54 @@ class TurnProxyManager(private val context: Context) {
                     networkMonitor.dnsServersOf(network),
                 )
             }
+        }
+    }
+
+    /** What [rebuildTransport] did. */
+    sealed interface Rebuild {
+        /** The proxy was restarted, or the attempt ended; the watchdog judges the result. */
+        data object Done : Rebuild
+
+        /** No TURN session for this tunnel, or a stop is under way: nothing to rebuild. */
+        data object NotApplicable : Rebuild
+
+        /** A start code no retry can fix ([START_CALL_REQUIRES_AUTH], [START_CALL_UNAVAILABLE]). */
+        data class Fatal(val code: Int, val message: String) : Rebuild
+    }
+
+    /**
+     * Rebuilds the TURN proxy under a tunnel that stays up: the background
+     * watchdog's step before it gives up on a session that has not handshaken for
+     * minutes (see WatchdogCourse). The workers retry on their own all along;
+     * what a rebuild adds is a clean start — new sessions on the server, relay
+     * health and the election forgotten — and, with [newCredentials], a new VK
+     * identity, at the cost of one VK request.
+     *
+     * Not the restart this class used to run on every network change: that one
+     * tore down sessions that had just recovered. This runs only after minutes
+     * without a single handshake, when there is nothing left to break.
+     */
+    suspend fun rebuildTransport(tunnelName: String, newCredentials: Boolean): Rebuild {
+        val settings = activeSettings
+        if (userInitiatedStop || activeTunnelName != tunnelName || settings == null || !settings.enabled)
+            return Rebuild.NotApplicable
+        val line = "No WireGuard handshake for minutes — rebuilding the TURN transport" +
+            if (newCredentials) " on new credentials" else ""
+        Log.w(TAG, line)
+        appendLogLine(tunnelName, line)
+        if (newCredentials) TurnBackend.wgTurnDropCredentials()
+        return try {
+            if (!startForTunnelInternal(tunnelName, settings))
+                Log.w(TAG, "TURN rebuild did not start — the watchdog's next step decides")
+            Rebuild.Done
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: TurnStartFatal) {
+            endSession()
+            Rebuild.Fatal(e.code, e.message.orEmpty())
+        } catch (e: Exception) {
+            Log.w(TAG, "TURN rebuild failed", e)
+            Rebuild.Done
         }
     }
 
@@ -268,21 +317,21 @@ class TurnProxyManager(private val context: Context) {
                         effectiveWrapKey
                     )
 
-                    if (ret == -2) {
+                    if (ret == START_CALL_REQUIRES_AUTH) {
                         val msg = context.getString(R.string.turn_call_requires_auth)
                         Log.e(TAG, "TURN: $msg")
                         appendLogLine(tunnelName, msg)
-                        throw Exception(msg)
+                        throw TurnStartFatal(ret, msg)
                     }
 
-                    if (ret == -4) {
+                    if (ret == START_CALL_UNAVAILABLE) {
                         // Dead call: the VK call ended/was deleted or the join link is
                         // invalid. No captcha, credential rotation or stream count can
                         // revive a call that no longer exists — abort without retrying.
                         val msg = context.getString(R.string.turn_call_unavailable)
                         Log.e(TAG, "TURN: $msg")
                         appendLogLine(tunnelName, msg)
-                        throw Exception(msg)
+                        throw TurnStartFatal(ret, msg)
                     }
 
                     if (ret == -3) {
@@ -427,5 +476,17 @@ class TurnProxyManager(private val context: Context) {
     companion object {
         private const val TAG = "WireGuard/TurnProxyManager"
         private const val MAX_LOG_CHARS = 128 * 1024
+
+        /** wgTurnProxyStart: the call refuses anonymous joins (CALL_REQUIRES_AUTH). */
+        const val START_CALL_REQUIRES_AUTH = -2
+
+        /** wgTurnProxyStart: the call has ended or the link is wrong. */
+        const val START_CALL_UNAVAILABLE = -4
     }
 }
+
+/**
+ * A TURN start refused with a code no retry can fix — [TurnProxyManager.START_CALL_REQUIRES_AUTH]
+ * or [TurnProxyManager.START_CALL_UNAVAILABLE]. The message is the user-facing text.
+ */
+class TurnStartFatal(val code: Int, message: String) : Exception(message)

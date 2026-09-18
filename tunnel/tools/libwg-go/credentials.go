@@ -109,7 +109,8 @@ func getStreamCache(streamID int) *StreamCredentialsCache {
 	return cache
 }
 
-// invalidateAllCaches clears all credential caches (called on network change).
+// invalidateAllCaches clears all credential caches, so the next fetch in every
+// group goes to VK for a new identity (see wgTurnDropCredentials).
 func invalidateAllCaches() {
 	credentialsStore.mu.Lock()
 	defer credentialsStore.mu.Unlock()
