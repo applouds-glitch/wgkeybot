@@ -33,6 +33,7 @@ import com.wireguard.android.configStore.ConfigStore
 import com.wireguard.android.databinding.ObservableSortedKeyedArrayList
 import com.wireguard.android.fragment.TunnelFailure
 import com.wireguard.android.turn.TurnConfigProcessor
+import com.wireguard.android.turn.TurnProxyManager
 import com.wireguard.android.turn.TurnSettings
 import com.wireguard.android.turn.TurnSettingsStore
 import com.wireguard.android.util.ErrorMessages
@@ -688,18 +689,18 @@ class TunnelManager(
     }
 
     /**
-     * Starts a background watchdog that tears the tunnel down if it stays UP without
-     * a working connection — no WireGuard handshake ever completes, or a previously
-     * healthy one goes stale while traffic is still being sent. This catches
-     * mid-session death (DPI/network) that the connect-time [awaitFirstHandshake]
-     * check cannot see. App-scoped so it survives the UI being closed.
+     * Starts a background watchdog for a tunnel that stays UP without a working
+     * connection — no WireGuard handshake ever completes, or a previously healthy
+     * one goes stale while traffic is still being sent. This catches mid-session
+     * death (DPI/network) that the connect-time [awaitFirstHandshake] check cannot
+     * see. It rebuilds the TURN transport twice before it gives up and takes the
+     * tunnel down (see WatchdogCourse). App-scoped so it survives the UI being
+     * closed.
      */
     private fun startHandshakeWatchdog(tunnel: ObservableTunnel) {
         handshakeWatchdogs.remove(tunnel.name)?.cancel()
         handshakeWatchdogs[tunnel.name] = applicationScope.launch(Dispatchers.IO) {
-            val upSince = System.currentTimeMillis()
-            var prevTx = -1L
-            var deadChecks = 0
+            val course = WatchdogCourse(System.currentTimeMillis())
             var waitingForNetwork = false
             while (isActive) {
                 awaitNextWatchdogPoll()
@@ -726,26 +727,50 @@ class TunnelManager(
                     else
                         "Handshake watchdog: physical network is back for ${tunnel.name} — counting again")
                 }
-                val dead = HandshakeWatchdog.isDeadPoll(now, upSince, latestHandshake, tx, prevTx, hasNetwork)
-                prevTx = tx
-                if (!dead) {
-                    deadChecks = 0
-                    continue
-                }
-                deadChecks++
-                if (deadChecks >= WATCHDOG_DEAD_CHECKS) {
-                    Log.w(TAG, "Handshake watchdog: ${tunnel.name} has no working connection — tearing down")
-                    notifyConnectionLost()
-                    // Tear down on a fresh job so returning here doesn't abort it.
-                    applicationScope.launch {
-                        try {
-                            setTunnelState(tunnel, Tunnel.State.DOWN)
-                        } catch (e: Throwable) {
-                            Log.w(TAG, "Watchdog teardown failed: ${Log.getStackTraceString(e)}")
+                when (val step = course.poll(now, latestHandshake, tx, hasNetwork)) {
+                    WatchdogCourse.Step.NONE -> Unit
+                    WatchdogCourse.Step.RECOVERED ->
+                        Log.i(TAG, "Handshake watchdog: ${tunnel.name} handshakes again after the rebuild")
+                    WatchdogCourse.Step.REBUILD, WatchdogCourse.Step.REBUILD_NEW_CREDENTIALS -> {
+                        Log.w(TAG, "Handshake watchdog: ${tunnel.name} has no working connection — " +
+                            "rebuild ${course.rebuilds}/${WatchdogCourse.REBUILDS}")
+                        val newCredentials = step == WatchdogCourse.Step.REBUILD_NEW_CREDENTIALS
+                        when (val result = getTurnProxyManager().rebuildTransport(tunnel.name, newCredentials)) {
+                            TurnProxyManager.Rebuild.Done -> course.rebuilt(System.currentTimeMillis())
+                            TurnProxyManager.Rebuild.NotApplicable -> {
+                                tearDownDeadTunnel(tunnel)
+                                return@launch
+                            }
+                            is TurnProxyManager.Rebuild.Fatal -> {
+                                tearDownForTurnFailure(
+                                    tunnel.name,
+                                    result.message,
+                                    if (result.code == TurnProxyManager.START_CALL_REQUIRES_AUTH) TunnelFailure.CallRequiresAuth
+                                    else TunnelFailure.CallUnavailable,
+                                )
+                                return@launch
+                            }
                         }
                     }
-                    return@launch
+                    WatchdogCourse.Step.TEAR_DOWN -> {
+                        tearDownDeadTunnel(tunnel)
+                        return@launch
+                    }
                 }
+            }
+        }
+    }
+
+    /** The watchdog's last step: tell the user, and take the tunnel down. */
+    private fun tearDownDeadTunnel(tunnel: ObservableTunnel) {
+        Log.w(TAG, "Handshake watchdog: ${tunnel.name} has no working connection — tearing down")
+        notifyConnectionLost()
+        // Tear down on a fresh job so returning from the watchdog doesn't abort it.
+        applicationScope.launch {
+            try {
+                setTunnelState(tunnel, Tunnel.State.DOWN)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Watchdog teardown failed: ${Log.getStackTraceString(e)}")
             }
         }
     }
@@ -923,13 +948,12 @@ class TunnelManager(
         private const val HANDSHAKE_TIMEOUT_MS = 25_000L
         private const val HANDSHAKE_POLL_INTERVAL_MS = 1_000L
 
-        // Background watchdog: tears the tunnel down on prolonged loss of handshake.
+        // Background watchdog: rebuilds the transport, then tears the tunnel down,
+        // on prolonged loss of handshake.
         private const val WATCHDOG_POLL_MS = 30_000L
         // Poll cadence with the screen off, where a slower verdict costs nothing.
         private const val WATCHDOG_POLL_IDLE_MS = 180_000L
-        // The staleness thresholds live with the verdict, in HandshakeWatchdog.
-        // Consecutive bad polls required before tearing down (debounce).
-        private const val WATCHDOG_DEAD_CHECKS = 2
+        // The thresholds and the steps live with the verdict, in HandshakeWatchdog.kt.
 
         // Coalescing window for package installs, so a device restore that installs
         // dozens of apps back to back costs one reconnect instead of dozens.

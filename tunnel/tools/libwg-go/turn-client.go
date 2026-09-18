@@ -1140,6 +1140,17 @@ var currentTurnDone <-chan struct{}
 var turnMutex sync.Mutex
 var globalGetCreds getCredsFunc
 
+// wgTurnDropCredentials forgets every cached TURN credential, so the next proxy
+// start fetches a new VK identity — one VK request, so a potential captcha. The
+// background watchdog's second rebuild calls it: a session that stayed dead
+// through a rebuild on the same credential may be stuck on that identity in a
+// way no TURN error names, and the credential is the one thing a rebuild keeps.
+//
+//export wgTurnDropCredentials
+func wgTurnDropCredentials() {
+	invalidateAllCaches()
+}
+
 //export wgSetNetworkAvailable
 func wgSetNetworkAvailable(available C.int) {
 	setNetworkAvailable(available != 0)
