@@ -32,8 +32,7 @@ import (
 //     would otherwise keep the tunnel on the old network for as long as it lasts;
 //   - server health and the election start over: what a relay did over the old
 //     network says nothing about the new path to it;
-//   - transport proof is dropped (it was earned over the old network), and so is
-//     the DNS cache.
+//   - the DNS cache is dropped.
 //
 // Only a move to a different network counts. Losing the network parks the
 // workers and changes nothing else — if the same network comes back, the
@@ -105,9 +104,8 @@ func noteNetworkSwitch(handle int64) {
 	networkSwitch.Unlock()
 
 	resetServerHealth()
-	clearTransportProof()
 	ClearCache()
-	turnLog("[NETWORK] moved from network %d to %d: %d session(s) on the old one recycled; server health, path proof and DNS cache reset",
+	turnLog("[NETWORK] moved from network %d to %d: %d session(s) on the old one recycled; server health and DNS cache reset",
 		from, handle, len(recycled))
 	for _, a := range recycled {
 		a.cancel()
@@ -123,6 +121,10 @@ func setBoundNetwork(handle int64, now time.Time) {
 	noteBoundNetwork(handle, now)
 	noteNetworkSwitch(handle)
 	if setPhysicalPath(handle != 0) {
-		logNetworkAvailability()
+		if handle != 0 {
+			turnLog("[NETWORK] physical network is back — workers released")
+		} else {
+			turnLog("[NETWORK] no physical network — workers parked until one returns")
+		}
 	}
 }

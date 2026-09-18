@@ -372,14 +372,6 @@ public final class TurnBackend {
     public static native void wgSetNetwork(@Nullable Network network, long networkHandle, String dnsServers);
 
     /**
-     * Reports whether Android currently has a validated physical upstream.
-     * Native combines this hint with recent TURN transport proof. A false value
-     * therefore parks normal reconnect work only after that proof expires; one
-     * rate-limited probe remains available for recovery.
-     */
-    public static native void wgSetNetworkAvailable(int available);
-
-    /**
      * Forgets every cached TURN credential, so the next proxy start fetches a new
      * VK identity. One VK request, so a potential captcha: the background
      * watchdog's second rebuild is the only caller.

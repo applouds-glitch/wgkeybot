@@ -8,281 +8,82 @@ package main
 import (
 	"context"
 	"sync"
-	"time"
 )
 
-// transportPathProofTTL keeps reconnects enabled long enough for a stream to
-// reach the 90s dead threshold and still have a full reconnect window. Healthy
-// streams renew the proof on every validated RX, so working networks that
-// Android never marks VALIDATED remain usable indefinitely. On a real outage
-// the proof expires and the gate stops further credential/Allocate churn.
-const transportPathProofTTL = 3 * time.Minute
-
-// unvalidatedProbeInterval prevents a circular wait after a real outage on a
-// network that never gains Android validation. One worker may probe; success
-// renews transport proof and releases all siblings, failure leaves them parked.
-const unvalidatedProbeInterval = time.Minute
-
-// networkAvailability gates only new TURN connection work. Android validation
-// and observed TURN reachability are deliberately separate signals: either one
-// may open the gate. Existing relay sessions never wait here.
+// The network gate: new TURN connection work waits while Android has no
+// physical network at all, and for nothing else. Existing relay sessions never
+// wait here.
 //
-// Both are overridden by a third: whether there is a physical network at all
-// (see setPhysicalPath). It is stored as "absent" so that its zero value — like
-// androidValidated's default — leaves the gate alone on hosts that never report
-// it.
+// Without it, losing every network left the workers dialing a route that did
+// not exist — a fresh ENETUNREACH every half second per stream, and every
+// failure aging a backoff streak over a network that was not even there.
 //
-// androidValidated defaults to true for hosts that do not publish Android
-// connectivity state (iOS, Windows and tests).
-var networkAvailability = struct {
+// It used to weigh two more signals, and both are gone on purpose. Android's
+// NET_CAPABILITY_VALIDATED closed the gate on networks the system does not
+// validate, with "transport proof" (a packet received over TURN in the last
+// three minutes) as the way to keep it open and one probe a minute by a single
+// worker as the way back. That is exactly the wrong trade for the networks this
+// client exists for: behind a whitelist Google's connectivity check fails while
+// VK's relays answer, so validation says nothing about our path — both field
+// logs of 2026-09-18 ran on cellular networks that never validated. Once a
+// relay went dark there, proof expired after three minutes and recovery was
+// throttled to one dial a minute; if that dial landed on a relay that allocates
+// but carries nothing, the minute was burnt, and the handshake watchdog took
+// the VPN down before anything could reconnect. v1.6.0, which people remember
+// as holding a connection better, had no gate: its workers simply retried with
+// backoff — which is what reconnectDelay and the per-error pacing in runWorker
+// already do here.
+//
+// pathAbsent is stored negated so that its zero value leaves the gate open on
+// hosts that never report a path (tests, other platforms).
+var networkGate = struct {
 	sync.Mutex
-	physicalPathAbsent   bool
-	androidValidated     bool
-	transportProvenUntil time.Time
-	transportGeneration  uint64
-	nextUnvalidatedProbe time.Time
-	unvalidatedProbeBusy bool
-	unvalidatedProbeID   uint64
-	becameAvailable      chan struct{}
-}{
-	androidValidated: true,
-	becameAvailable:  make(chan struct{}),
-}
+	pathAbsent bool
+	pathBack   chan struct{}
+}{pathBack: make(chan struct{})}
 
-func networkAvailableLocked(now time.Time) bool {
-	if networkAvailability.physicalPathAbsent {
-		return false
-	}
-	return networkAvailability.androidValidated || now.Before(networkAvailability.transportProvenUntil)
-}
-
-func signalNetworkWaitersLocked() {
-	close(networkAvailability.becameAvailable)
-	networkAvailability.becameAvailable = make(chan struct{})
-}
-
-// setNetworkAvailable updates Android's NET_CAPABILITY_VALIDATED signal. A
-// false value does not erase fresh proof obtained from the TURN transport.
-func setNetworkAvailable(validated bool) {
-	networkAvailability.Lock()
-	defer networkAvailability.Unlock()
-
-	now := time.Now()
-	wasAvailable := networkAvailableLocked(now)
-	networkAvailability.androidValidated = validated
-	if validated {
-		networkAvailability.nextUnvalidatedProbe = time.Time{}
-		networkAvailability.unvalidatedProbeBusy = false
-		networkAvailability.unvalidatedProbeID++
-	}
-	if !wasAvailable && networkAvailableLocked(now) {
-		signalNetworkWaitersLocked()
-	}
-}
-
-// setPhysicalPath records whether Android has any physical network at all — the
-// one fact neither of the other signals can express. It reports whether anything
-// changed.
-//
-// Without it, losing every network left the gate open for as long as the last
-// transport proof lived (up to transportPathProofTTL): workers kept dialing a
-// route that did not exist, a fresh ENETUNREACH every half second per stream, and
-// every failure aged a backoff streak over a network that was not even there. An
-// absent path therefore closes the gate outright — over Android validation, over
-// proof, and over the unvalidated probe, since with no route a probe cannot learn
-// anything either.
-//
-// Losing the path also discards transport proof: it was earned on the network
-// that just vanished and says nothing about the next one — otherwise a handover
-// through "no network" let the old proof wave every parked worker onto the new
-// network at once. The generation is deliberately left alone. If the same
-// network comes straight back, the live streams of this very session renew the
-// proof with their next accepted packet; bumping the generation would orphan
-// that proof, and on a network Android never validates, proof is the only thing
-// that reopens the gate for the rest of the workers.
-//
-// A returning path wakes every parked worker unconditionally, even while the
-// gate stays closed: during the absence they waited with no probe timer at all,
-// so without this nobody would claim the probe on a network Android does not
-// validate, and the session would stay parked for good. The probe schedule is
-// reset for the same reason — a path that has just appeared is exactly when one
-// probe is worth spending.
-//
-// Reports that change nothing are no-ops. The Android side pushes on every path
-// change, re-addressing of a network that never went away included, and that
-// must not keep resetting the probe rate limit.
+// setPhysicalPath records whether Android has any physical network and reports
+// whether that changed. A returning path wakes every parked worker. Reports
+// that change nothing are no-ops: the Android side pushes on every path change,
+// re-addressing of a network that never went away included.
 func setPhysicalPath(present bool) bool {
-	networkAvailability.Lock()
-	defer networkAvailability.Unlock()
+	networkGate.Lock()
+	defer networkGate.Unlock()
 
-	if networkAvailability.physicalPathAbsent == !present {
+	if networkGate.pathAbsent == !present {
 		return false
 	}
-	networkAvailability.physicalPathAbsent = !present
-	if !present {
-		networkAvailability.transportProvenUntil = time.Time{}
-		return true
+	networkGate.pathAbsent = !present
+	if present {
+		close(networkGate.pathBack)
+		networkGate.pathBack = make(chan struct{})
 	}
-	networkAvailability.nextUnvalidatedProbe = time.Time{}
-	networkAvailability.unvalidatedProbeBusy = false
-	networkAvailability.unvalidatedProbeID++
-	signalNetworkWaitersLocked()
 	return true
 }
 
-// markNetworkPathProven records real TURN reachability for the current proxy
-// generation. Callers must only invoke it after an authenticated transport
-// handshake or a packet accepted by the strict RX path.
-func markNetworkPathProven(generation uint64) {
-	networkAvailability.Lock()
-	defer networkAvailability.Unlock()
-
-	if generation != networkAvailability.transportGeneration {
-		return
-	}
-	now := time.Now()
-	wasAvailable := networkAvailableLocked(now)
-	networkAvailability.transportProvenUntil = now.Add(transportPathProofTTL)
-	networkAvailability.nextUnvalidatedProbe = time.Time{}
-	networkAvailability.unvalidatedProbeBusy = false
-	if !wasAvailable {
-		signalNetworkWaitersLocked()
-	}
-}
-
-// beginNetworkPathGeneration invalidates proof and markers from every older
-// proxy generation, then returns the token new streams must present.
-func beginNetworkPathGeneration() uint64 {
-	networkAvailability.Lock()
-	defer networkAvailability.Unlock()
-
-	networkAvailability.transportGeneration++
-	networkAvailability.transportProvenUntil = time.Time{}
-	networkAvailability.nextUnvalidatedProbe = time.Time{}
-	networkAvailability.unvalidatedProbeBusy = false
-	networkAvailability.unvalidatedProbeID++
-	return networkAvailability.transportGeneration
-}
-
-// clearTransportProof drops the proof earned over a network we have just moved
-// away from, keeping the generation: the sessions of this proxy are the ones
-// that will earn it again over the new network, and a new generation would
-// leave them no way to (only a proxy start hands out the token).
-func clearTransportProof() {
-	networkAvailability.Lock()
-	networkAvailability.transportProvenUntil = time.Time{}
-	networkAvailability.Unlock()
-}
-
-// resetNetworkPathProof prevents proof from an old proxy generation or
-// physical network from authorising work on a new path.
-func resetNetworkPathProof() {
-	beginNetworkPathGeneration()
-}
-
+// isNetworkAvailable reports whether there is a physical network to dial over.
 func isNetworkAvailable() bool {
-	networkAvailability.Lock()
-	defer networkAvailability.Unlock()
-	return networkAvailableLocked(time.Now())
+	networkGate.Lock()
+	defer networkGate.Unlock()
+	return !networkGate.pathAbsent
 }
 
-func networkAvailabilitySnapshot() (pathPresent, androidValidated, transportProven, effective bool, proofRemaining time.Duration) {
-	networkAvailability.Lock()
-	defer networkAvailability.Unlock()
-
-	pathPresent = !networkAvailability.physicalPathAbsent
-	androidValidated = networkAvailability.androidValidated
-	proofRemaining = networkAvailability.transportProvenUntil.Sub(time.Now())
-	if proofRemaining < 0 {
-		proofRemaining = 0
-	}
-	transportProven = proofRemaining > 0
-	effective = pathPresent && (androidValidated || transportProven)
-	return
-}
-
-type networkPermit struct {
-	unvalidatedProbe bool
-	probeID          uint64
-}
-
-func waitForNetworkPermit(ctx context.Context, allowUnvalidatedProbe bool) (networkPermit, bool) {
+// waitForNetwork blocks while there is no physical network. It reports false
+// if ctx ends first.
+func waitForNetwork(ctx context.Context) bool {
 	for {
-		networkAvailability.Lock()
-		now := time.Now()
-		if networkAvailableLocked(now) {
-			networkAvailability.Unlock()
-			return networkPermit{}, true
+		networkGate.Lock()
+		if !networkGate.pathAbsent {
+			networkGate.Unlock()
+			return true
 		}
+		pathBack := networkGate.pathBack
+		networkGate.Unlock()
 
-		// With no physical path there is no probe either: it could only fail, and
-		// the waiter sits on becameAvailable with no timer until setPhysicalPath
-		// wakes it.
-		var probeAt time.Time
-		if allowUnvalidatedProbe && !networkAvailability.physicalPathAbsent {
-			if !networkAvailability.unvalidatedProbeBusy {
-				probeAt = networkAvailability.nextUnvalidatedProbe
-			}
-			if !networkAvailability.unvalidatedProbeBusy && (probeAt.IsZero() || !now.Before(probeAt)) {
-				networkAvailability.nextUnvalidatedProbe = now.Add(unvalidatedProbeInterval)
-				networkAvailability.unvalidatedProbeBusy = true
-				networkAvailability.unvalidatedProbeID++
-				probeID := networkAvailability.unvalidatedProbeID
-				networkAvailability.Unlock()
-				return networkPermit{unvalidatedProbe: true, probeID: probeID}, true
-			}
-		}
-		becameAvailable := networkAvailability.becameAvailable
-		networkAvailability.Unlock()
-
-		if probeAt.IsZero() {
-			select {
-			case <-becameAvailable:
-			case <-ctx.Done():
-				return networkPermit{}, false
-			}
-			continue
-		}
-
-		timer := time.NewTimer(time.Until(probeAt))
 		select {
-		case <-becameAvailable:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-		case <-timer.C:
+		case <-pathBack:
 		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return networkPermit{}, false
+			return false
 		}
 	}
-}
-
-func releaseNetworkPermit(permit networkPermit) {
-	if !permit.unvalidatedProbe {
-		return
-	}
-	networkAvailability.Lock()
-	if !networkAvailability.unvalidatedProbeBusy || permit.probeID != networkAvailability.unvalidatedProbeID {
-		networkAvailability.Unlock()
-		return
-	}
-	networkAvailability.unvalidatedProbeBusy = false
-	// Wake parked workers so exactly one can either claim an overdue probe or
-	// install a timer for the remaining rate-limit interval.
-	signalNetworkWaitersLocked()
-	networkAvailability.Unlock()
-}
-
-func waitForNetworkAvailable(ctx context.Context) bool {
-	_, ok := waitForNetworkPermit(ctx, false)
-	return ok
 }

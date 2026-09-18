@@ -110,12 +110,9 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 	failStreak := 0
 	credFailStreak := 0 // consecutive credential fetches that failed for any reason
 	for {
-		permit, ok := waitForNetworkPermit(ctx, true)
-		if !ok {
+		// Parked while there is no physical network at all (network_availability.go).
+		if !waitForNetwork(ctx) {
 			return
-		}
-		if permit.unvalidatedProbe {
-			turnLog("[WORKER %d] Controlled probe on unvalidated network", s.id)
 		}
 
 		// Fetch credentials via the shared cache. A cache hit is cheap (no VK
@@ -124,17 +121,15 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		select {
 		case vkSemaphore <- struct{}{}:
 		case <-ctx.Done():
-			releaseNetworkPermit(permit)
 			return
 		}
 		user, pass, addrs, err := fetchCreds(ctx, cfg.Link, cfg.GroupID)
 		<-vkSemaphore
 		if err != nil {
-			releaseNetworkPermit(permit)
 			if ctx.Err() != nil {
 				return
 			}
-			if !permit.unvalidatedProbe && !isNetworkAvailable() {
+			if !isNetworkAvailable() {
 				// Offline: not evidence about the credential, and the gate above
 				// already parks the retry. Don't let it age the streaks.
 				continue
@@ -187,11 +182,8 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		}
 		credFailStreak = 0
 
-		// Effective availability can disappear while credentials are being fetched.
-		// Re-check before Allocate unless this worker owns the single controlled
-		// probe permit. Healthy sessions never pass through this gate.
-		if !permit.unvalidatedProbe && !isNetworkAvailable() {
-			releaseNetworkPermit(permit)
+		// The network can disappear while credentials are being fetched.
+		if !isNetworkAvailable() {
 			continue
 		}
 
@@ -210,7 +202,6 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		runErr := s.runWithCreds(attemptCtx, user, pass, addrs, cfg)
 		moved := endAttempt()
 		sessionDur := time.Since(start)
-		releaseNetworkPermit(permit)
 
 		if ctx.Err() != nil {
 			return
@@ -222,8 +213,8 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 			continue
 		}
 		if !isNetworkAvailable() {
-			// Skip per-worker retry delays while offline. The gate above resumes on
-			// Android validation, fresh TURN proof, or one rate-limited probe permit.
+			// Skip per-worker retry delays while offline; the gate above resumes
+			// the moment a physical network is back.
 			continue
 		}
 

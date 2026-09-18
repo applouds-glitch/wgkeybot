@@ -124,26 +124,22 @@ func TestEndedAttemptsLeaveTheRegistry(t *testing.T) {
 }
 
 // What was learned over the old network goes with it — relay health and the
-// election, transport proof, cached DNS answers — and only on a move.
+// election, cached DNS answers — and only on a move.
 func TestAMoveForgetsWhatTheOldNetworkTaught(t *testing.T) {
 	resetNetworkSwitch(t)
-	resetNetworkAvailabilityForTest()
-	defer resetNetworkAvailabilityForTest()
 	defer resetServerHealth()
 	noteNetworkSwitch(switchNetA)
 
 	learn := func() {
 		noteServerDemotedAt(healthTestAddr, time.Now())
-		markNetworkPathProven(beginNetworkPathGeneration())
 		hostCache.mu.Lock()
 		hostCache.ips["relay.example"] = "192.0.2.1"
 		hostCache.mu.Unlock()
 	}
-	learned := func() (health, proof, dns bool) {
+	learned := func() (health, dns bool) {
 		serverHealthState.Lock()
 		health = len(serverHealthState.byAddr) > 0
 		serverHealthState.Unlock()
-		_, _, proof, _, _ = networkAvailabilitySnapshot()
 		hostCache.mu.Lock()
 		_, dns = hostCache.ips["relay.example"]
 		hostCache.mu.Unlock()
@@ -152,12 +148,12 @@ func TestAMoveForgetsWhatTheOldNetworkTaught(t *testing.T) {
 
 	learn()
 	noteNetworkSwitch(switchNetA)
-	if health, proof, dns := learned(); !health || !proof || !dns {
-		t.Fatalf("no move, yet forgotten: health=%v proof=%v dns=%v", health, proof, dns)
+	if health, dns := learned(); !health || !dns {
+		t.Fatalf("no move, yet forgotten: health=%v dns=%v", health, dns)
 	}
 	noteNetworkSwitch(switchNetB)
-	if health, proof, dns := learned(); health || proof || dns {
-		t.Fatalf("after the move still known: health=%v proof=%v dns=%v", health, proof, dns)
+	if health, dns := learned(); health || dns {
+		t.Fatalf("after the move still known: health=%v dns=%v", health, dns)
 	}
 }
 
@@ -263,4 +259,26 @@ func TestWorkerMovesItsSessionToTheNewNetwork(t *testing.T) {
 	setBoundNetwork(switchNetB, time.Now())
 	waitFor(t, "a new dial after the move", 300*time.Millisecond, func() bool { return pc.count() == 2 })
 	waitFor(t, "the new session ready", 5*time.Second, s.ready.Load)
+}
+
+// The bound-network report is the gate's only input: no network parks new
+// connection work, a network — any network, validated or not — releases it.
+func TestBoundNetworkDrivesTheGate(t *testing.T) {
+	resetAllocationBook(t)
+	resetNetworkSwitch(t)
+	resetNetworkAvailabilityForTest()
+	defer resetNetworkAvailabilityForTest()
+
+	setBoundNetwork(switchNetA, time.Now())
+	if !isNetworkAvailable() {
+		t.Fatal("a bound network left the gate closed")
+	}
+	setBoundNetwork(0, time.Now())
+	if isNetworkAvailable() {
+		t.Fatal("no bound network left the gate open")
+	}
+	setBoundNetwork(switchNetB, time.Now())
+	if !isNetworkAvailable() {
+		t.Fatal("the next network did not reopen the gate")
+	}
 }

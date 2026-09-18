@@ -65,12 +65,11 @@ type TunnelGroupsConfig struct {
 	// than len(Links)*StreamsPerGroup, in which case the last group is short —
 	// StreamsPerGroup is a group's capacity, not its guaranteed size. Zero
 	// means "fill every group", the old behaviour.
-	TotalStreams      int
-	Cert              *tls.Certificate
-	SessionID         []byte
-	WatchdogTimeout   int
-	WrapKey           []byte // ← добавить: 32 байта = WRAP включён, nil = выключен
-	NetworkGeneration uint64
+	TotalStreams    int
+	Cert            *tls.Certificate
+	SessionID       []byte
+	WatchdogTimeout int
+	WrapKey         []byte // ← добавить: 32 байта = WRAP включён, nil = выключен
 }
 
 // StartTunnelGroups launches N WorkerGroups concurrently.
@@ -127,9 +126,8 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			wrapKey:         cfg.WrapKey, // ← добавить
 			// Slice the keepalive window by the actual stream count, so every
 			// stream gets its own slot whatever the configured fan-out.
-			kaPhase:           keepalivePhase(i, totalStreams),
-			wrapTx:            newWrapTxState(), // per-stream RTP SSRC + counter → distinct ChaCha nonce
-			networkGeneration: cfg.NetworkGeneration,
+			kaPhase: keepalivePhase(i, totalStreams),
+			wrapTx:  newWrapTxState(), // per-stream RTP SSRC + counter → distinct ChaCha nonce
 			// Every peer type that ends at vk-turn-proxy: its WRAP, DTLS and SRTP
 			// paths all answer WGH1. A server that predates it echoes HELLO as a
 			// plain STUN keepalive, never ACKs, and so is never sent a report.
