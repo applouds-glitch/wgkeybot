@@ -1153,14 +1153,21 @@ func wgSetNetworkAvailable(available C.int) {
 	logNetworkAvailability()
 }
 
-// wgSetPhysicalPath is the park/unpark half of wgSetNetwork: 0 when Android has
-// no physical network at all, which parks every worker at the network gate until
-// one returns (see setPhysicalPath). Logged only on a change, because it arrives
-// with every path update, not just with the ones that flip it.
+// wgSetPhysicalNetwork is the Go half of wgSetNetwork: the handle of the network
+// our sockets are now bound to, 0 when Android has no physical network at all.
 //
-//export wgSetPhysicalPath
-func wgSetPhysicalPath(present C.int) {
-	if setPhysicalPath(present != 0) {
+// Leaving a network first marks the relays holding our allocations on it as
+// busy (noteBoundNetwork): those sockets died with it and cannot release their
+// quota. That has to happen before the gate below wakes anyone, or the first
+// retries would still head for the full relay. Then no network parks every
+// worker at the network gate until one returns (see setPhysicalPath), logged
+// only on a change, because this arrives with every path update, not just with
+// the ones that flip it.
+//
+//export wgSetPhysicalNetwork
+func wgSetPhysicalNetwork(handle C.longlong) {
+	noteBoundNetwork(int64(handle), time.Now())
+	if setPhysicalPath(handle != 0) {
 		logNetworkAvailability()
 	}
 }

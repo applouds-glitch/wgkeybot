@@ -26,7 +26,7 @@ extern void wgTurnProxyStop();
 extern void wgNotifyNetworkChange();
 extern void wgSetNetworkAvailable(int available);
 extern void wgSetSystemDns(const char *dns_servers);
-extern void wgSetPhysicalPath(int present);
+extern void wgSetPhysicalNetwork(long long handle);
 extern int wgTetherStart(const char *bind_ip, int port, const char *dns_servers, const char *tunnel_addrs, const char *routing_dir, const char *direct_dns);
 extern void wgTetherStop(void);
 extern char *wgTetherStats(void);
@@ -598,8 +598,10 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetwo
 	// Last, so that workers woken by a returning path already resolve against its
 	// DNS servers. With no path at all this parks every worker at the network
 	// gate: until then the gate stayed open on transport proof earned over the
-	// network that had just vanished, and the workers kept dialing nothing.
-	wgSetPhysicalPath(network != NULL);
+	// network that had just vanished, and the workers kept dialing nothing. The
+	// handle, not just "is there one", because leaving a network also marks the
+	// relays our allocations on it can no longer release.
+	wgSetPhysicalNetwork(network != NULL ? (long long)handle : 0);
 }
 
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetworkAvailable(JNIEnv *env, jclass c, jint available)

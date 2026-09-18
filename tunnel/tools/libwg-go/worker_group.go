@@ -200,8 +200,9 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 
 		// Where this stream runs: the session's elected server once one is
 		// chosen, otherwise the first server in canonical order. The rest of the
-		// list follows only as failover for this attempt.
-		addrs = assignServers(addrs)
+		// list follows only as failover for this attempt. Relays still holding
+		// allocations this credential lost with a network go last.
+		addrs = attemptOrder(user, addrs, time.Now())
 		attemptHead := addrs[0]
 
 		start := time.Now()
@@ -259,7 +260,7 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		// that failed twice on a dead relay waited 7-17s before trying the
 		// working one — most of TunnelManager's 25s connect budget, spent
 		// sleeping next to a server that was already known to work.
-		if assignServers(addrs)[0] != attemptHead {
+		if attemptOrder(user, addrs, time.Now())[0] != attemptHead {
 			failStreak = 0
 		}
 
