@@ -180,8 +180,6 @@ type stream struct {
 	// even at the same counter, and its RTP sequence advances one step per
 	// packet. Created in StartTunnelGroups; see wrapTxState.
 	wrapTx *wrapTxState
-
-	networkGeneration uint64
 }
 
 // stunBindingIndication is a minimal STUN Binding Indication (RFC 5389, 20 bytes).
@@ -519,7 +517,6 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				// evidence. A valid cover packet has no WG payload but still proves
 				// that the relay path works in both directions.
 				activity.noteRx(time.Now())
-				markNetworkPathProven(s.networkGeneration)
 				proven()
 				if m == 0 {
 					continue
@@ -541,7 +538,6 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 					continue
 				}
 				activity.noteRx(time.Now())
-				markNetworkPathProven(s.networkGeneration)
 				proven()
 				if control.receive(wire[:n]) || isStunKeepalive(wire[:n]) {
 					continue
@@ -847,7 +843,6 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	}
 	turnLog("[STREAM %d] DTLS handshake OK", s.id)
 	noteServerHandshakeOK(s.serverAddr)
-	markNetworkPathProven(s.networkGeneration)
 
 	// Session + stream ID handshake (proxy_v2 only). Sent as a small burst
 	// for the same reason as runNoDTLS — even though DTLS is ordered, the
@@ -926,7 +921,6 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			// dtlsConn.Read only returns authenticated application data, so this
 			// is valid inbound liveness evidence.
 			activity.noteRx(time.Now())
-			markNetworkPathProven(s.networkGeneration)
 			if control.receive(buf[:n]) || isStunKeepalive(buf[:n]) {
 				continue
 			}
@@ -1010,7 +1004,6 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	context.AfterFunc(sCtx, func() { srtpConn.Close() })
 	turnLog("[STREAM %d] SRTP handshake OK", s.id)
 	noteServerHandshakeOK(s.serverAddr)
-	markNetworkPathProven(s.networkGeneration)
 
 	// Session + stream ID handshake (proxy_v2 model). Sent as a small burst
 	// for the same reason as runDTLS — the server parses the session ID on the
@@ -1089,7 +1082,6 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 			}
 			// srtpConn.Read has already authenticated and decrypted this packet.
 			activity.noteRx(time.Now())
-			markNetworkPathProven(s.networkGeneration)
 			if control.receive(buf[:n]) || isStunKeepalive(buf[:n]) {
 				continue
 			}
@@ -1151,42 +1143,14 @@ func wgTurnDropCredentials() {
 	invalidateAllCaches()
 }
 
-//export wgSetNetworkAvailable
-func wgSetNetworkAvailable(available C.int) {
-	setNetworkAvailable(available != 0)
-	logNetworkAvailability()
-}
-
 // wgSetPhysicalNetwork is the Go half of wgSetNetwork: the handle of the network
 // our sockets are now bound to, 0 when Android has no physical network at all.
 // Marks the allocations left behind, moves the sessions to a new network and
-// parks or wakes the workers — see setBoundNetwork. The gate state is logged
-// only on a change, because this arrives with every path update, not just with
-// the ones that flip it.
+// parks or wakes the workers — see setBoundNetwork.
 //
 //export wgSetPhysicalNetwork
 func wgSetPhysicalNetwork(handle C.longlong) {
 	setBoundNetwork(int64(handle), time.Now())
-}
-
-// networkLogMu makes every gate line a snapshot taken after each change logged
-// before it. The gate is changed from two JNI threads — the validated hint and
-// the physical path — and each snapshots it and logs afterwards. Unserialized,
-// a snapshot taken before the other thread's change could be written after that
-// thread's line, and the last line then described a state already gone: on the
-// device "PhysicalPath=true … effectiveAvailable=true" landed right after the
-// line reporting the path lost.
-var networkLogMu sync.Mutex
-
-// networkLogf is where the gate lines go; a test holds a line back with it.
-var networkLogf = turnLog
-
-func logNetworkAvailability() {
-	networkLogMu.Lock()
-	defer networkLogMu.Unlock()
-	path, validated, proven, effective, remaining := networkAvailabilitySnapshot()
-	networkLogf("[PROXY] PhysicalPath=%t AndroidValidated=%t transportProven=%t effectiveAvailable=%t proofTTL=%v",
-		path, validated, proven, effective, remaining.Round(time.Second))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1217,7 +1181,6 @@ func parseLinks(raw string, maxLinks int) []string {
 
 //export wgTurnProxyStart
 func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char) int32 {
-	networkGeneration := beginNetworkPathGeneration()
 	clearTransientState()    // flush DNS without clearing credential caches
 	resetServerHealth()      // new credentials, usually a new server list
 	resetWorkerFatalState(0) // re-armed with the real worker count in StartTunnelGroups
@@ -1407,19 +1370,18 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 
 	// ── Launch groups ─────────────────────────────────────────────────────────
 	_, okChan, done, err := StartTunnelGroups(ctx, packetLc, TunnelGroupsConfig{
-		Links:             links,
-		PeerAddr:          peer,
-		PeerType:          peerType,
-		UseUDP:            udp != 0,
-		TurnIP:            turnIp,
-		TurnPort:          turnPort,
-		StreamsPerGroup:   perCred,
-		TotalStreams:      totalStreams,
-		Cert:              &cert,
-		SessionID:         sessionID,
-		WatchdogTimeout:   watchdogTimeout,
-		WrapKey:           wrapKey,
-		NetworkGeneration: networkGeneration,
+		Links:           links,
+		PeerAddr:        peer,
+		PeerType:        peerType,
+		UseUDP:          udp != 0,
+		TurnIP:          turnIp,
+		TurnPort:        turnPort,
+		StreamsPerGroup: perCred,
+		TotalStreams:    totalStreams,
+		Cert:            &cert,
+		SessionID:       sessionID,
+		WatchdogTimeout: watchdogTimeout,
+		WrapKey:         wrapKey,
 	})
 	if err != nil {
 		turnErrorLog("[PROXY] StartTunnelGroups failed: %v", err)
@@ -1460,7 +1422,6 @@ const allocationDrainTimeout = 3 * time.Second
 
 //export wgTurnProxyStop
 func wgTurnProxyStop() {
-	resetNetworkPathProof()
 	turnMutex.Lock()
 	cancel := currentTurnCancel
 	done := currentTurnDone

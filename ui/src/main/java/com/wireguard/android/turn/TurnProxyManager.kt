@@ -71,14 +71,17 @@ class TurnProxyManager(private val context: Context) {
     init {
         networkMonitor.start()
 
+        // Android's validation of the network is logged and nothing else. It used to
+        // gate native reconnects, and that was the wrong signal for the networks
+        // this client exists for: behind a whitelist Google's connectivity check
+        // fails while VK's relays answer. Both field logs of 2026-09-18 ran on
+        // cellular networks that never validated, and recovery there was throttled
+        // to one dial a minute (see network_availability.go). The line stays because
+        // "was the network validated" is the first question about any field log.
         scope.launch {
             networkMonitor.validated.collectLatest { validated ->
-                // A capability flicker must not tear down healthy TURN streams.
-                // Native combines this hint with fresh proof from authenticated
-                // TURN traffic, so false cannot park reconnects on a working
-                // corporate network that blocks Android validation probes.
-                if (activeTunnelName != null && activeSettings?.enabled == true) {
-                    TurnBackend.wgSetNetworkAvailable(if (validated) 1 else 0)
+                if (activeTunnelName != null) {
+                    Log.i(TAG, "Physical network validated by Android: $validated")
                 }
             }
         }
@@ -243,12 +246,6 @@ class TurnProxyManager(private val context: Context) {
                     return@withContext false
                 }
 
-                // Preserve the historical manual-start behavior: allow one
-                // normal startup attempt even before Android publishes
-                // VALIDATED. Afterward native combines the actual capability
-                // with proof from the TURN handshake and strict RX path.
-                TurnBackend.wgSetNetworkAvailable(1)
-
                 // If there is no network yet, give the monitor one quick moment. Only
                 // for the log line: native binds to whatever wgSetNetwork last pushed.
                 var network = networkMonitor.currentPath?.network
@@ -260,7 +257,7 @@ class TurnProxyManager(private val context: Context) {
 
                 val networkHandle = network?.getNetworkHandle() ?: 0L
                 val networkType = getNetworkTypeString(network)
-                Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $network (type=$networkType, handle=$networkHandle, mtu=${networkMonitor.mtuOf(network)})")
+                Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $network (type=$networkType, handle=$networkHandle, mtu=${networkMonitor.mtuOf(network)}, validated=${networkMonitor.validated.value})")
 
                 val stability = isStabilityMode()
                 val effectiveVkLink = if (stability) {
@@ -383,9 +380,6 @@ class TurnProxyManager(private val context: Context) {
                 appendLogLine(tunnelName, msg)
                 false
             } finally {
-                // End the bounded bootstrap override. Native keeps the effective gate
-                // open when the just-established TURN path has fresh transport proof.
-                TurnBackend.wgSetNetworkAvailable(if (networkMonitor.validated.value) 1 else 0)
                 operationMutex.unlock()
             }
         }
