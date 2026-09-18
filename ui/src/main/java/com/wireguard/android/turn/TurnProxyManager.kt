@@ -102,6 +102,10 @@ class TurnProxyManager(private val context: Context) {
         scope.launch {
             networkMonitor.rawPath.collect { path ->
                 val network = path?.network
+                // The MTU comes with every path, not just the one a start saw: a
+                // handover can put the tunnel on a link with a smaller one.
+                Log.i(TAG, if (network == null) "Physical network: none"
+                    else "Physical network: $network (type=${getNetworkTypeString(network)}, mtu=${networkMonitor.mtuOf(network)})")
                 TurnBackend.wgSetNetwork(
                     network,
                     network?.getNetworkHandle() ?: 0L,
@@ -256,7 +260,7 @@ class TurnProxyManager(private val context: Context) {
 
                 val networkHandle = network?.getNetworkHandle() ?: 0L
                 val networkType = getNetworkTypeString(network)
-                Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $network (type=$networkType, handle=$networkHandle)")
+                Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $network (type=$networkType, handle=$networkHandle, mtu=${networkMonitor.mtuOf(network)})")
 
                 val stability = isStabilityMode()
                 val effectiveVkLink = if (stability) {

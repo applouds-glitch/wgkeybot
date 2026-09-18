@@ -277,7 +277,11 @@ public final class GoBackend implements Backend {
                 builder.allowFamily(OsConstants.AF_INET6);
             }
 
-            builder.setMtu(config.getInterface().getMtu().orElse(1280));
+            final int mtu = config.getInterface().getMtu().orElse(1280);
+            builder.setMtu(mtu);
+            // Next to the physical network's MTU (TurnProxyManager logs it) this
+            // tells whether the wrapped packets fit the path at all.
+            Log.i(TAG, "Tunnel MTU " + mtu);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
                 builder.setMetered(false);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)

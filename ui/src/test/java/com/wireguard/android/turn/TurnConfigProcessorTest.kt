@@ -24,6 +24,41 @@ class TurnConfigProcessorTest {
         return Config.parse(ByteArrayInputStream(text.toByteArray()))
     }
 
+    private fun configWithMtu(mtu: Int?): Config {
+        val mtuLine = mtu?.let { "MTU = $it" } ?: ""
+        val text = """
+            [Interface]
+            Address = 192.0.2.2/32
+            PrivateKey = TFlmmEUC7V7VtiDYLKsbP5rySTKLIZq1yn8lMqK83wo=
+            $mtuLine
+
+            [Peer]
+            AllowedIPs = 0.0.0.0/0
+            Endpoint = 192.0.2.1:51820
+            PublicKey = vBN7qyUTb5lJtWYJ8LhbPio1Z4RcyBPGnqFBGn6O6Qg=
+        """.trimIndent()
+        return Config.parse(ByteArrayInputStream(text.toByteArray()))
+    }
+
+    private fun turnMtu(config: Config): Int =
+        TurnConfigProcessor.modifyConfigForActiveTurn(config, TurnSettings(peerType = "wireguard", localPort = 9000))
+            .`interface`.mtu.orElseThrow()
+
+    @Test
+    fun `the MTU the bot issues is capped for TURN`() {
+        assertEquals(TurnConfigProcessor.TURN_MAX_MTU, turnMtu(configWithMtu(1280)))
+    }
+
+    @Test
+    fun `a config without an MTU gets the TURN cap`() {
+        assertEquals(TurnConfigProcessor.TURN_MAX_MTU, turnMtu(configWithMtu(null)))
+    }
+
+    @Test
+    fun `an MTU below the cap is kept`() {
+        assertEquals(1100, turnMtu(configWithMtu(1100)))
+    }
+
     @Test
     fun `DTLS TURN mode disables independent WireGuard keepalive timer`() {
         val modified = TurnConfigProcessor.modifyConfigForActiveTurn(
