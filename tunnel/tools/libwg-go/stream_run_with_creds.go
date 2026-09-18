@@ -307,6 +307,9 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		}
 		return nil, nil, nil, 0, nil, fmt.Errorf("TURN allocate: %w", err)
 	}
+	// Counted live until closed, so that losing it without a release marks this
+	// relay as still holding our quota (orphaned_allocations.go).
+	relay = trackAllocation(relay, user, addr)
 
 	return client, raw, relay, dialed + time.Since(allocStart), perm, nil
 }
