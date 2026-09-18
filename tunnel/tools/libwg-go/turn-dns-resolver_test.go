@@ -19,16 +19,18 @@ import (
 func withFakeDNS(t *testing.T, servers []DNSServer, fn func(context.Context, string, DNSServer) (string, error)) {
 	t.Helper()
 
-	prevServers, prevFn := dnsServers, resolveAnyFn
+	prevServers, prevFn := activeDNSServers(), resolveAnyFn
 	lastSuccessfulMu.Lock()
 	prevIdx := lastSuccessfulIndex
 	lastSuccessfulIndex = 0
 	lastSuccessfulMu.Unlock()
 
-	dnsServers, resolveAnyFn = servers, fn
+	setDNSServers(servers)
+	resolveAnyFn = fn
 
 	t.Cleanup(func() {
-		dnsServers, resolveAnyFn = prevServers, prevFn
+		setDNSServers(prevServers)
+		resolveAnyFn = prevFn
 		lastSuccessfulMu.Lock()
 		lastSuccessfulIndex = prevIdx
 		lastSuccessfulMu.Unlock()

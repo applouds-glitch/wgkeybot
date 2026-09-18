@@ -37,6 +37,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.textview.MaterialTextView
+import com.wireguard.android.Application
 import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
 import com.wireguard.android.util.localeWrapped
@@ -49,6 +50,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStreamReader
@@ -169,15 +171,24 @@ class LogViewerActivity : AppCompatActivity() {
 
     private val downloadsFileSaver = DownloadsFileSaver(this)
 
-    private suspend fun rawLogBytes(): ByteArray {
-        val builder = StringBuilder()
-        withContext(Dispatchers.IO) {
-            for (i in 0 until rawLogLines.size()) {
-                builder.append(rawLogLines[i])
-                builder.append('\n')
-            }
+    // The kept app log goes first: it is the part that still has the session's
+    // start in it. The device logcat follows as before — it has everything else
+    // (system events, other tags), but only for as long as the ROM let it live.
+    private suspend fun rawLogBytes(): ByteArray = withContext(Dispatchers.IO) {
+        val out = ByteArrayOutputStream()
+        val kept = Application.getPersistentLog().snapshot()
+        if (kept.isNotEmpty()) {
+            out.write("===== app log kept on device (WireGuard/* and crashes) =====\n".toByteArray(Charsets.UTF_8))
+            out.write(kept)
+            out.write("===== device logcat (all tags, as far back as the device kept it) =====\n".toByteArray(Charsets.UTF_8))
         }
-        return builder.toString().toByteArray(Charsets.UTF_8)
+        val builder = StringBuilder()
+        for (i in 0 until rawLogLines.size()) {
+            builder.append(rawLogLines[i])
+            builder.append('\n')
+        }
+        out.write(builder.toString().toByteArray(Charsets.UTF_8))
+        out.toByteArray()
     }
 
     private suspend fun saveLog() {

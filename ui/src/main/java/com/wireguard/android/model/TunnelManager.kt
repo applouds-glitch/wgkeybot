@@ -700,6 +700,7 @@ class TunnelManager(
             val upSince = System.currentTimeMillis()
             var prevTx = -1L
             var deadChecks = 0
+            var waitingForNetwork = false
             while (isActive) {
                 awaitNextWatchdogPoll()
                 if (getBackend().getState(tunnel) != Tunnel.State.UP)
@@ -714,14 +715,18 @@ class TunnelManager(
                     .mapNotNull { stats.peer(it)?.latestHandshakeEpochMillis }
                     .maxOrNull() ?: 0L
                 val tx = stats.totalTx()
-                val dead = when {
-                    // Never completed a single handshake since coming up.
-                    latestHandshake == 0L -> now - upSince > WATCHDOG_NEVER_CONNECTED_MS
-                    // Handshake went stale while the app is still pushing traffic into
-                    // the tunnel (tx growing) — packets are going into a dead route.
-                    now - latestHandshake > WATCHDOG_STALE_MS -> prevTx >= 0L && tx > prevTx
-                    else -> false
+                // No physical network is waiting, not a dead route — see
+                // HandshakeWatchdog.isDeadPoll. Logged on the transitions only, so an
+                // outage shows up as one line in and one line out.
+                val hasNetwork = getTurnProxyManager().hasPhysicalNetwork
+                if (!hasNetwork != waitingForNetwork) {
+                    waitingForNetwork = !hasNetwork
+                    Log.i(TAG, if (waitingForNetwork)
+                        "Handshake watchdog: ${tunnel.name} has no physical network — waiting, not counting it as dead"
+                    else
+                        "Handshake watchdog: physical network is back for ${tunnel.name} — counting again")
                 }
+                val dead = HandshakeWatchdog.isDeadPoll(now, upSince, latestHandshake, tx, prevTx, hasNetwork)
                 prevTx = tx
                 if (!dead) {
                     deadChecks = 0
@@ -945,10 +950,7 @@ class TunnelManager(
         private const val WATCHDOG_POLL_MS = 30_000L
         // Poll cadence with the screen off, where a slower verdict costs nothing.
         private const val WATCHDOG_POLL_IDLE_MS = 180_000L
-        // Handshake age beyond which an in-use connection is considered broken.
-        private const val WATCHDOG_STALE_MS = 180_000L
-        // Grace period for a tunnel that has never completed a single handshake.
-        private const val WATCHDOG_NEVER_CONNECTED_MS = 150_000L
+        // The staleness thresholds live with the verdict, in HandshakeWatchdog.
         // Consecutive bad polls required before tearing down (debounce).
         private const val WATCHDOG_DEAD_CHECKS = 2
 

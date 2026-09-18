@@ -52,6 +52,14 @@ class TurnProxyManager(private val context: Context) {
     val activeTunnel: String?
         get() = activeTunnelName
 
+    /**
+     * Whether Android has any physical network at all right now — the same fact
+     * that parks the native workers (wgSetNetwork(null)). The handshake watchdog
+     * reads it so that "no network" is not mistaken for "dead route".
+     */
+    val hasPhysicalNetwork: Boolean
+        get() = networkMonitor.currentPath != null
+
     @Volatile private var activeSettings: TurnSettings? = null
     @Volatile private var userInitiatedStop: Boolean = false
 
@@ -112,6 +120,34 @@ class TurnProxyManager(private val context: Context) {
                 if (path != null) {
                     handleNetworkChange(path)
                 }
+            }
+        }
+
+        // Keep the native dialer's network current, ahead of the debounced path
+        // above that drives restarts. Every socket the dialer creates is bound to
+        // the Network cached in JNI, and that cache used to move only when the proxy
+        // (re)started — so every dial during the up-to-27s connect grace, and every
+        // retry inside a start still working through the captcha ladder, bound to
+        // the network the session began on. By then a dead one: the bind threw,
+        // protect() left the socket unbound, and the dial failed with "network is
+        // unreachable" until the restart finally landed.
+        //
+        // Pushed unconditionally; the comparison belongs to native, which is the
+        // only writer of that state. A "already pushed this one" cache here would
+        // never let a correction through, because a StateFlow does not re-emit an
+        // unchanged path. The push is one JNI call per actual path change, and
+        // native only takes a global ref — the Network goes over as the object we
+        // already hold, so nothing has to look it up. The resolvers travel with it
+        // for the same reason: a handover that moved the binding but not the DNS
+        // list left every lookup starting at the dead network's servers.
+        scope.launch {
+            networkMonitor.rawPath.collect { path ->
+                val network = path?.network
+                TurnBackend.wgSetNetwork(
+                    network,
+                    network?.getNetworkHandle() ?: 0L,
+                    networkMonitor.dnsServersOf(network),
+                )
             }
         }
     }
@@ -457,8 +493,7 @@ class TurnProxyManager(private val context: Context) {
                         effectivePeerType,
                         settings.streamsPerCred,
                         settings.watchdogTimeout,
-                        effectiveWrapKey,
-                        networkHandle
+                        effectiveWrapKey
                     )
 
                     if (ret == -2) {

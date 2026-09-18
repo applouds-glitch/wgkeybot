@@ -293,7 +293,16 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		// Only a genuine refusal counts against the server. A losing failover
 		// candidate — or any dial during a teardown — fails because we cancelled
 		// its context, which says nothing about the host.
-		if ctx.Err() == nil {
+		//
+		// Nor does 486. The quota is per credential on this relay, and what fills
+		// it is our own allocations — usually ghosts of sockets that died with
+		// the path. The relay answered; the fix is the credential rotation that
+		// 486 already triggers (refreshGroupCreds, quotaCooldown), not a
+		// five-minute stand-down. Field log 18.09: 91.231.135.87 proved an SRTP
+		// session at 09:58:31, a run of 486s on the old credential stood it down
+		// at 09:58:40, and the fresh credential eight seconds later had only the
+		// relay that never carried a byte left to go to.
+		if ctx.Err() == nil && !isQuotaError(err) {
 			noteServerFailure(addr)
 		}
 		return nil, nil, nil, 0, nil, fmt.Errorf("TURN allocate: %w", err)
@@ -339,15 +348,19 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// data plane already has a latency the election can rank it by.
 	noteServerRTT(w.addr, w.rtt)
 
+	// Only for the log line below: which side of the relay a failed data-plane
+	// handshake died on (see relayWriteProbe).
+	relay := newRelayWriteProbe(w.relay)
+
 	started := time.Now()
 	var err error
 	switch cfg.PeerType {
 	case "wireguard":
-		err = s.runNoDTLS(ctx, w.relay, cfg.PeerAddr)
+		err = s.runNoDTLS(ctx, relay, cfg.PeerAddr)
 	case "srtp":
-		err = s.runSRTP(ctx, w.relay, cfg.PeerAddr)
+		err = s.runSRTP(ctx, relay, cfg.PeerAddr)
 	default:
-		err = s.runDTLS(ctx, w.relay, cfg.PeerAddr, true)
+		err = s.runDTLS(ctx, relay, cfg.PeerAddr, true)
 	}
 
 	// Health accounting for the static assignment (see turn_server_health.go).
@@ -355,6 +368,7 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	case verdictSuccess:
 		noteServerSuccess(w.addr)
 	case verdictHandshakeFailure:
+		turnLog("[STREAM %d] %s handshake: %s", s.id, w.addr, relay.describe(time.Now()))
 		noteServerHandshakeFailure(w.addr, started)
 	case verdictFailure:
 		noteServerFailure(w.addr)

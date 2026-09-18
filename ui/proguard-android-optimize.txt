@@ -50,4 +50,6 @@
     public static java.lang.String getCaptchaDeviceProfile();
     public static void setFatalHandler(java.util.function.Consumer);
     public static void onTurnFatal(java.lang.String);
+    public static void setTetherStoppedHandler(java.util.function.Consumer);
+    public static void onTetherStopped(java.lang.String);
 }

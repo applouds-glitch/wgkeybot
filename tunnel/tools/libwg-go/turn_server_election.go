@@ -117,6 +117,47 @@ func demotedLocked(h *serverHealth) bool {
 	return h != nil && h.demotedAt.After(h.lastGood)
 }
 
+// outageOrder ranks the whole list for the case where every server has a
+// verdict against it (see assignServers). Servers that never failed a data-plane
+// handshake go first, demoted ones last; within each, the server with the most
+// recent proof leads, and the canonical order breaks the remaining ties.
+//
+// The head is the server every stream dials, and runWithCreds fans out to the
+// rest only when the head fails to Allocate. A relay that allocates and then
+// eats the data plane therefore never hands a stream on: at the head of the
+// outage list it absorbs every attempt. Field log 18.09: 193.203.43.43 allocated
+// in 200ms and never completed one SRTP handshake, while 91.231.135.87 — the only
+// relay that ever carried the tunnel — was stood down for failing Allocates on a
+// flapping path. "1…" sorts before "9…", so for the last 4-5 minutes before the
+// watchdog tore the VPN down, in both sessions, every stream went to 193 and 91
+// was never dialled. Ranked this way 91 leads, and 193 is still reached as
+// failover whenever 91 does not answer.
+func outageOrder(sorted []string) []string {
+	serverHealthState.Lock()
+	defer serverHealthState.Unlock()
+
+	out := append([]string(nil), sorted...)
+	slices.SortStableFunc(out, func(a, b string) int {
+		ha, hb := serverHealthState.byAddr[a], serverHealthState.byAddr[b]
+		if da, db := demotedLocked(ha), demotedLocked(hb); da != db {
+			if da {
+				return 1
+			}
+			return -1
+		}
+		return lastGoodLocked(hb).Compare(lastGoodLocked(ha))
+	})
+	return out
+}
+
+// lastGoodLocked is h.lastGood for a server that may have no entry yet.
+func lastGoodLocked(h *serverHealth) time.Time {
+	if h == nil {
+		return time.Time{}
+	}
+	return h.lastGood
+}
+
 // electServer returns the server every stream should run on, or "" while the
 // session is still probing — in which case assignServers keeps every stream on
 // the first candidate, and the rest are tried only as failover.

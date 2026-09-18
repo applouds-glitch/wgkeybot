@@ -220,3 +220,59 @@ func TestHandshakeFailureDemotesWithoutPenalising(t *testing.T) {
 		t.Fatal("a failed data-plane handshake left the server in the rotation")
 	}
 }
+
+// standDown gives addr a streak long enough to serve a penalty right now.
+func standDown(addr string) {
+	now := time.Now()
+	step := serverFailCoalesce + time.Second
+	for strike := serverFailThreshold - 1; strike >= 0; strike-- {
+		noteServerFailureAt(addr, now.Add(-time.Duration(strike)*step))
+	}
+}
+
+// Field log 18.09, both sessions: A allocated in 200ms and never carried one
+// SRTP handshake, B carried the tunnel but was stood down for Allocates that
+// went unanswered on a flapping path. Everything had a verdict, so the whole
+// list came back — in canonical order, A first — and since only a failed
+// Allocate fans out, every stream spent the last minutes before the watchdog
+// teardown on A. B has to lead: the verdict against it says its path blinked,
+// the one against A says the relay itself eats the data plane.
+//
+// A's proof is the newer one on purpose: demotion has to outrank recency, or a
+// relay that carried one round trip before failing would still take the head.
+func TestOutageFallbackPutsTheDataPlaneFailureLast(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	proveServer(electTestB, 300*time.Millisecond, 2*time.Minute)
+	standDown(electTestB)
+	proveServer(electTestA, 60*time.Millisecond, 10*time.Second)
+	noteServerDemotedAt(electTestA, time.Now())
+
+	want := []string{electTestB, electTestA}
+	for id := 0; id < 8; id++ {
+		if got := assignServers([]string{electTestA, electTestB}); !slices.Equal(got, want) {
+			t.Fatalf("stream %d got %v, want %v: the relay that ate the data plane must only be failover", id, got, want)
+		}
+	}
+}
+
+// Among servers with the same kind of verdict, the one that carried traffic most
+// recently leads; with no proof on either side the canonical order stands, so
+// every group still starts on the same host.
+func TestOutageFallbackPrefersTheFreshestProof(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	standDown(electTestA)
+	standDown(electTestB)
+	if got, want := assignServers([]string{electTestB, electTestA}), []string{electTestA, electTestB}; !slices.Equal(got, want) {
+		t.Fatalf("no proof anywhere: got %v, want canonical %v", got, want)
+	}
+
+	proveServer(electTestA, 60*time.Millisecond, 2*time.Minute)
+	proveServer(electTestB, 300*time.Millisecond, 30*time.Second)
+	if got, want := assignServers([]string{electTestA, electTestB}), []string{electTestB, electTestA}; !slices.Equal(got, want) {
+		t.Fatalf("got %v, want the most recently proven server first %v", got, want)
+	}
+}

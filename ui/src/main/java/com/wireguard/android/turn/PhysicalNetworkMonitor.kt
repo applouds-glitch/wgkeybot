@@ -11,6 +11,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -53,6 +54,22 @@ class PhysicalNetworkMonitor(context: Context) {
         .distinctUntilChanged()
 
     /**
+     * The same path without the debounce: what the monitor believes right now.
+     *
+     * [bestPath] waits the 1500ms settle before anything acts on it, which is the
+     * right trade for restarting TURN — a handover emits a burst of callbacks and
+     * only the settled result is worth tearing a working proxy down for. It is the
+     * wrong trade for telling native which network to bind its dials to: waiting
+     * out the settle leaves the dialer on the network the proxy started on, so a
+     * reconnect attempted mid-handover binds to a dead Network and fails on a
+     * socket that protect() left unbound. Publishing this one straight into
+     * native costs one JNI call per actual path change — native decides whether
+     * anything moved — and keeps the two clocks independent: the dialer goes
+     * current immediately, the restart still waits.
+     */
+    val rawPath: StateFlow<NetworkPath?> = _bestPath.asStateFlow()
+
+    /**
      * Whether [currentPath] currently has validated upstream connectivity.
      * This is separate from [bestPath] because Android can add or remove
      * NET_CAPABILITY_VALIDATED without changing the Network object.
@@ -60,11 +77,26 @@ class PhysicalNetworkMonitor(context: Context) {
     val validated = _validated.asStateFlow()
 
     /**
-     * Synchronously get the current best path (network + addresses) without
-     * debounce.
+     * A snapshot of [rawPath], for callers that want the value rather than the
+     * flow. Reads through [rawPath] so there is one undebounced view of the path
+     * and not two independent ones over the same MutableStateFlow.
      */
     val currentPath: NetworkPath?
-        get() = _bestPath.value
+        get() = rawPath.value
+
+    /**
+     * The DNS servers [network] advertises, comma-separated, or "" when Android
+     * names none (or there is no network).
+     *
+     * Read on demand rather than folded into [NetworkPath]: that data class's
+     * equality is what decides whether TURN restarts, and a resolver change on an
+     * otherwise unchanged link is not a reason to tear a working proxy down.
+     */
+    fun dnsServersOf(network: Network?): String {
+        if (network == null) return ""
+        val lp = cm.getLinkProperties(network) ?: return ""
+        return lp.dnsServers.mapNotNull { it.hostAddress }.joinToString(",")
+    }
 
     /**
      * True if [network] currently reports validated internet connectivity

@@ -63,9 +63,11 @@ func fetchCreds(ctx context.Context, link string, groupID int) (user, pass strin
 //     and a server that proves itself that way becomes eligible for the election
 //     like any other.
 //
-// If every server has a verdict against it the original list stands. That is an
+// If every server has a verdict against it the whole list stands. That is an
 // outage, not a bad host, and an empty list would leave the stream nothing to
-// dial; the next attempts re-probe all of them.
+// dial; the next attempts re-probe all of them. Not in canonical order, though:
+// outageOrder puts a server that failed only Allocates ahead of one that
+// allocated and then failed the data plane, because the latter never fails over.
 //
 // Returns a fresh slice — addrs may alias the cached ServerAddrs slice (returned
 // by reference on a cache hit), so it must not be mutated in place.
@@ -85,7 +87,7 @@ func assignServers(addrs []string) []string {
 		live = append(live, addr)
 	}
 	if len(live) == 0 {
-		live = sorted
+		live = outageOrder(sorted)
 	}
 
 	if elected := electServer(live, now); elected != "" {

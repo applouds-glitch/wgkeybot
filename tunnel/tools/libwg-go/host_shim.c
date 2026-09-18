@@ -51,13 +51,7 @@ int wgProtectSocketDirect(int fd)
 }
 
 /* NULL reads as "the platform told us nothing", which every caller of these
- * already handles: no system DNS servers, no captcha token, no device profile. */
-const char *getNetworkDnsServers(long long network_handle)
-{
-	(void)network_handle;
-	return NULL;
-}
-
+ * already handles: no captcha token, no device profile. */
 const char *requestCaptcha(const char *redirect_uri, int visible)
 {
 	(void)redirect_uri;

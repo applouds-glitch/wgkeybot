@@ -130,8 +130,21 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			kaPhase:           keepalivePhase(i, totalStreams),
 			wrapTx:            newWrapTxState(), // per-stream RTP SSRC + counter → distinct ChaCha nonce
 			networkGeneration: cfg.NetworkGeneration,
+			// Every peer type that ends at vk-turn-proxy: its WRAP, DTLS and SRTP
+			// paths all answer WGH1. A server that predates it echoes HELLO as a
+			// plain STUN keepalive, never ACKs, and so is never sent a report.
+			feedbackEnabled: cfg.PeerType == "proxy_v2" || cfg.PeerType == "wireguard" || cfg.PeerType == "srtp",
 		}
 	}
+
+	// One reporter for the whole session UUID, across every credential group:
+	// the server keeps a single downstream-health mask per session.
+	feedbackCtx, feedbackCancel := context.WithCancel(gCtx)
+	feedbackDone := make(chan struct{})
+	go func() {
+		defer close(feedbackDone)
+		runDownlinkFeedback(feedbackCtx, allStreams)
+	}()
 
 	var groupsWg sync.WaitGroup
 	// The cascade below sleeps between groups, so it is launched in its own
@@ -200,6 +213,8 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	done := make(chan struct{})
 	go func() {
 		groupsWg.Wait()
+		feedbackCancel()
+		<-feedbackDone
 		close(done)
 	}()
 

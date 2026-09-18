@@ -7,6 +7,7 @@ import (
 )
 
 func resetNetworkAvailabilityForTest() {
+	setPhysicalPath(true)
 	setNetworkAvailable(true)
 	resetNetworkPathProof()
 }
@@ -188,4 +189,155 @@ func TestOldProbePermitCannotReleaseNewProbe(t *testing.T) {
 		t.Fatal("old permit released the active probe")
 	}
 	releaseNetworkPermit(newPermit)
+}
+
+func TestAbsentPhysicalPathClosesGateOverValidationAndProof(t *testing.T) {
+	resetNetworkAvailabilityForTest()
+	defer resetNetworkAvailabilityForTest()
+
+	generation := beginNetworkPathGeneration()
+	setNetworkAvailable(true)
+	markNetworkPathProven(generation)
+
+	setPhysicalPath(false)
+	if isNetworkAvailable() {
+		t.Fatal("gate stayed open with no physical network")
+	}
+	if path, _, _, effective, _ := networkAvailabilitySnapshot(); path || effective {
+		t.Fatalf("snapshot disagrees with the gate: path=%t effective=%t", path, effective)
+	}
+}
+
+func TestAbsentPhysicalPathWithholdsProbe(t *testing.T) {
+	resetNetworkAvailabilityForTest()
+	defer resetNetworkAvailabilityForTest()
+	setNetworkAvailable(false)
+	setPhysicalPath(false)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if permit, ok := waitForNetworkPermit(ctx, true); ok {
+		t.Fatalf("granted a permit with no physical network: %+v", permit)
+	}
+}
+
+func TestLosingPhysicalPathDiscardsProof(t *testing.T) {
+	resetNetworkAvailabilityForTest()
+	defer resetNetworkAvailabilityForTest()
+
+	generation := beginNetworkPathGeneration()
+	setNetworkAvailable(false)
+	markNetworkPathProven(generation)
+
+	setPhysicalPath(false)
+	setPhysicalPath(true)
+	if isNetworkAvailable() {
+		t.Fatal("proof earned on the vanished network reopened the gate on the next one")
+	}
+}
+
+func TestSameNetworkReturningCanRenewProofInSameGeneration(t *testing.T) {
+	resetNetworkAvailabilityForTest()
+	defer resetNetworkAvailabilityForTest()
+
+	generation := beginNetworkPathGeneration()
+	setNetworkAvailable(false)
+	markNetworkPathProven(generation)
+
+	setPhysicalPath(false)
+	setPhysicalPath(true)
+	// A live stream of the same session accepts its next packet.
+	markNetworkPathProven(generation)
+	if !isNetworkAvailable() {
+		t.Fatal("a path blip orphaned proof from the running session")
+	}
+}
+
+func TestReturningPhysicalPathWakesParkedWorkerForProbe(t *testing.T) {
+	resetNetworkAvailabilityForTest()
+	defer resetNetworkAvailabilityForTest()
+	setNetworkAvailable(false)
+	setPhysicalPath(false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan networkPermit, 1)
+	go func() {
+		if permit, ok := waitForNetworkPermit(ctx, true); ok {
+			got <- permit
+		}
+	}()
+
+	select {
+	case permit := <-got:
+		t.Fatalf("worker left the gate with no physical network: %+v", permit)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Android has not validated the returning network: the gate itself stays
+	// closed, so only a wake plus the probe can get anyone out.
+	setPhysicalPath(true)
+	select {
+	case permit := <-got:
+		if !permit.unvalidatedProbe {
+			t.Fatal("returning path opened the gate instead of granting the probe")
+		}
+		releaseNetworkPermit(permit)
+	case <-time.After(time.Second):
+		t.Fatal("parked worker was not woken when the physical network returned")
+	}
+}
+
+func TestReturningPhysicalPathResumesOnValidatedNetwork(t *testing.T) {
+	resetNetworkAvailabilityForTest()
+	defer resetNetworkAvailabilityForTest()
+	setPhysicalPath(false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan networkPermit, 1)
+	go func() {
+		if permit, ok := waitForNetworkPermit(ctx, true); ok {
+			got <- permit
+		}
+	}()
+
+	select {
+	case permit := <-got:
+		t.Fatalf("validation alone let a worker through with no physical network: %+v", permit)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	setPhysicalPath(true)
+	select {
+	case permit := <-got:
+		if permit.unvalidatedProbe {
+			t.Fatal("validated network was handed a probe instead of an open gate")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parked worker was not woken when the physical network returned")
+	}
+}
+
+func TestRepeatedPhysicalPathReportKeepsProbeRateLimit(t *testing.T) {
+	resetNetworkAvailabilityForTest()
+	defer resetNetworkAvailabilityForTest()
+	setNetworkAvailable(false)
+
+	probe, ok := waitForNetworkPermit(context.Background(), true)
+	if !ok || !probe.unvalidatedProbe {
+		t.Fatalf("expected the first worker to take the probe, got %+v ok=%t", probe, ok)
+	}
+	releaseNetworkPermit(probe)
+
+	// A re-addressed but otherwise unchanged network reports "present" again.
+	if setPhysicalPath(true) {
+		t.Fatal("an unchanged path was reported as a change")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if permit, ok := waitForNetworkPermit(ctx, true); ok {
+		t.Fatalf("a repeated present report reset the probe rate limit: %+v", permit)
+	}
 }

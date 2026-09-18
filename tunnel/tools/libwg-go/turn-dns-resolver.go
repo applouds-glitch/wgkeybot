@@ -99,7 +99,31 @@ var dnsServersPredefined = []DNSServer{
 // dnsServers is the active list used during resolution.
 // It is initialized in init() to dnsServersPredefined,
 // or replaced by InitSystemDns() with system DNS prepended.
-var dnsServers []DNSServer
+//
+// Guarded, and never touched directly: InitSystemDns now runs on every physical
+// network change, from the JNI thread, while lookups are in flight on their own
+// goroutines. A slice header is three words, so an unguarded swap under a
+// concurrent read is a real data race, not just a stale answer — and a stale
+// answer is fine here, which is why readers take one snapshot and keep it.
+var (
+	dnsServers   []DNSServer
+	dnsServersMu sync.RWMutex
+)
+
+// activeDNSServers returns the list to resolve against. The slice it hands back
+// is never mutated in place — InitSystemDns publishes a freshly built one — so
+// the caller may hold it for as long as it likes.
+func activeDNSServers() []DNSServer {
+	dnsServersMu.RLock()
+	defer dnsServersMu.RUnlock()
+	return dnsServers
+}
+
+func setDNSServers(servers []DNSServer) {
+	dnsServersMu.Lock()
+	dnsServers = servers
+	dnsServersMu.Unlock()
+}
 
 // lastSuccessfulIndex stores the index of the last successful DNS server
 var (
@@ -194,7 +218,7 @@ func resolveWithOrderedServers(ctx context.Context, domain string) (string, erro
 	// Snapshot both, so the whole race runs against one list and one resolver
 	// even if InitSystemDns swaps the slice — or a test restores the seam — while
 	// a straggler is still in flight.
-	servers, resolve := dnsServers, resolveAnyFn
+	servers, resolve := activeDNSServers(), resolveAnyFn
 	if len(servers) == 0 {
 		return "", fmt.Errorf("no DNS servers configured for %s", domain)
 	}
@@ -617,12 +641,16 @@ func ClearCache() {
 
 // init initializes dnsServers to predefined list if InitSystemDns was not called
 func init() {
-	dnsServers = dnsServersPredefined
+	setDNSServers(dnsServersPredefined)
 }
 
 // InitSystemDns sets up the active DNS server list by prepending the given
 // system DNS servers to the predefined list (Yandex + Google).
-// It should be called once at proxy startup.
+//
+// Called on every physical network change, not once at startup: the servers a
+// network advertises are part of that network, and keeping the previous one's at
+// the head of the list meant every lookup after a handover opened by failing on
+// a LAN address that is not reachable any more.
 func InitSystemDns(servers []string) {
 	var systemDns []DNSServer
 	for _, ip := range servers {
@@ -631,7 +659,8 @@ func InitSystemDns(servers []string) {
 			IP:   ip,
 		})
 	}
-	dnsServers = append(systemDns, dnsServersPredefined...)
+	active := append(systemDns, dnsServersPredefined...)
+	setDNSServers(active)
 	turnLog("[DNS] Initialized: %d system + %d predefined = %d total",
-		len(systemDns), len(dnsServersPredefined), len(dnsServers))
+		len(systemDns), len(dnsServersPredefined), len(active))
 }
