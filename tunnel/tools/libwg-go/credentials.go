@@ -156,6 +156,23 @@ func refreshGroupCreds(groupID int) {
 	invalidateGroupCreds(groupID)
 }
 
+// credsReplaced reports whether user is no longer the group's credential: its
+// slot has been force-expired, has expired, or already holds another one.
+//
+// A slot whose lock is taken reads as replaced without waiting for it. The lock
+// is held across a whole fetch — a VK round trip, or a captcha ladder that can
+// run for minutes — and a fetch only runs for a slot that is being replaced.
+// The other holder is a sibling's cache hit, for microseconds; losing that race
+// costs one fast retry on the same credential, whose 486 then reads correctly.
+func credsReplaced(groupID int, user string) bool {
+	cache := getStreamCache(groupID * streamsPerCredValue())
+	if !cache.mutex.TryRLock() {
+		return true
+	}
+	defer cache.mutex.RUnlock()
+	return cache.creds.Username != user || !time.Now().Before(cache.creds.ExpiresAt)
+}
+
 // fetchFunc is the raw credential retrieval function (no cache logic).
 // Returns (username, password, serverAddr, lifetimeSecs, error).
 type fetchFunc func(ctx context.Context, link string) (string, string, []string, int, error)
