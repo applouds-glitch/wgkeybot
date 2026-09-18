@@ -6,6 +6,7 @@
 package main
 
 import (
+	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -53,6 +54,27 @@ import (
 // provably full.
 const orphanedAllocationLifetime = 600 * time.Second
 
+// A release that did go out is not instant either. On the device on 2026-09-18
+// the Kotlin restart closed ten fresh allocations on a live network, every
+// Refresh(0) sent, and the first Allocate on the same credential and relay 0.6s
+// later drew a 486; the same stop with a 6s pause before the start got all ten
+// back. The worker read that 486 as a full credential: it force-expired it and
+// fetched a new one from VK — the trip that can cost a captcha — to cure a
+// quota that was seconds from freeing itself.
+//
+// So a 486 from a relay where one of our releases went out less than
+// releaseSettleWindow ago retries the same credential after releaseSettleRetry,
+// instead of rotating it. The window bounds the cost of a wrong guess: past it,
+// a 486 takes the usual path.
+const releaseSettleWindow = 10 * time.Second
+
+// releaseSettleRetry is the pause before trying the same credential again: two
+// or three tries fit before the 6s it took on the device, and a refusal costs
+// the relay nothing.
+func releaseSettleRetry() time.Duration {
+	return 1500*time.Millisecond + time.Duration(rand.Intn(1001))*time.Millisecond
+}
+
 type relayIdentity struct {
 	user  string // TURN username: one VK identity
 	relay string // TURN server address
@@ -63,11 +85,13 @@ var allocationBook = struct {
 	boundNetwork int64 // the physical network our sockets are bound to; 0 = none
 	live         map[relayIdentity]int
 	orphanedTill map[relayIdentity]time.Time
-	announced    map[relayIdentity]bool // this mark has already been logged as steering a dial
+	announced    map[relayIdentity]bool      // this mark has already been logged as steering a dial
+	releasedAt   map[relayIdentity]time.Time // when our latest release there went out
 }{
 	live:         map[relayIdentity]int{},
 	orphanedTill: map[relayIdentity]time.Time{},
 	announced:    map[relayIdentity]bool{},
+	releasedAt:   map[relayIdentity]time.Time{},
 }
 
 // trackedRelay counts one live allocation until it is closed. The relay conn is
@@ -109,7 +133,12 @@ func releaseAllocation(key relayIdentity, unreleased error, now time.Time) {
 	if allocationBook.live[key]--; allocationBook.live[key] <= 0 {
 		delete(allocationBook.live, key)
 	}
-	fresh := unreleased != nil && orphanLocked(key, now)
+	fresh := false
+	if unreleased == nil {
+		allocationBook.releasedAt[key] = now
+	} else {
+		fresh = orphanLocked(key, now)
+	}
 	allocationBook.Unlock()
 
 	// One line per mark: a dying network fails all of a session's releases.
@@ -226,4 +255,35 @@ func credsTag(user string) string {
 		return "…" + user
 	}
 	return "…" + user[len(user)-4:]
+}
+
+// settlingQuotaError reports whether err, the outcome of an attempt on user's
+// credential over addrs, is a 486 that our own recent release explains: one of
+// those relays saw a release of ours go out less than releaseSettleWindow ago
+// and holds no orphans of ours. It names that relay and the release's age. An
+// orphaned relay is left out on purpose: its 486 is our ghosts, which will not
+// be gone in seconds.
+func settlingQuotaError(err error, user string, addrs []string, now time.Time) (string, time.Duration, bool) {
+	if err == nil || !isQuotaError(err) {
+		return "", 0, false
+	}
+	allocationBook.Lock()
+	defer allocationBook.Unlock()
+	for _, addr := range addrs {
+		key := relayIdentity{user: user, relay: addr}
+		at, ok := allocationBook.releasedAt[key]
+		if !ok {
+			continue
+		}
+		age := now.Sub(at)
+		if age >= releaseSettleWindow {
+			delete(allocationBook.releasedAt, key)
+			continue
+		}
+		if till, orphaned := allocationBook.orphanedTill[key]; orphaned && now.Before(till) {
+			continue
+		}
+		return addr, age, true
+	}
+	return "", 0, false
 }

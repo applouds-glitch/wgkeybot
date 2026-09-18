@@ -234,6 +234,22 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 			continue
 		}
 
+		// A 486 right after our own release on one of these relays is VK not
+		// having processed that release yet, not a full credential: try the same
+		// one again shortly, without rotating it or cooling down, and without
+		// counting a failure (see releaseSettleWindow).
+		if relay, age, ok := settlingQuotaError(runErr, user, addrs, time.Now()); ok {
+			wait := releaseSettleRetry()
+			turnLog("[WORKER %d] 486 with our release on %s only %v old — VK has not freed it yet, same creds again in %v",
+				s.id, relay, age.Round(100*time.Millisecond), wait.Round(100*time.Millisecond))
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return
+			}
+			continue
+		}
+
 		// Auth/quota error → throttled, single-flight credential re-fetch so the
 		// next iteration picks up a fresh credential. Healthy siblings untouched.
 		// Every other error is transient from this worker's point of view: it
