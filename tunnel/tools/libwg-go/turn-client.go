@@ -1158,9 +1158,23 @@ func wgSetPhysicalNetwork(handle C.longlong) {
 	setBoundNetwork(int64(handle), time.Now())
 }
 
+// networkLogMu makes every gate line a snapshot taken after each change logged
+// before it. The gate is changed from two JNI threads — the validated hint and
+// the physical path — and each snapshots it and logs afterwards. Unserialized,
+// a snapshot taken before the other thread's change could be written after that
+// thread's line, and the last line then described a state already gone: on the
+// device "PhysicalPath=true … effectiveAvailable=true" landed right after the
+// line reporting the path lost.
+var networkLogMu sync.Mutex
+
+// networkLogf is where the gate lines go; a test holds a line back with it.
+var networkLogf = turnLog
+
 func logNetworkAvailability() {
+	networkLogMu.Lock()
+	defer networkLogMu.Unlock()
 	path, validated, proven, effective, remaining := networkAvailabilitySnapshot()
-	turnLog("[PROXY] PhysicalPath=%t AndroidValidated=%t transportProven=%t effectiveAvailable=%t proofTTL=%v",
+	networkLogf("[PROXY] PhysicalPath=%t AndroidValidated=%t transportProven=%t effectiveAvailable=%t proofTTL=%v",
 		path, validated, proven, effective, remaining.Round(time.Second))
 }
 

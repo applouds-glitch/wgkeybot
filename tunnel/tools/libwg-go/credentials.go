@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -173,6 +174,18 @@ func credsReplaced(groupID int, user string) bool {
 	return cache.creds.Username != user || !time.Now().Before(cache.creds.ExpiresAt)
 }
 
+// cacheMissReason says, for the log, why the slot's previous credential could not
+// serve link. A slot is missed not only when it expires but also when the
+// group's link has changed, and then its expiry still lies ahead — which the
+// log used to print as "expired -58m20s ago".
+func cacheMissReason(prev TurnCredentials, link string, now time.Time) string {
+	lived := now.Sub(prev.FetchedAt).Round(time.Second)
+	if prev.Link != link {
+		return fmt.Sprintf("cached creds are for another link (lived %v)", lived)
+	}
+	return fmt.Sprintf("previous creds lived %v (expired %v ago)", lived, now.Sub(prev.ExpiresAt).Round(time.Second))
+}
+
 // fetchFunc is the raw credential retrieval function (no cache logic).
 // Returns (username, password, serverAddr, lifetimeSecs, error).
 type fetchFunc func(ctx context.Context, link string) (string, string, []string, int, error)
@@ -199,10 +212,8 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 	}
 
 	if !cache.creds.FetchedAt.IsZero() {
-		lived := time.Since(cache.creds.FetchedAt).Round(time.Second)
-		expired := time.Since(cache.creds.ExpiresAt).Round(time.Second)
-		turnLog("[STREAM %d] Cache miss (cache=%d) — previous creds lived %v (expired %v ago), fetching...",
-			streamID, cacheID, lived, expired)
+		turnLog("[STREAM %d] Cache miss (cache=%d) — %s, fetching...",
+			streamID, cacheID, cacheMissReason(cache.creds, link, time.Now()))
 	} else {
 		turnLog("[STREAM %d] Cache miss (cache=%d), fetching...", streamID, cacheID)
 	}
