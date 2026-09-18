@@ -11,9 +11,11 @@ import (
 	"net"
 	"slices"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/pion/stun/v3"
 	"github.com/pion/turn/v5"
 )
 
@@ -35,6 +37,7 @@ func resetAllocationBook(t *testing.T) {
 		allocationBook.live = map[relayIdentity]int{}
 		allocationBook.orphanedTill = map[relayIdentity]time.Time{}
 		allocationBook.announced = map[relayIdentity]bool{}
+		allocationBook.releasedAt = map[relayIdentity]time.Time{}
 		allocationBook.Unlock()
 	}
 	reset()
@@ -354,5 +357,138 @@ func TestDialAndAllocateMarksAnUnsentRelease(t *testing.T) {
 	}
 	if got := orderAroundOrphans("dave", []string{addr, orphanRelay1}, time.Now()); got[0] == addr {
 		t.Fatalf("an unsent release left the relay first: %v", got)
+	}
+}
+
+// A 486 the way runWithCreds reports it after both relays refused.
+func quota486() error {
+	return allocateErr(turnErr(stun.CodeAllocQuotaReached))
+}
+
+// The device case: the Kotlin restart released ten allocations on relay 2 over
+// a live network and dialed it again 0.6s later. Relay 1 still holds the ghosts
+// of the drop before. The 486 is our own release still being processed, so the
+// credential must be kept.
+func TestA486RightAfterOurReleaseKeepsTheCreds(t *testing.T) {
+	resetAllocationBook(t)
+	now := time.Now()
+	noteBoundNetwork(orphanNetA, now)
+	trackAllocation(&countingConn{}, "alice", orphanRelay1)
+	noteBoundNetwork(0, now)
+	noteBoundNetwork(orphanNetB, now)
+	trackAllocation(&countingConn{}, "alice", orphanRelay2).Close()
+
+	attempt := []string{orphanRelay2, orphanRelay1}
+	relay, age, ok := settlingQuotaError(quota486(), "alice", attempt, time.Now().Add(600*time.Millisecond))
+	if !ok || relay != orphanRelay2 {
+		t.Fatalf("486 0.6s after our release on relay 2: relay=%q ok=%v, want relay 2", relay, ok)
+	}
+	if age < 600*time.Millisecond || age >= releaseSettleWindow {
+		t.Fatalf("release age %v, want about 0.6s", age)
+	}
+}
+
+// Past the window a 486 is a 486 again: rotate the credential as always.
+func TestReleaseSettleWindowEnds(t *testing.T) {
+	resetAllocationBook(t)
+	t0 := time.Now()
+	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, nil, t0)
+
+	if _, _, ok := settlingQuotaError(quota486(), "alice", orphanRelays, t0.Add(releaseSettleWindow-time.Millisecond)); !ok {
+		t.Fatal("a 486 just inside the window was not read as our release settling")
+	}
+	if _, _, ok := settlingQuotaError(quota486(), "alice", orphanRelays, t0.Add(releaseSettleWindow)); ok {
+		t.Fatal("a 486 at the end of the window still kept the credential")
+	}
+}
+
+// Only a quota refusal is explained by an unprocessed release: a 401, a
+// transport failure or no error at all take their usual paths.
+func TestOnlyAQuotaRefusalSettles(t *testing.T) {
+	resetAllocationBook(t)
+	now := time.Now()
+	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, nil, now)
+
+	for _, err := range []error{
+		nil,
+		allocateErr(turnErr(stun.CodeUnauthorized)),
+		allocateErr(writeErr(50486, syscall.ENETUNREACH)),
+	} {
+		if _, _, ok := settlingQuotaError(err, "alice", orphanRelays, now); ok {
+			t.Errorf("%v was read as our release settling", err)
+		}
+	}
+}
+
+// A relay holding our orphans answers 486 because of them, and they last ten
+// minutes, not seconds: a release there does not make its 486 worth waiting for.
+// A release that did not go out is no release at all.
+func TestAnOrphanedRelayDoesNotSettle(t *testing.T) {
+	resetAllocationBook(t)
+	now := time.Now()
+	noteBoundNetwork(orphanNetA, now)
+	trackAllocation(&countingConn{}, "alice", orphanRelay1).Close() // released, live network
+	trackAllocation(&countingConn{}, "alice", orphanRelay1)         // then lost with it
+	noteBoundNetwork(0, now)
+	trackAllocation(&countingConn{errs: []error{errReleaseUnsent}}, "alice", orphanRelay2).Close()
+
+	if relay, _, ok := settlingQuotaError(quota486(), "alice", orphanRelays, time.Now()); ok {
+		t.Fatalf("486 read as settling on %s, which holds our orphans", relay)
+	}
+}
+
+// The release is ours on one credential and one relay: another credential's
+// 486, or an attempt that never dialed that relay, is not explained by it.
+func TestSettlingIsPerCredentialAndRelay(t *testing.T) {
+	resetAllocationBook(t)
+	now := time.Now()
+	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, nil, now)
+
+	if _, _, ok := settlingQuotaError(quota486(), "bob", orphanRelays, now); ok {
+		t.Fatal("another credential's 486 was read as alice's release settling")
+	}
+	if _, _, ok := settlingQuotaError(quota486(), "alice", []string{orphanRelay2, orphanRelay3}, now); ok {
+		t.Fatal("an attempt that never dialed relay 1 was explained by a release there")
+	}
+}
+
+// The same through runWorker itself: a relay refusing every Allocate with 486
+// right after our release there gets the same credential again within seconds,
+// and the credential is never rotated (the path that fetched a new one from VK).
+func TestWorkerRetriesTheSameCredsWhileOurReleaseSettles(t *testing.T) {
+	resetAllocationBook(t)
+	resetNetworkAvailabilityForTest()
+	defer resetNetworkAvailabilityForTest()
+	pc, _ := startInitialRefusalServer(t, 100, stun.CodeAllocQuotaReached)
+	addr := pc.LocalAddr().String()
+
+	prev := globalGetCreds
+	globalGetCreds = func(context.Context, string, int) (string, string, []string, error) {
+		return t.Name(), "pass", []string{addr}, nil
+	}
+	defer func() { globalGetCreds = prev }()
+
+	const group = 91
+	cacheID := group * streamsPerCredValue()
+	cache := getStreamCache(cacheID)
+	defer func() {
+		credentialsStore.mu.Lock()
+		delete(credentialsStore.caches, cacheID)
+		credentialsStore.mu.Unlock()
+	}()
+	releaseAllocation(relayIdentity{user: t.Name(), relay: addr}, nil, time.Now())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3500*time.Millisecond)
+	defer cancel()
+	runWorker(ctx, WorkerGroupConfig{GroupID: group, Link: "test", UseUDP: true, PeerType: "wireguard"}, &stream{}, 0)
+
+	cache.refreshMu.Lock()
+	rotated := !cache.lastRefresh.IsZero()
+	cache.refreshMu.Unlock()
+	if rotated {
+		t.Fatal("a 486 right after our own release rotated the credential")
+	}
+	if n := pc.count(); n < 2 {
+		t.Fatalf("%d Allocate attempt(s) in 3.5s, want the same credential tried again", n)
 	}
 }
