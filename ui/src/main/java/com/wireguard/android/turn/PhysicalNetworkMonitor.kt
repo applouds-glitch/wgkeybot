@@ -13,8 +13,6 @@ import android.net.NetworkRequest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.util.concurrent.ConcurrentHashMap
@@ -33,45 +31,31 @@ class PhysicalNetworkMonitor(context: Context) {
     /**
      * A physical network together with the identity of the addresses it carries.
      *
-     * The [Network] object alone is not enough to notice every change that breaks
-     * TURN: a DHCP renewal onto a different lease, or roaming between access
-     * points of the same network, replaces the local IP while Android keeps
-     * handing out the same Network. Every socket the proxy holds is dead at that
-     * point, but nothing in the old comparison had changed, so the only thing that
-     * eventually noticed was the 90-second dead-stream detector.
+     * The [Network] object alone does not show every change: a DHCP renewal onto a
+     * different lease, or roaming between access points of the same network,
+     * replaces the local IP while Android keeps handing out the same Network.
+     * Native sees the same network handle then, and needs nothing more: a
+     * connected socket whose source address is gone fails its next write, and its
+     * worker reconnects from the new one.
      */
     data class NetworkPath(val network: Network, val addresses: String)
 
     /**
-     * Flow of the best available physical path — the network and the addresses it
-     * carries. The 1500ms debounce filters out rapid transitions and flickering;
-     * an address change during a handover produces a burst of LinkProperties
-     * callbacks, and only the settled result is worth acting on.
-     */
-    @OptIn(kotlinx.coroutines.FlowPreview::class)
-    val bestPath = _bestPath.asStateFlow()
-        .debounce(1500)
-        .distinctUntilChanged()
-
-    /**
-     * The same path without the debounce: what the monitor believes right now.
+     * The best available physical path — the network and the addresses it carries
+     * — as the monitor believes it right now, undebounced.
      *
-     * [bestPath] waits the 1500ms settle before anything acts on it, which is the
-     * right trade for restarting TURN — a handover emits a burst of callbacks and
-     * only the settled result is worth tearing a working proxy down for. It is the
-     * wrong trade for telling native which network to bind its dials to: waiting
-     * out the settle leaves the dialer on the network the proxy started on, so a
-     * reconnect attempted mid-handover binds to a dead Network and fails on a
-     * socket that protect() left unbound. Publishing this one straight into
-     * native costs one JNI call per actual path change — native decides whether
-     * anything moved — and keeps the two clocks independent: the dialer goes
-     * current immediately, the restart still waits.
+     * It goes straight into native (wgSetNetwork), which owns every decision made
+     * from it. There used to be a 1500ms-debounced twin that drove a TURN restart;
+     * the settle was the right trade for tearing a proxy down, and the wrong one
+     * for telling the dialer which network to bind to — a reconnect attempted
+     * mid-handover bound to a dead Network. The restart is gone (native moves the
+     * sessions itself, network_switch.go), and so is the twin.
      */
     val rawPath: StateFlow<NetworkPath?> = _bestPath.asStateFlow()
 
     /**
      * Whether [currentPath] currently has validated upstream connectivity.
-     * This is separate from [bestPath] because Android can add or remove
+     * This is separate from [rawPath] because Android can add or remove
      * NET_CAPABILITY_VALIDATED without changing the Network object.
      */
     val validated = _validated.asStateFlow()
@@ -88,9 +72,9 @@ class PhysicalNetworkMonitor(context: Context) {
      * The DNS servers [network] advertises, comma-separated, or "" when Android
      * names none (or there is no network).
      *
-     * Read on demand rather than folded into [NetworkPath]: that data class's
-     * equality is what decides whether TURN restarts, and a resolver change on an
-     * otherwise unchanged link is not a reason to tear a working proxy down.
+     * Read on demand rather than folded into [NetworkPath], whose equality decides
+     * when the path is pushed to native again; the resolvers ride along with each
+     * push of the network they belong to.
      */
     fun dnsServersOf(network: Network?): String {
         if (network == null) return ""
@@ -148,8 +132,8 @@ class PhysicalNetworkMonitor(context: Context) {
      *
      * IPv4 addresses are compared in full. IPv6 is reduced to its /64 prefixes on
      * purpose: privacy extensions rotate temporary IPv6 addresses on their own
-     * schedule, and comparing them in full would keep declaring a network change —
-     * and restarting TURN — on a link that never moved. A genuine handover changes
+     * schedule, and comparing them in full would keep declaring a network change
+     * on a link that never moved. A genuine handover changes
      * the prefix. Loopback and link-local addresses carry no information here and
      * are dropped.
      */
@@ -158,9 +142,8 @@ class PhysicalNetworkMonitor(context: Context) {
      *
      * onCapabilitiesChanged can arrive before onLinkPropertiesChanged for a newly
      * appeared network, which would briefly publish a path with no addresses and
-     * then "change" it a moment later — a re-addressing that never happened, and a
-     * TURN restart with it. The debounce usually swallows that pair, but querying
-     * directly removes the window instead of relying on the timing.
+     * then "change" it a moment later — a re-addressing that never happened.
+     * Querying directly removes the window instead of relying on the timing.
      */
     private fun identityFor(network: Network): String {
         links[network]?.let { return it }

@@ -23,7 +23,6 @@ extern char *wgGetConfig(int handle);
 extern char *wgVersion();
 extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, const char *mode, int n, int udp, const char *listen_addr, const char *turn_ip, int turn_port, const char *peer_type, int streams_per_cred, int watchdog_timeout, const char *wrap_key);
 extern void wgTurnProxyStop();
-extern void wgNotifyNetworkChange();
 extern void wgSetNetworkAvailable(int available);
 extern void wgSetSystemDns(const char *dns_servers);
 extern void wgSetPhysicalNetwork(long long handle);
@@ -554,11 +553,6 @@ JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTethe
 	ret = (*env)->NewStringUTF(env, stats);
 	free(stats);
 	return ret;
-}
-
-JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgNotifyNetworkChange(JNIEnv *env, jclass c)
-{
-	wgNotifyNetworkChange();
 }
 
 // Re-points protect_and_bind() at the physical network the proxy should dial

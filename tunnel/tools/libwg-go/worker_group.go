@@ -206,12 +206,20 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		attemptHead := addrs[0]
 
 		start := time.Now()
-		runErr := s.runWithCreds(ctx, user, pass, addrs, cfg)
+		attemptCtx, endAttempt := beginNetworkAttempt(ctx)
+		runErr := s.runWithCreds(attemptCtx, user, pass, addrs, cfg)
+		moved := endAttempt()
 		sessionDur := time.Since(start)
 		releaseNetworkPermit(permit)
 
 		if ctx.Err() != nil {
 			return
+		}
+		if moved {
+			// Recycled by a move to another network (see network_switch.go): not a
+			// failure of anything, so reconnect over the new one at once.
+			failStreak = 0
+			continue
 		}
 		if !isNetworkAvailable() {
 			// Skip per-worker retry delays while offline. The gate above resumes on

@@ -36,15 +36,12 @@ enum class TunnelFailure {
     CaptchaUnsolved,
 
     /** Credentials could not be obtained, for a reason we cannot narrow further. */
-    Credentials,
-
-    /** The proxy could not be brought back, typically after a network change. */
-    ProxyRestart;
+    Credentials;
 
     companion object {
         /**
-         * Classifies a reason string coming up from Go (`reportWorkerGaveUp`) or
-         * from the restart loop. The strings are error texts, not a protocol, so
+         * Classifies a reason string coming up from Go (`reportWorkerGaveUp`).
+         * The strings are error texts, not a protocol, so
          * this matches loosely and returns null when nothing fits — the caller
          * picks the default that suits its own path.
          */

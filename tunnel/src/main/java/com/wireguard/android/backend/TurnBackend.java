@@ -340,7 +340,6 @@ public final class TurnBackend {
             String wrapKey
     );
     public static native void wgTurnProxyStop();
-    public static native void wgNotifyNetworkChange();
 
     /**
      * Re-points the native socket binding at the current physical network.
