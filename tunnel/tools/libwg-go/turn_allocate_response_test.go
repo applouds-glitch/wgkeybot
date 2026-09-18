@@ -63,7 +63,7 @@ func TestInitialAllocateErrorMatchesTransactionOverTCP(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, _, _, _, _, err = dialAndAllocate(ctx, &stream{}, t.Name(), "pass", l.Addr().String(), WorkerGroupConfig{})
+	_, _, _, _, _, err = dialAndAllocate(ctx, &stream{}, t.Name(), "pass", l.Addr().String(), WorkerGroupConfig{}, dialOpts{})
 	if code, ok := turnErrorCode(err); !ok || code != stun.CodeAllocMismatch {
 		t.Fatalf("unrelated transaction replaced actual 437: %v", err)
 	}

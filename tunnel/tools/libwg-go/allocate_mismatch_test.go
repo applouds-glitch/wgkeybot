@@ -90,14 +90,14 @@ func TestInitialAllocateErrorKeepsActualCode(t *testing.T) {
 			pc, _ := startInitialRefusalServer(t, 100, code)
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			_, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, t.Name(), "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})
+			_, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, t.Name(), "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true}, dialOpts{})
 			if got, ok := turnErrorCode(err); !ok || got != code {
 				t.Fatalf("want %d, got %v", code, err)
 			}
 			if pc.count() != 1 {
 				t.Fatalf("Allocate retried on %d sockets", pc.count())
 			}
-			if len(allocSemaphore) != 0 {
+			if len(allocSlotsFor(pc.LocalAddr().String())) != 0 {
 				t.Fatal("refused Allocate kept a semaphore slot")
 			}
 		})
@@ -110,7 +110,7 @@ func TestAllocateMismatchRotatesCredentials(t *testing.T) {
 	pc, _ := startInitialRefusalServer(t, 100, stun.CodeAllocMismatch)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, t.Name(), "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true})
+	_, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, t.Name(), "pass", pc.LocalAddr().String(), WorkerGroupConfig{UseUDP: true}, dialOpts{})
 	if !classifyCredError(err) || isQuotaError(err) {
 		t.Fatalf("437 should rotate the credential without the quota cooldown: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestQuotaRefusalIsNotAServerFailure(t *testing.T) {
 			addr := pc.LocalAddr().String()
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			if _, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, t.Name(), "pass", addr, WorkerGroupConfig{UseUDP: true}); err == nil {
+			if _, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, t.Name(), "pass", addr, WorkerGroupConfig{UseUDP: true}, dialOpts{}); err == nil {
 				t.Fatal("refused Allocate succeeded")
 			}
 

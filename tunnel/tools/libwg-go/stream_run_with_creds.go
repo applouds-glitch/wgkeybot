@@ -109,11 +109,19 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 	errCh := make(chan error, len(addrs))
 	var wg sync.WaitGroup
 
+	// allocating carries the first relay's Allocate slot to the loop below at the
+	// moment its request goes out: that is when its head start begins.
+	allocating := make(chan *allocSlot, 1)
+
 	launch := func(addr string) {
 		wg.Add(1)
 		go func(addr string) {
 			defer wg.Done()
-			client, raw, relay, rtt, perm, err := dialAndAllocate(raceCtx, s, user, pass, addr, cfg)
+			opts := dialOpts{session: ctx}
+			if addr == addrs[0] {
+				opts.allocating = func(slot *allocSlot) { allocating <- slot }
+			}
+			client, raw, relay, rtt, perm, err := dialAndAllocate(raceCtx, s, user, pass, addr, cfg, opts)
 			if err != nil {
 				errCh <- err
 				return
@@ -151,12 +159,38 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 		fannedOut = true
 	}
 
+	var headSlot *allocSlot
+	var headStart <-chan time.Time
+	var headStartTimer *time.Timer
+	defer func() {
+		if headStartTimer != nil {
+			headStartTimer.Stop()
+		}
+	}()
+
 	var lastErr error
 	errCount := 0
 	for {
 		select {
 		case w := <-winCh:
 			return s.runSession(ctx, w, cfg)
+		case headSlot = <-allocating:
+			if !fannedOut {
+				headStartTimer = time.NewTimer(relayHeadStart)
+				headStart = headStartTimer.C
+			}
+		case <-headStart:
+			headStart = nil
+			if fannedOut {
+				continue
+			}
+			// Silent, not refused: race the rest now, and let the next worker in
+			// this relay's queue start its own clock. The Allocate itself runs
+			// on — see relayHeadStart.
+			turnLog("[STREAM %d] %s has not answered Allocate for %v — racing %v (group %d)",
+				s.id, addrs[0], relayHeadStart, addrs[1:], cfg.GroupID)
+			headSlot.release()
+			fanOut()
 		case err := <-errCh:
 			lastErr = err
 			errCount++
@@ -182,19 +216,57 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 	}
 }
 
+// relayHeadStart is how long the attempt's first relay has to answer Allocate
+// before the rest are dialed alongside it; the first to allocate takes the
+// session and the others are released.
+//
+// Until now the others were dialed only after the first had failed, and a relay
+// that has gone silent does not fail: pion retransmits for ~7.8s before giving
+// up. With three Allocates in flight at a time, nine workers took three such
+// rounds — about 25s to move a session to a relay that was answering in 200ms
+// (field logs of 2026-09-18: 56 and 23 Allocate timeouts). v1.6.0 raced after
+// 400ms; that is below a healthy Allocate on a slow network (two round trips:
+// 180-200ms on LTE, 290-410ms on the test Wi-Fi), so it dialed the second relay
+// on every ordinary connect and scattered streams across relays. 1.2s leaves a
+// healthy relay room for a retransmission or two and still costs a dark one a
+// second instead of eight.
+//
+// The clock starts when this worker's Allocate is actually sent, not while it
+// queues for a slot: after a network return every worker dials at once, and a
+// healthy relay must not lose the race to its own queue. When the head start
+// runs out the hanging Allocate gives up its slot — the next worker in the
+// queue can start its own clock — but is not aborted: cutting an Allocate short
+// is how ghost allocations were made (a reply still on its way allocates on the
+// relay with nobody left to release it). If the relay does answer late, the
+// loser path below releases that allocation properly.
+const relayHeadStart = 1200 * time.Millisecond
+
+// dialOpts is what only runWithCreds needs from a dial; the zero value is a
+// plain dial.
+type dialOpts struct {
+	// session is the attempt's own context. A failed Allocate counts against
+	// the server while it is alive — even after the race was won elsewhere and
+	// ctx cancelled, because Allocate is not cancellable: what it reports is
+	// the relay's answer, or its silence. nil means ctx.
+	session context.Context
+	// allocating is called once the dial holds its Allocate slot, just before
+	// the request goes out.
+	allocating func(*allocSlot)
+}
+
 // dialAndAllocate dials one TURN server and performs the Allocate handshake,
 // measuring the Dial→Allocate latency — the network part only, not the time
-// spent queued on allocSemaphore, which said nothing about the server and once
+// spent queued for an Allocate slot, which said nothing about the server and once
 // booked a 6s "rtt" against a relay that answered in 230ms (the election ranks
 // servers by this number). On any error it closes whatever it opened and
 // returns. On success the caller owns client/raw/relay. Uses ctx for
-// the dial and the allocSemaphore wait so a cancelled race aborts promptly.
+// the dial and the slot wait so a cancelled race aborts promptly.
 //
 // Each attempt gets its own permWatch, wired into the pion logger factory
 // before NewClient so it sees the allocation's whole lifecycle. Losing failover
 // candidates simply drop theirs — a permWatch owns no goroutine, so an unwatched
 // one costs nothing.
-func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cfg WorkerGroupConfig) (*turn.Client, net.Conn, net.PacketConn, time.Duration, *permWatch, error) {
+func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cfg WorkerGroupConfig, opts dialOpts) (*turn.Client, net.Conn, net.PacketConn, time.Duration, *permWatch, error) {
 	turnLog("[STREAM %d] Dial TURN %s (group %d)", s.id, addr, cfg.GroupID)
 	dialStart := time.Now()
 	perm := newPermWatch(s.id)
@@ -276,23 +348,27 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 
 	dialed := time.Since(dialStart)
 
-	select {
-	case allocSemaphore <- struct{}{}:
-	case <-ctx.Done():
+	slot := acquireAllocSlot(ctx, addr)
+	if slot == nil {
 		client.Close()
 		raw.Close()
 		return nil, nil, nil, 0, nil, ctx.Err()
 	}
+	if opts.allocating != nil {
+		opts.allocating(slot)
+	}
 	allocStart := time.Now()
 	relay, err := client.Allocate()
 	err = responses.allocationError(err)
-	<-allocSemaphore
+	slot.release()
 	if err != nil {
 		client.Close()
 		raw.Close()
-		// Only a genuine refusal counts against the server. A losing failover
-		// candidate — or any dial during a teardown — fails because we cancelled
-		// its context, which says nothing about the host.
+		// Only a genuine refusal or silence counts against the server, and only
+		// while the attempt itself is alive: a dial during a teardown says
+		// nothing about the host. Losing the race does not excuse it — nothing
+		// here cancels an Allocate, so a relay that was still silent when
+		// another one won has earned the strike (see dialOpts.session).
 		//
 		// Nor does 486. The quota is per credential on this relay, and what fills
 		// it is our own allocations — usually ghosts of sockets that died with
@@ -302,7 +378,11 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		// session at 09:58:31, a run of 486s on the old credential stood it down
 		// at 09:58:40, and the fresh credential eight seconds later had only the
 		// relay that never carried a byte left to go to.
-		if ctx.Err() == nil && !isQuotaError(err) {
+		session := opts.session
+		if session == nil {
+			session = ctx
+		}
+		if session.Err() == nil && !isQuotaError(err) {
 			noteServerFailure(addr)
 		}
 		return nil, nil, nil, 0, nil, fmt.Errorf("TURN allocate: %w", err)

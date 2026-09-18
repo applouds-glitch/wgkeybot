@@ -21,9 +21,9 @@ const (
 	// It used to be ~2s "so TURN allocations and VK credential fetches are
 	// staggered across groups", but both reasons have since moved elsewhere:
 	// wgTurnProxyStart pre-fetches every group's credential before this runs,
-	// so a group's first fetch is a cache hit, and Allocate is paced by
-	// allocSemaphore and workerStagger regardless of which group a stream
-	// belongs to. What is left is only to keep the first streams of adjacent
+	// so a group's first fetch is a cache hit, and Allocate is paced by the
+	// per-relay Allocate slots (allocSlots) and workerStagger regardless of
+	// which group a stream belongs to. What is left is only to keep the first streams of adjacent
 	// groups from dialing in the same instant — a few hundred milliseconds do
 	// that, and the last of three groups no longer starts 4-5s late for
 	// nothing.
