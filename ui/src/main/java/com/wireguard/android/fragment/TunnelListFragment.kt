@@ -331,8 +331,8 @@ class TunnelListFragment : BaseFragment() {
                     // Stop TURN through the manager, not just the native proxy. When
                     // cancelling a still-connecting tunnel, setStateAsync(DOWN) below
                     // early-returns (tunnel.state is already DOWN) and never reaches
-                    // stopForTunnel — so userInitiatedStop would stay false and
-                    // performRestartSequence would keep reconnecting after the stop.
+                    // stopForTunnel — so userInitiatedStop would stay false and a
+                    // start still in flight would bring the proxy up after the stop.
                     withContext(Dispatchers.IO) {
                         Application.getTurnProxyManager().stopForTunnel(TunnelManager.PRIMARY_TUNNEL_NAME)
                     }
@@ -984,7 +984,6 @@ class TunnelListFragment : BaseFragment() {
             TunnelFailure.CallRequiresAuth -> R.string.wgk_status_sub_failed_call_auth
             TunnelFailure.CaptchaUnsolved  -> R.string.wgk_status_sub_failed_captcha
             TunnelFailure.Credentials      -> R.string.wgk_status_sub_failed_creds
-            TunnelFailure.ProxyRestart     -> R.string.wgk_status_sub_failed_restart
             null                           -> R.string.wgk_status_sub_failed
         }
     }

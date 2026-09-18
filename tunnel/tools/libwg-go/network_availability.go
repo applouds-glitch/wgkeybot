@@ -164,6 +164,16 @@ func beginNetworkPathGeneration() uint64 {
 	return networkAvailability.transportGeneration
 }
 
+// clearTransportProof drops the proof earned over a network we have just moved
+// away from, keeping the generation: the sessions of this proxy are the ones
+// that will earn it again over the new network, and a new generation would
+// leave them no way to (only a proxy start hands out the token).
+func clearTransportProof() {
+	networkAvailability.Lock()
+	networkAvailability.transportProvenUntil = time.Time{}
+	networkAvailability.Unlock()
+}
+
 // resetNetworkPathProof prevents proof from an old proxy generation or
 // physical network from authorising work on a new path.
 func resetNetworkPathProof() {

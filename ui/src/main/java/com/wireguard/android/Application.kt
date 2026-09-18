@@ -191,14 +191,6 @@ class Application : android.app.Application() {
             tunnelManager.onTurnFatal(reason)
         }
 
-        // The same outcome reached on the Android side: the restart loop ran out of
-        // attempts, or hit a start code no retry can fix. Native worker accounting
-        // never sees this — those failures happen before a worker exists.
-        turnProxyManager.onUnrecoverableFailure = { tunnelName, reason ->
-            tetherManager.stop()
-            tunnelManager.onTurnUnrecoverable(tunnelName, reason)
-        }
-
         // Feed the Go captcha solver real device metrics (screen, DPR, cores,
         // memory) + a persisted stable browser_fp, instead of synthetic randoms.
         TurnBackend.setCaptchaDeviceProfileProvider {

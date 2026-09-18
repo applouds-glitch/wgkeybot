@@ -426,7 +426,6 @@
     <string name="wgk_status_sub_failed_call_auth">Call needs an account — refresh the config</string>
     <string name="wgk_status_sub_failed_captcha">Captcha could not be solved — try later</string>
     <string name="wgk_status_sub_failed_creds">Could not get credentials — try later</string>
-    <string name="wgk_status_sub_failed_restart">Network changed — connect again</string>
 
     <!-- Chip under the connect button while internet sharing is up. -->
     <string name="wgk_tether_chip">Sharing · %1$d</string>
@@ -524,7 +523,6 @@
     <string name="tunnel_connection_lost_title">VPN disconnected</string>
     <string name="tunnel_connection_lost_text">The connection was lost and could not be restored.</string>
     <string name="turn_fatal_text">Could not obtain connection credentials — the captcha could not be solved or the call is no longer available. Try connecting again later.</string>
-    <string name="turn_restart_failed_text">The connection could not be re-established after the network changed. Try connecting again.</string>
 
     <!-- APK self-update -->
     <string name="wgk_update_title">Application update</string>

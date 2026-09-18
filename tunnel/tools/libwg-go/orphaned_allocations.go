@@ -188,7 +188,8 @@ func noteBoundNetwork(handle int64, now time.Time) {
 	// Durations, not clock times: Go logs in UTC on the device, logcat in local
 	// time, and "until 09:07" next to a 12:57 line only confuses.
 	for _, m := range marked {
-		turnLog("[QUOTA] network lost under %d allocation(s) on %s (creds %s) — orphaned for %v, other relays go first",
+		turnLog("[QUOTA] left network %d with %d allocation(s) on %s (creds %s) — orphaned for %v, other relays go first",
+			prev,
 			m.count, m.key.relay, credsTag(m.key.user), orphanedAllocationLifetime)
 	}
 }

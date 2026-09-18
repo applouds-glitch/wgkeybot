@@ -8,11 +8,9 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.os.SystemClock
 import android.util.Log
 import com.wireguard.android.R
 import com.wireguard.android.backend.TurnBackend
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,19 +18,22 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Lightweight manager for per-tunnel TURN client processes and logs.
  *
- * Uses PhysicalNetworkMonitor to track stable internet connections and 
- * triggers restarts when the underlying network or IP changes.
+ * Tells native which physical network to use (PhysicalNetworkMonitor →
+ * wgSetNetwork) and whether Android validates it. It does not restart the proxy
+ * when the network changes: native follows the network itself — rebinding its
+ * dials, parking the workers while there is none, moving the sessions left on
+ * the old network (network_switch.go). The restart that used to run here landed
+ * after the workers had already recovered on the new network, tore those fresh
+ * sessions down and redialed the relay before VK had freed them: a 486 after
+ * every network drop.
  */
 class TurnProxyManager(private val context: Context) {
     // SupervisorJob + handler: этот scope живёт весь процесс и держит оба
@@ -63,42 +64,8 @@ class TurnProxyManager(private val context: Context) {
     @Volatile private var activeSettings: TurnSettings? = null
     @Volatile private var userInitiatedStop: Boolean = false
 
-    /**
-     * Reports a TURN session that cannot be restored by retrying, so the caller can
-     * tell the user and take the tunnel down. Wired to TunnelManager in Application.
-     *
-     * This is the Java-side counterpart of the native terminal-failure report
-     * (TurnBackend.onTurnFatal): the native accounting only fires once workers have
-     * been launched and have all given up, so a proxy that never starts at all —
-     * JNI registration timeout, a failing wgTurnProxyStart, a captcha lockout during
-     * startup — would otherwise leave the VPN UP over a dead 127.0.0.1 route with
-     * nothing to report it.
-     */
-    @Volatile var onUnrecoverableFailure: ((tunnelName: String, reason: String) -> Unit)? = null
-
-    /** One report per session; native and Java paths can both reach the same failure. */
-    private val failureReported = AtomicBoolean(false)
-
     // Network tracking
     private val networkMonitor = PhysicalNetworkMonitor(context)
-
-    /**
-     * The path TURN is currently running over: the physical network plus the
-     * identity of its addresses. Comparing the whole path rather than just the
-     * [Network] catches a re-addressing that keeps the same Network object — a
-     * DHCP renewal, or roaming between access points — which kills every socket
-     * the proxy holds while looking like "nothing changed".
-     */
-    @Volatile private var lastKnownPath: PhysicalNetworkMonitor.NetworkPath? = null
-
-    private val lastKnownNetwork: Network?
-        get() = lastKnownPath?.network
-
-    /**
-     * Wall-clock (elapsedRealtime) instant until which a network change only defers
-     * the restart instead of running it. See [NETWORK_MONITOR_GRACE_MS].
-     */
-    @Volatile private var networkGraceUntilMs: Long = 0L
 
     init {
         networkMonitor.start()
@@ -114,19 +81,10 @@ class TurnProxyManager(private val context: Context) {
                 }
             }
         }
-        
-        scope.launch {
-            networkMonitor.bestPath.collectLatest { path ->
-                if (path != null) {
-                    handleNetworkChange(path)
-                }
-            }
-        }
 
-        // Keep the native dialer's network current, ahead of the debounced path
-        // above that drives restarts. Every socket the dialer creates is bound to
-        // the Network cached in JNI, and that cache used to move only when the proxy
-        // (re)started — so every dial during the up-to-27s connect grace, and every
+        // Keep the native dialer's network current. Every socket the dialer creates
+        // is bound to the Network cached in JNI, and that cache used to move only
+        // when the proxy (re)started — so every dial during the up-to-27s connect grace, and every
         // retry inside a start still working through the captcha ladder, bound to
         // the network the session began on. By then a dead one: the bind threw,
         // protect() left the socket unbound, and the dial failed with "network is
@@ -153,182 +111,14 @@ class TurnProxyManager(private val context: Context) {
     }
 
     /**
-     * Central handler for network changes from PhysicalNetworkMonitor.
-     * The monitor already provides debounced stable paths.
-     */
-    private suspend fun handleNetworkChange(path: PhysicalNetworkMonitor.NetworkPath) {
-        if (userInitiatedStop || activeTunnelName == null) return
-
-        // 1. Initial baseline setting
-        if (lastKnownPath == null) {
-            Log.d(TAG, "Setting initial network baseline: $path")
-            lastKnownPath = path
-            return
-        }
-
-        // 2. Stability check — the network AND the addresses it carries.
-        if (lastKnownPath == path) {
-            Log.d(TAG, "Network state stable for ${path.network}")
-            return
-        }
-        if (lastKnownPath?.network == path.network) {
-            Log.d(TAG, "Same network ${path.network} re-addressed — treating as a change")
-        }
-
-        // 3. Real change confirmed — but not necessarily worth acting on yet.
-        // Restarting TURN takes the proxy down for at least 600ms plus a full
-        // startup, and while the tunnel is still waiting for its first WireGuard
-        // handshake that gap is the difference between a connect that lands and one
-        // that fails. Inside the grace window, wait it out and re-decide against the
-        // network that is actually current by then: a validation flap that moved the
-        // monitor's winner to cellular and back resolves to "nothing changed", while
-        // a genuine handover is still honoured — just after the handshake window.
-        // A newer network cancels this branch outright (collectLatest).
-        val graceRemaining = networkGraceUntilMs - SystemClock.elapsedRealtime()
-        if (graceRemaining > 0) {
-            Log.d(TAG, "Network change during connect grace — deferring ${graceRemaining}ms")
-            delay(graceRemaining)
-            if (userInitiatedStop || activeTunnelName == null) return
-            val settled = networkMonitor.currentPath
-            if (settled == null || settled == lastKnownPath) {
-                Log.d(TAG, "Network settled back to $lastKnownPath — no restart needed")
-                return
-            }
-            Log.d(TAG, "Network change confirmed after grace: $settled. Restarting TURN.")
-            lastKnownPath = settled
-        } else {
-            Log.d(TAG, "Network change confirmed: $path. Restarting TURN.")
-            lastKnownPath = path
-        }
-        performRestartSequence()
-    }
-
-    private suspend fun performRestartSequence() {
-        if (userInitiatedStop || activeTunnelName == null) return
-
-        Log.d(TAG, "Stopping TURN proxy for restart...")
-        TurnBackend.wgTurnProxyStop()
-        
-        // Critical: Notify Go backend to clear internal socket states/DNS cache
-        Log.d(TAG, "Notifying Go layer of network change...")
-        TurnBackend.wgNotifyNetworkChange()
-        
-        delay(500) // Brief pause for Go goroutines to stop; server evicts old conns via AddConn
-
-        val name = activeTunnelName ?: return
-        val settings = activeSettings ?: return
-
-        var attempts = 0
-        // Attempts that actually got to talk to the network, counted separately from
-        // [attempts] (which only drives the backoff). Being offline is not a TURN
-        // failure: a lift or a tunnel would otherwise burn through the budget and
-        // disconnect a user whose network is simply about to come back.
-        var validatedFailures = 0
-        while (currentCoroutineContext().isActive && !userInitiatedStop) {
-            // Always probe a newly selected physical network once. Android can
-            // legitimately withhold VALIDATED on corporate/probe-blocking networks,
-            // while TURN itself is fully reachable. After a failed bootstrap, wait
-            // for validation or a slow timeout before spending on another full start.
-            // A genuinely new network cancels this collectLatest branch immediately.
-            if (attempts > 0 && !networkMonitor.validated.value) {
-                Log.w(TAG, "Network is not VALIDATED — waiting before controlled TURN retry")
-                withTimeoutOrNull(UNVALIDATED_RETRY_INTERVAL_MS) {
-                    networkMonitor.validated.first { it }
-                }
-                if (userInitiatedStop || !currentCoroutineContext().isActive) return
-            }
-
-            // The selected physical path may have changed while validation
-            // was pending. Use the monitor's current, non-debounced winner.
-            lastKnownPath = networkMonitor.currentPath
-
-            attempts++
-            val onValidatedNetwork = networkMonitor.validated.value
-            Log.d(TAG, "Starting TURN for $name (Attempt $attempts)")
-
-            // startForTunnelInternal бросает на фатальных кодах старта: -2
-            // (нужна авторизация) и -4 (звонок удалён / ссылка мертва). Ни
-            // одно из них не лечится повтором, а раньше исключение улетало из
-            // collectLatest и убивало весь scope. Гасим сессию так же, как
-            // делает onTunnelEstablished, и выходим из цикла ретраев.
-            val success = try {
-                startForTunnelInternal(name, settings)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "TURN restart failed fatally — clearing session state", e)
-                endSession()
-                reportUnrecoverable(name, e.message ?: "TURN restart failed")
-                return
-            }
-            if (success) {
-                Log.d(TAG, "TURN restarted successfully on attempt $attempts")
-                return // Exit loop on success
-            }
-
-            // A user stop that landed during the attempt makes this failure
-            // expected, not retryable. Bail out now instead of logging a
-            // misleading "retrying" line and sleeping before the loop condition
-            // would catch it — that retry is exactly the post-disconnect
-            // "keeps connecting" the user sees.
-            if (userInitiatedStop || !currentCoroutineContext().isActive) return
-
-            // Give up once the network has had a fair chance and TURN still will not
-            // come up. Retrying forever kept the tunnel UP over a proxy that was never
-            // going to bind, so the only thing that ever ended it was the handshake
-            // watchdog — three to nine minutes of "connected" with a dead route.
-            if (onValidatedNetwork && ++validatedFailures >= MAX_VALIDATED_RESTART_FAILURES) {
-                Log.e(TAG, "TURN restart failed $validatedFailures times on a validated network — giving up")
-                endSession()
-                reportUnrecoverable(name, "restart failed $validatedFailures times")
-                return
-            }
-
-            // Exponential backoff logic
-            val delayMs = when {
-                attempts <= 2 -> 2000L
-                attempts <= 5 -> 5000L
-                else -> 15000L
-            }
-            Log.w(TAG, "Restart failed, retrying in ${delayMs}ms...")
-            delay(delayMs)
-        }
-    }
-
-    /**
-     * Drops the session so the network monitor stops treating this tunnel as
-     * something to restart. Mirrors what [beginUserStop] does, but for a failure
-     * rather than a user request.
+     * Drops the session, so a start still in flight abandons itself instead of
+     * bringing a proxy up for it. Mirrors what [beginUserStop] does, but for a
+     * failure rather than a user request.
      */
     private fun endSession() {
         activeTunnelName = null
         activeSettings = null
-        lastKnownPath = null
-        networkGraceUntilMs = 0L
         userInitiatedStop = true
-    }
-
-    /**
-     * Reports a session that retrying cannot save, at most once per session. The
-     * native layer may reach the same conclusion independently (every worker gave
-     * up), and a second teardown would post a second notification for one failure.
-     */
-    private fun reportUnrecoverable(tunnelName: String, reason: String) {
-        if (!failureReported.compareAndSet(false, true)) {
-            Log.d(TAG, "Unrecoverable TURN failure already reported — skipping: $reason")
-            return
-        }
-        appendLogLine(tunnelName, "TURN unrecoverable ($reason) — disconnecting")
-        val handler = onUnrecoverableFailure
-        if (handler == null) {
-            Log.e(TAG, "No unrecoverable-failure handler registered! ($reason)")
-            return
-        }
-        try {
-            handler(tunnelName, reason)
-        } catch (e: Exception) {
-            Log.e(TAG, "Unrecoverable-failure handler threw", e)
-        }
     }
 
     private data class Instance(
@@ -340,8 +130,8 @@ class TurnProxyManager(private val context: Context) {
     // Remember the stream count that last succeeded, so the next connect
     // can start with it instead of waiting for the primary count to time out.
     private val lastSuccessfulStreams = ConcurrentHashMap<String, Int>()
-    // Mutex to serialize start/stop operations and prevent race conditions between
-    // onTunnelEstablished and handleNetworkChange
+    // Mutex to serialize start/stop operations: a stop must not interleave with a
+    // start still working through its stream-count fallbacks
     private val operationMutex = kotlinx.coroutines.sync.Mutex()
 
     /**
@@ -354,11 +144,6 @@ class TurnProxyManager(private val context: Context) {
         activeTunnelName = tunnelName
         activeSettings = turnSettings
         userInitiatedStop = false
-        failureReported.set(false)
-
-        // Initialize network baseline for the new session
-        lastKnownPath = networkMonitor.currentPath
-        Log.d(TAG, "Initial network for tunnel session: $lastKnownPath")
 
         if (turnSettings == null || !turnSettings.enabled) {
             Log.d(TAG, "TURN not enabled, skipping")
@@ -374,21 +159,10 @@ class TurnProxyManager(private val context: Context) {
         }
 
         if (!success) {
-            // Start failed: clear session state so PhysicalNetworkMonitor does not
-            // try to "restart" a tunnel that never came up — which would otherwise
-            // hammer the TURN server on every network change.
             Log.w(TAG, "TURN start failed — clearing session state")
             endSession()
             return false
         }
-
-        // Open the grace window. The caller now waits for the first WireGuard
-        // handshake, and a TURN restart inside that wait is what breaks the connect;
-        // a network change arriving now is deferred to the end of the window rather
-        // than acted on (see handleNetworkChange). The previous code launched a
-        // coroutine that slept 2s and logged — it gated nothing at all.
-        networkGraceUntilMs = SystemClock.elapsedRealtime() + NETWORK_MONITOR_GRACE_MS
-        Log.d(TAG, "Network monitoring gated for ${NETWORK_MONITOR_GRACE_MS}ms (handshake window)")
 
         return true
     }
@@ -416,26 +190,24 @@ class TurnProxyManager(private val context: Context) {
                     return@withContext false
                 }
 
-                lastKnownPath = networkMonitor.currentPath
                 // Preserve the historical manual-start behavior: allow one
                 // normal startup attempt even before Android publishes
                 // VALIDATED. Afterward native combines the actual capability
                 // with proof from the TURN handshake and strict RX path.
                 TurnBackend.wgSetNetworkAvailable(1)
 
-                // If network is still null, try one quick re-poll from monitor
-                if (lastKnownPath == null) {
-                    lastKnownPath = networkMonitor.currentPath
-                    if (lastKnownPath == null) {
-                        Log.w(TAG, "Network still null, waiting 500ms for PhysicalNetworkMonitor...")
-                        delay(500)
-                        lastKnownPath = networkMonitor.currentPath
-                    }
+                // If there is no network yet, give the monitor one quick moment. Only
+                // for the log line: native binds to whatever wgSetNetwork last pushed.
+                var network = networkMonitor.currentPath?.network
+                if (network == null) {
+                    Log.w(TAG, "Network still null, waiting 500ms for PhysicalNetworkMonitor...")
+                    delay(500)
+                    network = networkMonitor.currentPath?.network
                 }
 
-                val networkHandle = lastKnownNetwork?.getNetworkHandle() ?: 0L
-                val networkType = getNetworkTypeString(lastKnownNetwork)
-                Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $lastKnownNetwork (type=$networkType, handle=$networkHandle)")
+                val networkHandle = network?.getNetworkHandle() ?: 0L
+                val networkType = getNetworkTypeString(network)
+                Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $network (type=$networkType, handle=$networkHandle)")
 
                 val stability = isStabilityMode()
                 val effectiveVkLink = if (stability) {
@@ -567,11 +339,9 @@ class TurnProxyManager(private val context: Context) {
 
     /**
      * Signal an imminent user-initiated stop without touching the native proxy.
-     * Setting userInitiatedStop / clearing the active session here lets callers
-     * inhibit the network monitor BEFORE the WireGuard backend is torn down:
-     * bringing the tunnel down re-evaluates the physical network, and otherwise
-     * PhysicalNetworkMonitor would restart the proxy in the gap before
-     * stopForTunnel runs — leaving it reconnecting after the user disconnected.
+     * Setting userInitiatedStop / clearing the active session here, BEFORE the
+     * WireGuard backend is torn down, makes a start still in flight abandon
+     * itself instead of bringing a proxy up after the user disconnected.
      */
     fun beginUserStop() {
         endSession()
@@ -657,17 +427,5 @@ class TurnProxyManager(private val context: Context) {
     companion object {
         private const val TAG = "WireGuard/TurnProxyManager"
         private const val MAX_LOG_CHARS = 128 * 1024
-        private const val UNVALIDATED_RETRY_INTERVAL_MS = 60_000L
-
-        // Consecutive restart failures on a validated network before the session is
-        // declared unrecoverable. Failures while the network is unvalidated do not
-        // count — those are handled by the UNVALIDATED_RETRY_INTERVAL_MS wait above.
-        private const val MAX_VALIDATED_RESTART_FAILURES = 5
-
-        // How long after a successful start a network change is deferred instead of
-        // acted on. Covers TunnelManager's first-handshake wait (HANDSHAKE_TIMEOUT_MS,
-        // 25s) with a small margin, so a restart can no longer land in the middle of
-        // the handshake the connect is being judged by.
-        private const val NETWORK_MONITOR_GRACE_MS = 27_000L
     }
 }

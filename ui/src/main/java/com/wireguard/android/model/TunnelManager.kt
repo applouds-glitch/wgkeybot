@@ -794,29 +794,6 @@ class TunnelManager(
     }
 
     /**
-     * Called from [com.wireguard.android.turn.TurnProxyManager] when its own restart
-     * loop concludes the proxy cannot be brought back: a fatal start code, or repeated
-     * failures on a network the system reports as validated.
-     *
-     * This is the Android-side twin of [onTurnFatal]. The native terminal-failure
-     * accounting only fires once workers have been launched and have all given up, so
-     * a proxy that never starts — JNI registration timeout, a failing wgTurnProxyStart,
-     * a captcha lockout during startup — reaches no worker and would otherwise leave
-     * the tunnel UP over a dead 127.0.0.1 route until the handshake watchdog noticed,
-     * three to nine minutes later.
-     */
-    fun onTurnUnrecoverable(tunnelName: String, reason: String) {
-        Log.e(TAG, "TURN proxy unrecoverable on $tunnelName: $reason")
-        tearDownForTurnFailure(
-            tunnelName,
-            context.getString(R.string.turn_restart_failed_text),
-            // The restart loop can also lose to a credential failure it saw on the
-            // way, so let an explicit reason win over the generic restart verdict.
-            TunnelFailure.fromTurnReason(reason) ?: TunnelFailure.ProxyRestart,
-        )
-    }
-
-    /**
      * Notifies the user and brings down the tunnel TURN was carrying. [tunnelName]
      * narrows the choice when known; the session may already have been cleared by the
      * reporter, in which case the single UP tunnel is the one that lost its transport.

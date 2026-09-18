@@ -294,7 +294,6 @@
     <string name="tunnel_connection_lost_title">VPN отключён</string>
     <string name="tunnel_connection_lost_text">Соединение потеряно, восстановить не удалось.</string>
     <string name="turn_fatal_text">Не удалось получить данные для подключения: капча не решается или звонок больше недоступен. Попробуйте подключиться позже.</string>
-    <string name="turn_restart_failed_text">Не удалось восстановить подключение после смены сети. Попробуйте подключиться заново.</string>
 
     <!-- Captcha -->
     <string name="captcha_error">Не удалось решить капчу. Попробуйте снова.</string>
@@ -412,7 +411,6 @@
     <string name="wgk_status_sub_failed_call_auth">Звонок требует входа — обновите конфиг</string>
     <string name="wgk_status_sub_failed_captcha">Капча не пройдена — попробуйте позже</string>
     <string name="wgk_status_sub_failed_creds">Нет данных для подключения — позже</string>
-    <string name="wgk_status_sub_failed_restart">Сеть сменилась — подключитесь заново</string>
 
     <!-- Chip under the connect button while internet sharing is up. -->
     <string name="wgk_tether_chip">Раздача · %1$d</string>
