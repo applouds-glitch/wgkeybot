@@ -41,8 +41,8 @@ func TestDispatchSkipsStaleStream(t *testing.T) {
 	}
 }
 
-// Every stream silent means the uplink is down, not a relay: the rotation
-// falls back to the ordinary round-robin instead of dropping.
+// Every stream silent leaves no better stream to prefer: the rotation falls
+// back to the ordinary round-robin instead of dropping.
 func TestDispatchFallsBackWhenAllStale(t *testing.T) {
 	now := time.Now()
 	old := now.Add(-2 * dispatchStaleAfter)
@@ -222,8 +222,8 @@ func TestStaleWatchLogsTransitionsOnce(t *testing.T) {
 	}
 }
 
-// Every ready stream silent at once is the uplink, and gets its own line so the
-// log distinguishes it from one dead allocation.
+// Every ready stream silent at once — the uplink, or the relay they all share —
+// gets its own line so the log distinguishes it from one dead allocation.
 func TestStaleWatchReportsWholeUplink(t *testing.T) {
 	now := time.Now()
 	a := dispatchStream(0, true, now, 8)

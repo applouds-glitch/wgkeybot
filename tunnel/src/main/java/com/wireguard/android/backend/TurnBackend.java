@@ -5,6 +5,7 @@
 
 package com.wireguard.android.backend;
 
+import android.net.Network;
 import android.net.VpnService;
 import androidx.annotation.Nullable;
 import android.util.Log;
@@ -336,11 +337,40 @@ public final class TurnBackend {
             String peerType,
             int streamsPerCred,
             int watchdogTimeout,
-            String wrapKey,
-            long networkHandle
+            String wrapKey
     );
     public static native void wgTurnProxyStop();
     public static native void wgNotifyNetworkChange();
+
+    /**
+     * Re-points the native socket binding at the current physical network.
+     *
+     * The only writer of that binding: neither {@link #wgTurnProxyStart} nor
+     * {@link #wgTurnProxyStop} touches it. They used to, and a start that spent
+     * minutes in its retry loop kept re-stamping the handle it was handed when
+     * the loop began — so a WiFi↔cellular handover mid-start put the dialer back
+     * on the network that had just died, and every dial after it bound to a dead
+     * Network, failed, and left the socket protected but unbound.
+     *
+     * The {@link Network} is passed as the object, not looked up from the handle:
+     * resolving a handle cost native a getAllNetworks() scan under the lock that
+     * every socket-protecting worker contends for, and it failed outright for a
+     * network that disappeared between the monitor seeing it and this call.
+     * {@code networkHandle} is carried alongside only to dedupe and to name the
+     * network in the native log; callers pass the handle of {@code network}, or 0.
+     *
+     * {@code dnsServers} — comma-separated, possibly empty — moves with it, because
+     * the resolver has to follow the network for the same reason the binding does.
+     * It used to be read inside {@link #wgTurnProxyStart} from that call's own
+     * network, so after a handover the resolver kept the dead network's servers at
+     * the head of its list until the proxy restarted.
+     *
+     * Callers push the undebounced monitor path here unconditionally — native owns
+     * the comparison. A null {@code network} means no physical path is available;
+     * sockets then stay protected but unbound, which leaves them on the system
+     * default route.
+     */
+    public static native void wgSetNetwork(@Nullable Network network, long networkHandle, String dnsServers);
 
     /**
      * Reports whether Android currently has a validated physical upstream.
@@ -349,7 +379,6 @@ public final class TurnBackend {
      * rate-limited probe remains available for recovery.
      */
     public static native void wgSetNetworkAvailable(int available);
-    public static native String wgGetNetworkDnsServers(long networkHandle);
 
     /**
      * Starts the internet-sharing proxy on the access point interface.

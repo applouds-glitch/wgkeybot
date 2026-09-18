@@ -115,3 +115,35 @@ func TestAllocateMismatchRotatesCredentials(t *testing.T) {
 		t.Fatalf("437 should rotate the credential without the quota cooldown: %v", err)
 	}
 }
+
+// 486 is the credential's quota on this relay, not the relay's health: it
+// rotates the credential and must leave the server's streak alone. Any other
+// refusal still counts, which is also what shows the check below can see one.
+func TestQuotaRefusalIsNotAServerFailure(t *testing.T) {
+	for _, tc := range []struct {
+		code   stun.ErrorCode
+		strike bool
+	}{
+		{stun.CodeAllocQuotaReached, false},
+		{stun.CodeForbidden, true},
+	} {
+		t.Run(fmt.Sprint(tc.code), func(t *testing.T) {
+			pc, _ := startInitialRefusalServer(t, 100, tc.code)
+			resetServerHealth()
+			addr := pc.LocalAddr().String()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if _, _, _, _, _, err := dialAndAllocate(ctx, &stream{}, t.Name(), "pass", addr, WorkerGroupConfig{UseUDP: true}); err == nil {
+				t.Fatal("refused Allocate succeeded")
+			}
+
+			serverHealthState.Lock()
+			h := serverHealthState.byAddr[addr]
+			struck := h != nil && h.failures > 0
+			serverHealthState.Unlock()
+			if struck != tc.strike {
+				t.Fatalf("refusal %d: server struck=%v, want %v", tc.code, struck, tc.strike)
+			}
+		})
+	}
+}

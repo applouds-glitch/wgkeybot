@@ -10,7 +10,6 @@ package main
 #include <stdlib.h>
 #include <android/log.h>
 extern int wgProtectSocket(int fd);
-extern const char* getNetworkDnsServers(long long network_handle);
 */
 import "C"
 
@@ -26,7 +25,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/cbeuw/connutil"
 	"github.com/google/uuid"
@@ -103,6 +101,31 @@ func clearTransientState() {
 	turnLog("[PROXY] Transient state cleared (DNS; creds preserved)")
 }
 
+// wgSetSystemDns points the resolver at the DNS servers of the physical network
+// the Android side has just published, alongside the Network itself.
+//
+// The list used to be read once inside wgTurnProxyStart, from the handle that
+// caller captured before its retry loop — so after a handover the resolver kept
+// the dead network's servers at the head of its list until the proxy restarted,
+// and a start could overwrite a fresher list with a staler one for exactly the
+// reason the socket binding could. Both now have the same owner: wgSetNetwork.
+//
+// An empty list is meaningful and is not ignored: it leaves the predefined public
+// resolvers alone, which is the right answer for a network that advertises none.
+// Blank entries are dropped so a trailing comma cannot become a server with no
+// address — every lookup would then spend a slot failing on it.
+//
+//export wgSetSystemDns
+func wgSetSystemDns(dnsC *C.char) {
+	var servers []string
+	for _, ip := range strings.Split(C.GoString(dnsC), ",") {
+		if ip = strings.TrimSpace(ip); ip != "" {
+			servers = append(servers, ip)
+		}
+	}
+	InitSystemDns(servers)
+}
+
 //export wgNotifyNetworkChange
 func wgNotifyNetworkChange() {
 	resetNetworkPathProof()
@@ -152,6 +175,12 @@ type stream struct {
 	// reads it to keep chunks off a stream whose relay has gone quiet (see
 	// dispatchStale); the transports own it and replace it per session.
 	activity atomic.Pointer[streamActivity]
+
+	// control is the downlink-feedback (WGH1) state of the transport attempt
+	// running now; nil when feedback is off or between attempts. See
+	// downlink_feedback.go.
+	control         atomic.Pointer[clientStreamControl]
+	feedbackEnabled bool
 
 	// wrapTx carries this stream's outbound WRAP SSRC and counter. Both are
 	// per-stream, so each stream (and each device) uses a distinct keystream
@@ -418,6 +447,10 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 
 	activity := newStreamActivity(time.Now(), s.kaPhase)
 	s.activity.Store(activity)
+	// Downlink feedback (WGH1) for this attempt only: a fresh nonce, and no
+	// capability until this very transport hears a matching ACK.
+	control := s.newFeedbackControl()
+	defer s.control.CompareAndSwap(control, nil)
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -498,7 +531,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				if m == 0 {
 					continue
 				}
-				if isStunKeepalive(plain[:m]) {
+				if control.receive(plain[:m]) || isStunKeepalive(plain[:m]) {
 					continue
 				}
 				a := s.peer.Load()
@@ -517,7 +550,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				activity.noteRx(time.Now())
 				markNetworkPathProven(s.networkGeneration)
 				proven()
-				if isStunKeepalive(wire[:n]) {
+				if control.receive(wire[:n]) || isStunKeepalive(wire[:n]) {
 					continue
 				}
 				a := s.peer.Load()
@@ -545,7 +578,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		s.runKeepalive(sCtx, activity, reportErr, func(tick int) error {
 			var sendErr error
 			if hasWrap {
-				if enc, err := wrapPacket(s.wrapKey, stunBindingIndication, s.wrapTx); err == nil {
+				if enc, err := wrapPacket(s.wrapKey, control.keepalive(), s.wrapTx); err == nil {
 					_, sendErr = relayConn.WriteTo(enc, peer)
 				} else {
 					sendErr = err
@@ -556,7 +589,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 					}
 				}
 			} else {
-				_, sendErr = relayConn.WriteTo(stunBindingIndication, peer)
+				_, sendErr = relayConn.WriteTo(control.keepalive(), peer)
 			}
 			if sessionHS != nil {
 				if hasWrap {
@@ -603,6 +636,11 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	}
 
 	s.ready.Store(true)
+	// Ask right away rather than at the next grid tick, so the reporter can use
+	// this stream as soon as the server has answered.
+	if control != nil {
+		s.enqueueControl(control.keepalive())
+	}
 	s.okFunc()
 	wg.Wait()
 	select {
@@ -845,8 +883,17 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// the previous one's liveness clock (see dispatchStale).
 	activity := newStreamActivity(time.Now(), s.kaPhase)
 	s.activity.Store(activity)
+	// Downlink feedback (WGH1) for this attempt only: a fresh nonce, and no
+	// capability until this very transport hears a matching ACK.
+	control := s.newFeedbackControl()
+	defer s.control.CompareAndSwap(control, nil)
 
 	s.ready.Store(true)
+	// Ask right away rather than at the next grid tick, so the reporter can use
+	// this stream as soon as the server has answered.
+	if control != nil {
+		s.enqueueControl(control.keepalive())
+	}
 	s.okFunc()
 
 	wg.Add(3)
@@ -887,7 +934,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			// is valid inbound liveness evidence.
 			activity.noteRx(time.Now())
 			markNetworkPathProven(s.networkGeneration)
-			if isStunKeepalive(buf[:n]) {
+			if control.receive(buf[:n]) || isStunKeepalive(buf[:n]) {
 				continue
 			}
 			if n == 0 {
@@ -915,7 +962,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		defer wg.Done()
 		defer sCancel()
 		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
-			_, err := dtlsConn.Write(stunBindingIndication)
+			_, err := dtlsConn.Write(control.keepalive())
 			return err
 		})
 	}()
@@ -998,8 +1045,17 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// the previous one's liveness clock (see dispatchStale).
 	activity := newStreamActivity(time.Now(), s.kaPhase)
 	s.activity.Store(activity)
+	// Downlink feedback (WGH1) for this attempt only: a fresh nonce, and no
+	// capability until this very transport hears a matching ACK.
+	control := s.newFeedbackControl()
+	defer s.control.CompareAndSwap(control, nil)
 
 	s.ready.Store(true)
+	// Ask right away rather than at the next grid tick, so the reporter can use
+	// this stream as soon as the server has answered.
+	if control != nil {
+		s.enqueueControl(control.keepalive())
+	}
 	s.okFunc()
 
 	var wg sync.WaitGroup
@@ -1041,7 +1097,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 			// srtpConn.Read has already authenticated and decrypted this packet.
 			activity.noteRx(time.Now())
 			markNetworkPathProven(s.networkGeneration)
-			if isStunKeepalive(buf[:n]) {
+			if control.receive(buf[:n]) || isStunKeepalive(buf[:n]) {
 				continue
 			}
 			if n == 0 {
@@ -1068,7 +1124,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 		defer wg.Done()
 		defer sCancel()
 		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
-			_, err := srtpConn.Write(stunBindingIndication)
+			_, err := srtpConn.Write(control.keepalive())
 			return err
 		})
 	}()
@@ -1094,9 +1150,25 @@ var globalGetCreds getCredsFunc
 //export wgSetNetworkAvailable
 func wgSetNetworkAvailable(available C.int) {
 	setNetworkAvailable(available != 0)
-	validated, proven, effective, remaining := networkAvailabilitySnapshot()
-	turnLog("[PROXY] AndroidValidated=%t transportProven=%t effectiveAvailable=%t proofTTL=%v",
-		validated, proven, effective, remaining.Round(time.Second))
+	logNetworkAvailability()
+}
+
+// wgSetPhysicalPath is the park/unpark half of wgSetNetwork: 0 when Android has
+// no physical network at all, which parks every worker at the network gate until
+// one returns (see setPhysicalPath). Logged only on a change, because it arrives
+// with every path update, not just with the ones that flip it.
+//
+//export wgSetPhysicalPath
+func wgSetPhysicalPath(present C.int) {
+	if setPhysicalPath(present != 0) {
+		logNetworkAvailability()
+	}
+}
+
+func logNetworkAvailability() {
+	path, validated, proven, effective, remaining := networkAvailabilitySnapshot()
+	turnLog("[PROXY] PhysicalPath=%t AndroidValidated=%t transportProven=%t effectiveAvailable=%t proofTTL=%v",
+		path, validated, proven, effective, remaining.Round(time.Second))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1126,19 +1198,15 @@ func parseLinks(raw string, maxLinks int) []string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 //export wgTurnProxyStart
-func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char, networkHandleC C.longlong) int32 {
+func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char) int32 {
 	networkGeneration := beginNetworkPathGeneration()
 	clearTransientState()    // flush DNS without clearing credential caches
 	resetServerHealth()      // new credentials, usually a new server list
 	resetWorkerFatalState(0) // re-armed with the real worker count in StartTunnelGroups
 
-	if networkHandleC != 0 {
-		if dnsStr := C.getNetworkDnsServers(C.longlong(networkHandleC)); dnsStr != nil {
-			dnsGo := C.GoString(dnsStr)
-			C.free(unsafe.Pointer(dnsStr))
-			InitSystemDns(strings.Split(dnsGo, ","))
-		}
-	}
+	// The system DNS list is not read here: it belongs to wgSetNetwork, which has
+	// the current network rather than the one this call was handed before its
+	// retry loop.
 
 	peerAddr := C.GoString(peerAddrC)
 	vklink := C.GoString(vklinkC)

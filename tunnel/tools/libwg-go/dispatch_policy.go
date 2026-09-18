@@ -74,9 +74,12 @@ func (r *chunkRotor) advance() {
 // per transition. Skipping a stream is deliberately quiet (it is reversible and
 // costs nothing), but without a trace the first sign of a relay that went quiet
 // was the dead-stream detector 90s later — and a relay outage looked exactly
-// like an uplink outage until then. The "every stream" line is what tells them
-// apart: one dead allocation stales one stream while its siblings keep hearing
-// echoes; a dead uplink stales all of them at once.
+// like an uplink outage until then. The per-stream lines tell one dead
+// allocation from the rest: it stales one stream while its siblings keep
+// hearing echoes. The "every stream" line says only that all of them went
+// quiet, not where: all streams share one relay (assignServers), so a dead
+// uplink and a relay whose path went dark look the same from here — field log
+// 18.09 had that line while the other relay was answering Allocates in 200ms.
 type staleWatch struct {
 	stale    []bool
 	allStale bool
@@ -125,7 +128,7 @@ func (w *staleWatch) observe(streams []*stream, now time.Time) []string {
 	if allStale != w.allStale {
 		w.allStale = allStale
 		if allStale {
-			lines = append(lines, fmt.Sprintf("[DISPATCH] every ready stream (%d) is silent — the uplink is dark, not a relay; dispatching to all of them", ready))
+			lines = append(lines, fmt.Sprintf("[DISPATCH] every ready stream (%d) is silent — the uplink or the relay they share is dark; dispatching to all of them", ready))
 		} else if ready > 0 {
 			lines = append(lines, fmt.Sprintf("[DISPATCH] relay echoes are back on %d of %d streams", ready-stale, ready))
 		}

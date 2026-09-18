@@ -31,6 +31,7 @@ import com.wireguard.android.turn.TurnProxyManager
 import com.wireguard.android.turn.TurnSettingsStore
 import com.wireguard.android.widget.WidgetStateObserver
 import com.wireguard.android.util.AuthStore
+import com.wireguard.android.util.PersistentLog
 import com.wireguard.android.util.UserKnobs
 import com.wireguard.android.util.applicationScope
 import kotlinx.coroutines.CompletableDeferred
@@ -43,6 +44,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import java.io.File
 import java.lang.ref.WeakReference
 import java.util.Locale
 
@@ -64,6 +66,7 @@ class Application : android.app.Application() {
     private lateinit var turnProxyManager: TurnProxyManager
     private lateinit var tunnelStateTracker: TunnelStateTracker
     private lateinit var tetherManager: TetherManager
+    private lateinit var persistentLog: PersistentLog
 
     private fun determineBackend(): Backend {
         val backend = GoBackend(applicationContext)
@@ -74,6 +77,10 @@ class Application : android.app.Application() {
     override fun onCreate() {
         Log.i(TAG, USER_AGENT)
         super.onCreate()
+
+        // First, so it is running before anything worth keeping is logged. It
+        // replays what this pid logged so far, the line above included.
+        persistentLog = PersistentLog(File(noBackupFilesDir, "logs")).also { it.start(coroutineScope) }
 
         if (BuildConfig.DEBUG) {
             WebView.setWebContentsDebuggingEnabled(true)
@@ -255,6 +262,8 @@ class Application : android.app.Application() {
         fun getTunnelStateTracker() = get().tunnelStateTracker
 
         fun getTetherManager() = get().tetherManager
+
+        fun getPersistentLog() = get().persistentLog
 
         fun getCoroutineScope() = get().coroutineScope
     }

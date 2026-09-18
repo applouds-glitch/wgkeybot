@@ -21,11 +21,12 @@ extern int wgGetSocketV4(int handle);
 extern int wgGetSocketV6(int handle);
 extern char *wgGetConfig(int handle);
 extern char *wgVersion();
-extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, const char *mode, int n, int udp, const char *listen_addr, const char *turn_ip, int turn_port, const char *peer_type, int streams_per_cred, int watchdog_timeout, const char *wrap_key, long long network_handle);
+extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, const char *mode, int n, int udp, const char *listen_addr, const char *turn_ip, int turn_port, const char *peer_type, int streams_per_cred, int watchdog_timeout, const char *wrap_key);
 extern void wgTurnProxyStop();
 extern void wgNotifyNetworkChange();
 extern void wgSetNetworkAvailable(int available);
-extern const char* getNetworkDnsServers(long long network_handle);
+extern void wgSetSystemDns(const char *dns_servers);
+extern void wgSetPhysicalPath(int present);
 extern int wgTetherStart(const char *bind_ip, int port, const char *dns_servers, const char *tunnel_addrs, const char *routing_dir, const char *direct_dns);
 extern void wgTetherStop(void);
 extern char *wgTetherStats(void);
@@ -42,14 +43,9 @@ static jmethodID file_descriptor_init;
 static jclass connectivity_manager_class_global;
 static jclass network_class_global;
 static jclass file_descriptor_class_global;
-static jclass link_properties_class_global;
-static jclass inet_address_class_global;
 static jobject connectivity_manager_instance_global;
 static jobject current_network_global = NULL;
 static jlong current_network_handle = 0;
-static jmethodID get_link_properties_method;
-static jmethodID get_dns_servers_method;
-static jmethodID inet_address_get_host_method;
 
 // Captcha handler
 static jclass turn_backend_class_global = NULL;
@@ -71,37 +67,40 @@ static jmethodID on_tether_stopped_method = NULL;
 // WebView blocks up to 120s): snapshot, unlock, then call.
 static pthread_mutex_t jni_globals_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Helper to update the cached Network object. Caller must hold jni_globals_mutex.
-static void update_current_network_locked(JNIEnv *env, jlong handle)
+// Replaces the cached physical Network. Caller must hold jni_globals_mutex.
+//
+// The Network arrives as the object the Android side already holds. It used to
+// arrive as a handle, which this function resolved with a getAllNetworks() binder
+// scan — run under this very mutex, so it stalled every wgProtectSocket in flight,
+// on a path that fires during a handover, which is exactly when workers are
+// dialing. The scan also had a failure mode of its own: a network that went away
+// between the monitor seeing it and this call resolved to nothing, and the dials
+// went out unbound with only a WARN to say so. Holding the object removes both,
+// and removes the dependency on a registered ConnectivityManager: the cache is now
+// correct even while no VpnService exists.
+//
+// The handle rides along for two things only — deduping, and naming the network in
+// the log. Idempotent: this is where "did anything change?" is answered, so no
+// caller has to keep a copy of the answer.
+static void set_current_network_locked(JNIEnv *env, jobject network, jlong handle)
 {
+	if (!network)
+		handle = 0;
+	if (handle == current_network_handle && (handle == 0 || current_network_global))
+		return;
+
 	if (current_network_global) {
 		(*env)->DeleteGlobalRef(env, current_network_global);
 		current_network_global = NULL;
 	}
 	current_network_handle = handle;
 
-	if (handle == 0 || !connectivity_manager_instance_global || !get_all_networks_method || !get_network_handle_method)
-		return;
+	if (network)
+		current_network_global = (*env)->NewGlobalRef(env, network);
 
-	jobjectArray networks = (jobjectArray)(*env)->CallObjectMethod(env, connectivity_manager_instance_global, get_all_networks_method);
-	if (networks) {
-		jsize len = (*env)->GetArrayLength(env, networks);
-		for (jsize i = 0; i < len; i++) {
-			jobject network_obj = (*env)->GetObjectArrayElement(env, networks, i);
-			if (handle == (*env)->CallLongMethod(env, network_obj, get_network_handle_method)) {
-				current_network_global = (*env)->NewGlobalRef(env, network_obj);
-				(*env)->DeleteLocalRef(env, network_obj);
-				break;
-			}
-			(*env)->DeleteLocalRef(env, network_obj);
-		}
-		(*env)->DeleteLocalRef(env, networks);
-	}
-	if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-	
-	if (!current_network_global) {
-		__android_log_print(ANDROID_LOG_WARN, "WireGuard/JNI", "update_current_network: FAILED - network not found for handle=%lld", (long long)handle);
-	}
+	__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI",
+		"wgSetNetwork: dials now bind to net %lld%s", (long long)handle,
+		current_network_global ? "" : " (none: protected but unbound)");
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved)
@@ -127,19 +126,14 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetVpnSe
 		if (network_class_global) (*env)->DeleteGlobalRef(env, network_class_global);
 		if (file_descriptor_class_global) (*env)->DeleteGlobalRef(env, file_descriptor_class_global);
 		if (connectivity_manager_instance_global) (*env)->DeleteGlobalRef(env, connectivity_manager_instance_global);
-		if (current_network_global) (*env)->DeleteGlobalRef(env, current_network_global);
-		if (link_properties_class_global) (*env)->DeleteGlobalRef(env, link_properties_class_global);
-		if (inet_address_class_global) (*env)->DeleteGlobalRef(env, inet_address_class_global);
 		connectivity_manager_class_global = NULL;
 		network_class_global = NULL;
 		file_descriptor_class_global = NULL;
 		connectivity_manager_instance_global = NULL;
-		current_network_global = NULL;
-		link_properties_class_global = NULL;
-		inet_address_class_global = NULL;
-		get_link_properties_method = NULL;
-		get_dns_servers_method = NULL;
-		inet_address_get_host_method = NULL;
+		// NOTE: current_network_global/_handle are deliberately left alone. The
+		// Network describes the device's connectivity, not this VpnService, and
+		// nothing about it needs re-registering — so it stays valid across a
+		// teardown instead of having to be resolved again afterwards.
 		// NOTE: Do NOT reset turn_backend_class_global / on_captcha_required_method here.
 		// TurnBackend is a Java class independent of VpnService lifecycle.
 	}
@@ -204,23 +198,6 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetVpnSe
 		network_class_global = (*env)->NewGlobalRef(env, n_class);
 		get_network_handle_method = (*env)->GetMethodID(env, network_class_global, "getNetworkHandle", "()J");
 		bind_socket_method = (*env)->GetMethodID(env, network_class_global, "bindSocket", "(Ljava/io/FileDescriptor;)V");
-
-		// Cache LinkProperties and getDnsServers
-		jclass lp_class = (*env)->FindClass(env, "android/net/LinkProperties");
-		if (lp_class) {
-			link_properties_class_global = (*env)->NewGlobalRef(env, lp_class);
-			get_dns_servers_method = (*env)->GetMethodID(env, link_properties_class_global, "getDnsServers", "()Ljava/util/List;");
-			(*env)->DeleteLocalRef(env, lp_class);
-		}
-		get_link_properties_method = (*env)->GetMethodID(env, connectivity_manager_class_global, "getLinkProperties", "(Landroid/net/Network;)Landroid/net/LinkProperties;");
-
-		// Cache InetAddress.getHostAddress()
-		jclass ia_class = (*env)->FindClass(env, "java/net/InetAddress");
-		if (ia_class) {
-			inet_address_class_global = (*env)->NewGlobalRef(env, ia_class);
-			inet_address_get_host_method = (*env)->GetMethodID(env, inet_address_class_global, "getHostAddress", "()Ljava/lang/String;");
-			(*env)->DeleteLocalRef(env, ia_class);
-		}
 
 		jclass fd_class = (*env)->FindClass(env, "java/io/FileDescriptor");
 		file_descriptor_class_global = (*env)->NewGlobalRef(env, fd_class);
@@ -482,7 +459,7 @@ JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_GoBackend_wgVersion
 	return ret;
 }
 
-JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jstring mode, jint n, jint useUdp, jstring listen_addr, jstring turn_ip, jint turn_port, jstring peer_type, jint streams_per_cred, jint watchdog_timeout, jstring wrap_key, jlong network_handle)
+JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jstring mode, jint n, jint useUdp, jstring listen_addr, jstring turn_ip, jint turn_port, jstring peer_type, jint streams_per_cred, jint watchdog_timeout, jstring wrap_key)
 {
 	const char *peer_addr_jni = (*env)->GetStringUTFChars(env, peer_addr, 0);
 	const char *vklink_jni = (*env)->GetStringUTFChars(env, vklink, 0);
@@ -501,11 +478,13 @@ JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProx
 	char *turn_ip_str = turn_ip_jni ? strdup(turn_ip_jni) : NULL;
 	char *peer_type_str = peer_type_jni ? strdup(peer_type_jni) : NULL;
 
-	pthread_mutex_lock(&jni_globals_mutex);
-	update_current_network_locked(env, network_handle);
-	pthread_mutex_unlock(&jni_globals_mutex);
-
-	int ret = wgTurnProxyStart(peer_addr_str, vklink_str, mode_str, (int)n, (int)useUdp, listen_addr_str, turn_ip_str, (int)turn_port, peer_type_str, (int)streams_per_cred, (int)watchdog_timeout,wrap_key_str, (long long)network_handle);
+	// Nothing about the physical network is passed or stamped here. A start can
+	// spend minutes in its caller's retry loop (captcha ladder, stream-count
+	// fallbacks), so anything it carried would be whatever was current when the
+	// loop began — and applying that on every attempt put the dialer, and the
+	// resolver, back on the network the session started on. Both follow
+	// wgSetNetwork() instead.
+	int ret = wgTurnProxyStart(peer_addr_str, vklink_str, mode_str, (int)n, (int)useUdp, listen_addr_str, turn_ip_str, (int)turn_port, peer_type_str, (int)streams_per_cred, (int)watchdog_timeout,wrap_key_str);
 
 	(*env)->ReleaseStringUTFChars(env, peer_addr, peer_addr_jni);
 	(*env)->ReleaseStringUTFChars(env, vklink, vklink_jni);
@@ -582,214 +561,65 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgNotifyNe
 	wgNotifyNetworkChange();
 }
 
+// Re-points protect_and_bind() at the physical network the proxy should dial
+// over, the moment Android publishes it. The sole writer of that binding:
+// wgTurnProxyStart/Stop deliberately leave it alone.
+//
+// Called from the raw, undebounced side of PhysicalNetworkMonitor, so the dialer
+// learns about a handover in milliseconds while the restart keeps waiting for the
+// path to settle. Before that, the binding only moved when the proxy restarted, so
+// every dial in between — the whole connect grace window, and every retry of a
+// start still working through the captcha ladder — bound to the network the
+// session began on. By then a dead one: the bind threw, the exception was cleared
+// below in protect_and_bind, and the socket went out protected-but-unbound.
+//
+// network == NULL means "no physical path": the socket is still protected, just
+// deliberately left unbound, which leaves it on the system default route.
+//
+// dns_servers rides along because the resolver has to follow the network for the
+// same reason the binding does — a handover leaves the dead network's resolvers
+// at the head of the list otherwise. It is pushed outside the lock: Go must never
+// be called with jni_globals_mutex held, and nothing here needs it.
+JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetwork(JNIEnv *env, jclass c, jobject network, jlong handle, jstring dns_servers)
+{
+	pthread_mutex_lock(&jni_globals_mutex);
+	set_current_network_locked(env, network, handle);
+	pthread_mutex_unlock(&jni_globals_mutex);
+
+	// Duplicated for the same reason wgTurnProxyStart duplicates its strings:
+	// JNI-tagged pointers must not be handed to Go under MTE.
+	const char *dns_jni = dns_servers ? (*env)->GetStringUTFChars(env, dns_servers, 0) : NULL;
+	char *dns_str = dns_jni ? strdup(dns_jni) : NULL;
+	if (dns_jni)
+		(*env)->ReleaseStringUTFChars(env, dns_servers, dns_jni);
+	wgSetSystemDns(dns_str ? dns_str : "");
+	free(dns_str);
+
+	// Last, so that workers woken by a returning path already resolve against its
+	// DNS servers. With no path at all this parks every worker at the network
+	// gate: until then the gate stayed open on transport proof earned over the
+	// network that had just vanished, and the workers kept dialing nothing.
+	wgSetPhysicalPath(network != NULL);
+}
+
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetworkAvailable(JNIEnv *env, jclass c, jint available)
 {
 	wgSetNetworkAvailable(available);
 }
 
-JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_TurnBackend_wgGetNetworkDnsServers(JNIEnv *env, jclass c, jlong network_handle)
-{
-	pthread_mutex_lock(&jni_globals_mutex);
-	jobject cm = connectivity_manager_instance_global ? (*env)->NewLocalRef(env, connectivity_manager_instance_global) : NULL;
-	jmethodID all_networks = get_all_networks_method;
-	jmethodID network_handle_of = get_network_handle_method;
-	jmethodID link_properties_of = get_link_properties_method;
-	jmethodID dns_servers_of = get_dns_servers_method;
-	jmethodID host_address_of = inet_address_get_host_method;
-	pthread_mutex_unlock(&jni_globals_mutex);
-
-	if (!cm || !all_networks || !network_handle_of || !link_properties_of || !dns_servers_of || !host_address_of) {
-		if (cm) (*env)->DeleteLocalRef(env, cm);
-		return NULL;
-	}
-
-	// Find the Network object by handle
-	jobject target_network = NULL;
-	jobjectArray networks = (jobjectArray)(*env)->CallObjectMethod(env, cm, all_networks);
-	if (networks) {
-		jsize len = (*env)->GetArrayLength(env, networks);
-		for (jsize i = 0; i < len; i++) {
-			jobject network_obj = (*env)->GetObjectArrayElement(env, networks, i);
-			if (network_handle == (*env)->CallLongMethod(env, network_obj, network_handle_of)) {
-				target_network = network_obj;
-				break;
-			}
-			(*env)->DeleteLocalRef(env, network_obj);
-		}
-		(*env)->DeleteLocalRef(env, networks);
-	}
-	if (!target_network) {
-		(*env)->DeleteLocalRef(env, cm);
-		return NULL;
-	}
-
-	// Get LinkProperties
-	jobject link_props = (*env)->CallObjectMethod(env, cm, link_properties_of, target_network);
-	(*env)->DeleteLocalRef(env, target_network);
-	(*env)->DeleteLocalRef(env, cm);
-	if (!link_props)
-		return NULL;
-
-	// Get DNS servers list
-	jobject dns_list = (*env)->CallObjectMethod(env, link_props, dns_servers_of);
-	(*env)->DeleteLocalRef(env, link_props);
-	if (!dns_list)
-		return NULL;
-
-	// Get List.size() and List.get() methods
-	jclass list_class = (*env)->GetObjectClass(env, dns_list);
-	jmethodID size_method = (*env)->GetMethodID(env, list_class, "size", "()I");
-	jmethodID get_method = (*env)->GetMethodID(env, list_class, "get", "(I)Ljava/lang/Object;");
-
-	jint count = (*env)->CallIntMethod(env, dns_list, size_method);
-	if (count <= 0) {
-		(*env)->DeleteLocalRef(env, list_class);
-		(*env)->DeleteLocalRef(env, dns_list);
-		return NULL;
-	}
-
-	// Build comma-separated string
-	char result[256] = {0};
-	int offset = 0;
-	for (jint i = 0; i < count && offset < (int)sizeof(result) - 16; i++) {
-		jobject inet_addr = (*env)->CallObjectMethod(env, dns_list, get_method, i);
-		if (inet_addr) {
-			jstring ip_str = (jstring)(*env)->CallObjectMethod(env, inet_addr, host_address_of);
-			if (ip_str) {
-				const char *ip_cstr = (*env)->GetStringUTFChars(env, ip_str, 0);
-				if (ip_cstr) {
-					if (offset > 0) result[offset++] = ',';
-					offset += snprintf(result + offset, sizeof(result) - offset, "%s", ip_cstr);
-					(*env)->ReleaseStringUTFChars(env, ip_str, ip_cstr);
-				} else {
-					(*env)->ExceptionClear(env);
-				}
-				(*env)->DeleteLocalRef(env, ip_str);
-			}
-			(*env)->DeleteLocalRef(env, inet_addr);
-		}
-	}
-
-	(*env)->DeleteLocalRef(env, list_class);
-	(*env)->DeleteLocalRef(env, dns_list);
-
-	if (offset == 0)
-		return NULL;
-
-	return (*env)->NewStringUTF(env, result);
-}
-
-// Called from Go to get system DNS servers for a given network handle.
-// Returns a malloc'd comma-separated string of DNS IPs, or NULL.
-const char* getNetworkDnsServers(long long network_handle)
-{
-	JNIEnv *env;
-	int attached = 0;
-	if ((*java_vm)->GetEnv(java_vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-		if ((*java_vm)->AttachCurrentThread(java_vm, &env, NULL) != JNI_OK)
-			return NULL;
-		attached = 1;
-	}
-
-	const char *result = NULL;
-	jobject cm = NULL;
-
-	pthread_mutex_lock(&jni_globals_mutex);
-	cm = connectivity_manager_instance_global ? (*env)->NewLocalRef(env, connectivity_manager_instance_global) : NULL;
-	jmethodID all_networks = get_all_networks_method;
-	jmethodID network_handle_of = get_network_handle_method;
-	jmethodID link_properties_of = get_link_properties_method;
-	jmethodID dns_servers_of = get_dns_servers_method;
-	jmethodID host_address_of = inet_address_get_host_method;
-	pthread_mutex_unlock(&jni_globals_mutex);
-
-	if (!cm || !all_networks || !network_handle_of || !link_properties_of || !dns_servers_of || !host_address_of)
-		goto cleanup;
-
-	// Find the Network object by handle
-	jobject target_network = NULL;
-	jobjectArray networks = (jobjectArray)(*env)->CallObjectMethod(env, cm, all_networks);
-	if (networks) {
-		jsize len = (*env)->GetArrayLength(env, networks);
-		for (jsize i = 0; i < len; i++) {
-			jobject network_obj = (*env)->GetObjectArrayElement(env, networks, i);
-			if (network_handle == (*env)->CallLongMethod(env, network_obj, network_handle_of)) {
-				target_network = network_obj;
-				break;
-			}
-			(*env)->DeleteLocalRef(env, network_obj);
-		}
-		(*env)->DeleteLocalRef(env, networks);
-	}
-	if (!target_network) goto cleanup;
-
-	// Get LinkProperties
-	jobject link_props = (*env)->CallObjectMethod(env, cm, link_properties_of, target_network);
-	(*env)->DeleteLocalRef(env, target_network);
-	if (!link_props) goto cleanup;
-
-	// Get DNS servers list
-	jobject dns_list = (jobject)(*env)->CallObjectMethod(env, link_props, dns_servers_of);
-	(*env)->DeleteLocalRef(env, link_props);
-	if (!dns_list) goto cleanup;
-
-	// Get List.size() and List.get() methods
-	jclass list_class = (*env)->GetObjectClass(env, dns_list);
-	jmethodID size_method = (*env)->GetMethodID(env, list_class, "size", "()I");
-	jmethodID get_method = (*env)->GetMethodID(env, list_class, "get", "(I)Ljava/lang/Object;");
-
-	jint count = (*env)->CallIntMethod(env, dns_list, size_method);
-	if (count <= 0) {
-		(*env)->DeleteLocalRef(env, list_class);
-		(*env)->DeleteLocalRef(env, dns_list);
-		goto cleanup;
-	}
-
-	// Build comma-separated string
-	char buf[256] = {0};
-	int offset = 0;
-	for (jint i = 0; i < count && offset < (int)sizeof(buf) - 16; i++) {
-		jobject inet_addr = (*env)->CallObjectMethod(env, dns_list, get_method, i);
-		if (inet_addr) {
-			jstring ip_str = (jstring)(*env)->CallObjectMethod(env, inet_addr, host_address_of);
-			if (ip_str) {
-				const char *ip_cstr = (*env)->GetStringUTFChars(env, ip_str, 0);
-				if (ip_cstr) {
-					if (offset > 0) buf[offset++] = ',';
-					offset += snprintf(buf + offset, sizeof(buf) - offset, "%s", ip_cstr);
-					(*env)->ReleaseStringUTFChars(env, ip_str, ip_cstr);
-				} else {
-					(*env)->ExceptionClear(env);
-				}
-				(*env)->DeleteLocalRef(env, ip_str);
-			}
-			(*env)->DeleteLocalRef(env, inet_addr);
-		}
-	}
-
-	(*env)->DeleteLocalRef(env, list_class);
-	(*env)->DeleteLocalRef(env, dns_list);
-
-	if (offset > 0) {
-		result = strdup(buf);
-	}
-
-cleanup:
-	if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-	if (cm) (*env)->DeleteLocalRef(env, cm);
-	if (attached) (*java_vm)->DetachCurrentThread(java_vm);
-	return result;
-}
-
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStop(JNIEnv *env, jclass c)
 {
-	// Drain the Go workers first, then drop the cached Network. Releasing it
-	// first left every still-running goroutine calling wgProtectSocket against a
-	// ref that was already deleted — for the whole (bounded) drain window.
+	// The cached Network outlives the proxy session on purpose: it describes the
+	// device's connectivity, not this session, and wgSetNetwork() replaces it the
+	// moment the monitor sees a different path. Dropping it here meant every stop
+	// — including the ones the start path makes between stream-count attempts —
+	// left the next dial unbound until something pushed the handle again, and
+	// nothing does until the network changes.
+	//
+	// If a drop ever comes back here it must run AFTER wgTurnProxyStop():
+	// releasing first left still-draining goroutines calling wgProtectSocket
+	// against a deleted ref for the whole drain window.
 	wgTurnProxyStop();
-	pthread_mutex_lock(&jni_globals_mutex);
-	update_current_network_locked(env, 0);
-	pthread_mutex_unlock(&jni_globals_mutex);
 }
 
 
