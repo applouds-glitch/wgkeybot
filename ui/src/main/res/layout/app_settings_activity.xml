@@ -97,6 +97,63 @@
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
 
+                    <!-- How the relays are reached. A card of its own rather than a
+                         third row above: it is a separate question from the mode
+                         (which protocol runs through the relay), and the two
+                         combine freely. -->
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
+                        android:layout_marginBottom="8dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:text="@string/wgk_relay_transport_title"
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/Widget.WGKeyBot.Card"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        app:cardCornerRadius="16dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical">
+
+                            <include
+                                android:id="@+id/wgk_transport_auto"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+
+                            <View
+                                android:layout_width="match_parent"
+                                android:layout_height="1dp"
+                                android:layout_marginStart="16dp"
+                                android:background="@color/wgk_outline_variant" />
+
+                            <include
+                                android:id="@+id/wgk_transport_udp"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+
+                            <View
+                                android:layout_width="match_parent"
+                                android:layout_height="1dp"
+                                android:layout_marginStart="16dp"
+                                android:background="@color/wgk_outline_variant" />
+
+                            <include
+                                android:id="@+id/wgk_transport_tcp"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
                     <!-- Appearance. This was an unlabelled icon in the connect
                          screen's toolbar — a control you had to tap to find out
                          what it did, next to the gear that leads here. As a row

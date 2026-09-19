@@ -112,6 +112,9 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 	// allocating carries the first relay's Allocate slot to the loop below at the
 	// moment its request goes out: that is when its head start begins.
 	allocating := make(chan *allocSlot, 1)
+	// Over TCP the relay can be silent a step earlier, on the connect, and gets a
+	// head start for that too.
+	connecting := make(chan struct{}, 1)
 
 	launch := func(addr string) {
 		wg.Add(1)
@@ -120,6 +123,7 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			opts := dialOpts{session: ctx}
 			if addr == addrs[0] {
 				opts.allocating = func(slot *allocSlot) { allocating <- slot }
+				opts.connecting = func() { connecting <- struct{}{} }
 			}
 			client, raw, relay, rtt, perm, err := dialAndAllocate(raceCtx, s, user, pass, addr, cfg, opts)
 			if err != nil {
@@ -167,6 +171,16 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			headStartTimer.Stop()
 		}
 	}()
+	// One clock, restarted per step: the TCP connect (if there is one), then the
+	// Allocate. A relay that took its time over the connect has still answered,
+	// and its Allocate gets a full head start of its own.
+	startHeadStart := func() {
+		if headStartTimer != nil {
+			headStartTimer.Stop()
+		}
+		headStartTimer = time.NewTimer(relayHeadStart)
+		headStart = headStartTimer.C
+	}
 
 	var lastErr error
 	errCount := 0
@@ -174,10 +188,13 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 		select {
 		case w := <-winCh:
 			return s.runSession(ctx, w, cfg)
+		case <-connecting:
+			if !fannedOut {
+				startHeadStart()
+			}
 		case headSlot = <-allocating:
 			if !fannedOut {
-				headStartTimer = time.NewTimer(relayHeadStart)
-				headStart = headStartTimer.C
+				startHeadStart()
 			}
 		case <-headStart:
 			headStart = nil
@@ -186,10 +203,16 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			}
 			// Silent, not refused: race the rest now, and let the next worker in
 			// this relay's queue start its own clock. The Allocate itself runs
-			// on — see relayHeadStart.
-			turnLog("[STREAM %d] %s has not answered Allocate for %v — racing %v (group %d)",
-				s.id, addrs[0], relayHeadStart, addrs[1:], cfg.GroupID)
-			headSlot.release()
+			// on — see relayHeadStart. A TCP connect that is still hanging holds
+			// no slot yet; it runs on as well, and is closed if it loses.
+			if headSlot != nil {
+				turnLog("[STREAM %d] %s has not answered Allocate for %v — racing %v (group %d)",
+					s.id, addrs[0], relayHeadStart, addrs[1:], cfg.GroupID)
+				headSlot.release()
+			} else {
+				turnLog("[STREAM %d] %s has not accepted the TCP connection for %v — racing %v (group %d)",
+					s.id, addrs[0], relayHeadStart, addrs[1:], cfg.GroupID)
+			}
 			fanOut()
 		case err := <-errCh:
 			lastErr = err
@@ -252,6 +275,9 @@ type dialOpts struct {
 	// allocating is called once the dial holds its Allocate slot, just before
 	// the request goes out.
 	allocating func(*allocSlot)
+	// connecting is called just before a TCP connect to the relay starts. Over
+	// UDP there is no such moment: the "dial" sends nothing.
+	connecting func()
 }
 
 // dialAndAllocate dials one TURN server and performs the Allocate handshake,
@@ -267,7 +293,13 @@ type dialOpts struct {
 // candidates simply drop theirs — a permWatch owns no goroutine, so an unwatched
 // one costs nothing.
 func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cfg WorkerGroupConfig, opts dialOpts) (*turn.Client, net.Conn, net.PacketConn, time.Duration, *permWatch, error) {
-	turnLog("[STREAM %d] Dial TURN %s (group %d)", s.id, addr, cfg.GroupID)
+	// Decided per dial, not per proxy start — see relayTransportChoice.
+	overTCP := relayOverTCP(cfg)
+	if overTCP {
+		turnLog("[STREAM %d] Dial TURN %s over TCP (group %d)", s.id, addr, cfg.GroupID)
+	} else {
+		turnLog("[STREAM %d] Dial TURN %s (group %d)", s.id, addr, cfg.GroupID)
+	}
 	dialStart := time.Now()
 	perm := newPermWatch(s.id)
 
@@ -278,7 +310,7 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 
 	var turnConn net.PacketConn
 	var raw net.Conn
-	if cfg.UseUDP {
+	if !overTCP {
 		c, err := dialer.DialContext(ctx, "udp", addr)
 		if err != nil {
 			return nil, nil, nil, 0, nil, fmt.Errorf("TURN UDP dial: %w", err)
@@ -286,8 +318,22 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		raw = c
 		turnConn = &connectedUDPConn{c.(*net.UDPConn)}
 	} else {
-		c, err := dialer.DialContext(ctx, "tcp", addr)
+		if opts.connecting != nil {
+			opts.connecting()
+		}
+		c, err := connectRelayTCP(ctx, dialer, addr)
 		if err != nil {
+			// Over TCP the connect is the relay's first chance to be silent or to
+			// refuse, so it counts against the server on the same terms as a
+			// failed Allocate below. A connect that our own race cancelled does
+			// not: unlike an Allocate it really is cancelled, and says nothing.
+			session := opts.session
+			if session == nil {
+				session = ctx
+			}
+			if session.Err() == nil && ctx.Err() == nil {
+				noteServerFailure(addr)
+			}
 			return nil, nil, nil, 0, nil, fmt.Errorf("TURN TCP dial: %w", err)
 		}
 		raw = c

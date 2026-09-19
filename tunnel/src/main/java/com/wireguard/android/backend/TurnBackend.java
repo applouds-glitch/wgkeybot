@@ -368,8 +368,19 @@ public final class TurnBackend {
      * the comparison. A null {@code network} means no physical path is available;
      * sockets then stay protected but unbound, which leaves them on the system
      * default route.
+     *
+     * {@code relayTransport} is one of the {@code RELAY_TRANSPORT_*} values: how the
+     * TURN relays are reached over this network. It travels with the network because
+     * it is a property of it — on Rostelecom's mobile network UDP to the relays
+     * carries no session and TCP does — and native reads it on every dial, so a
+     * session that moves to such a network redials over TCP at once.
      */
-    public static native void wgSetNetwork(@Nullable Network network, long networkHandle, String dnsServers);
+    public static native void wgSetNetwork(@Nullable Network network, long networkHandle, String dnsServers, int relayTransport);
+
+    /** Relay transport as the tunnel config says ({@code #@wgt:UseUDP}). */
+    public static final int RELAY_TRANSPORT_AS_CONFIGURED = 0;
+    public static final int RELAY_TRANSPORT_UDP = 1;
+    public static final int RELAY_TRANSPORT_TCP = 2;
 
     /**
      * Forgets every cached TURN credential, so the next proxy start fetches a new

@@ -26,6 +26,7 @@ extern void wgTurnProxyStop();
 extern void wgTurnDropCredentials(void);
 extern void wgSetSystemDns(const char *dns_servers);
 extern void wgSetPhysicalNetwork(long long handle);
+extern void wgSetRelayTransport(int choice);
 extern int wgTetherStart(const char *bind_ip, int port, const char *dns_servers, const char *tunnel_addrs, const char *routing_dir, const char *direct_dns);
 extern void wgTetherStop(void);
 extern char *wgTetherStats(void);
@@ -574,7 +575,7 @@ JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTethe
 // same reason the binding does — a handover leaves the dead network's resolvers
 // at the head of the list otherwise. It is pushed outside the lock: Go must never
 // be called with jni_globals_mutex held, and nothing here needs it.
-JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetwork(JNIEnv *env, jclass c, jobject network, jlong handle, jstring dns_servers)
+JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetwork(JNIEnv *env, jclass c, jobject network, jlong handle, jstring dns_servers, jint relay_transport)
 {
 	pthread_mutex_lock(&jni_globals_mutex);
 	set_current_network_locked(env, network, handle);
@@ -588,6 +589,12 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetwo
 		(*env)->ReleaseStringUTFChars(env, dns_servers, dns_jni);
 	wgSetSystemDns(dns_str ? dns_str : "");
 	free(dns_str);
+
+	// How this network's relays are reached (UDP, or TCP where UDP carries no
+	// session) belongs to the network as much as its DNS servers do, and for the
+	// same reason comes before the gate opens: the dials a returning or a new
+	// network triggers must already go out the right way.
+	wgSetRelayTransport((int)relay_transport);
 
 	// Last, so that workers woken by a returning path already resolve against its
 	// DNS servers. With no path at all this parks every worker at the network

@@ -34,6 +34,7 @@ import com.wireguard.android.tether.TetherState
 import com.wireguard.android.tether.TetherToggle
 import com.wireguard.android.tether.messageRes
 import com.wireguard.android.turn.ConnectionMode
+import com.wireguard.android.turn.RelayTransport
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.applicationScope
 import com.wireguard.android.util.localeWrapped
@@ -88,6 +89,7 @@ class AppSettingsActivity : AppCompatActivity() {
         tether = TetherToggle(this, this) { renderTether(Application.getTetherManager().state.value) }
 
         bindConnectionMode()
+        bindRelayTransport()
         bindTheme()
         if (bindTether()) {
             observeTether()
@@ -151,6 +153,49 @@ class AppSettingsActivity : AppCompatActivity() {
         // The reserve transport is the non-default one, and it says so in warning
         // colour everywhere it shows: here, and on the gear in the main toolbar.
         binding.wgkChoiceReserve.select(reserve, R.color.wgk_warning)
+    }
+
+    // ── Relay transport ────────────────────────────────────────────────────────
+
+    /**
+     * Three choices, not a switch: the operator is recognised on its own, so there
+     * has to be a way to overrule it in either direction — TCP for a SIM the rule
+     * does not know or a router carrying one, UDP for an RTK SIM where the network
+     * is not whitelisted. See [RelayTransport].
+     */
+    private fun bindRelayTransport() {
+        binding.wgkTransportAuto.apply {
+            wgkChoiceTitle.setText(R.string.wgk_relay_transport_auto_value)
+            wgkChoiceDesc.setText(R.string.wgk_relay_transport_auto_desc)
+            wgkChoiceRoot.setOnClickListener { setRelayTransport(RelayTransport.Mode.AUTO) }
+        }
+        binding.wgkTransportUdp.apply {
+            wgkChoiceTitle.setText(R.string.wgk_relay_transport_udp_value)
+            wgkChoiceDesc.setText(R.string.wgk_relay_transport_udp_desc)
+            wgkChoiceRoot.setOnClickListener { setRelayTransport(RelayTransport.Mode.UDP) }
+        }
+        binding.wgkTransportTcp.apply {
+            wgkChoiceTitle.setText(R.string.wgk_relay_transport_tcp_value)
+            wgkChoiceDesc.setText(R.string.wgk_relay_transport_tcp_desc)
+            wgkChoiceRoot.setOnClickListener { setRelayTransport(RelayTransport.Mode.TCP) }
+        }
+        renderRelayTransport()
+    }
+
+    private fun setRelayTransport(mode: RelayTransport.Mode) {
+        if (RelayTransport.mode(this) == mode) return
+        RelayTransport.setMode(this, mode)
+        renderRelayTransport()
+        // Takes effect on the next dial, without a reconnect: see onRelayTransportChanged.
+        Application.getTurnProxyManager().onRelayTransportChanged()
+    }
+
+    private fun renderRelayTransport() {
+        val mode = RelayTransport.mode(this)
+        binding.wgkTransportAuto.select(mode == RelayTransport.Mode.AUTO, R.color.wgk_primary)
+        binding.wgkTransportUdp.select(mode == RelayTransport.Mode.UDP, R.color.wgk_primary)
+        // The slower transport, in the same warning colour as the fallback mode.
+        binding.wgkTransportTcp.select(mode == RelayTransport.Mode.TCP, R.color.wgk_warning)
     }
 
     private fun ViewWgkSettingsChoiceRowBinding.select(selected: Boolean, @ColorRes accent: Int) {

@@ -449,6 +449,13 @@
     <string name="wgk_connection_mode_reserve_option">Fallback — slower, use if standard mode fails</string>
     <string name="wgk_connection_mode_standard_desc">Faster, recommended</string>
     <string name="wgk_connection_mode_reserve_desc">Slower — turn it on if the standard mode does not work</string>
+    <string name="wgk_relay_transport_title">Relay transport</string>
+    <string name="wgk_relay_transport_auto_value">Automatic</string>
+    <string name="wgk_relay_transport_auto_desc">UDP; TCP on the Rostelecom mobile network</string>
+    <string name="wgk_relay_transport_udp_value">UDP</string>
+    <string name="wgk_relay_transport_udp_desc">Always UDP — faster</string>
+    <string name="wgk_relay_transport_tcp_value">TCP (Rostelecom)</string>
+    <string name="wgk_relay_transport_tcp_desc">Slower — turn it on if the connection never comes up on the mobile network</string>
     <string name="wgk_split_search_hint">Search apps</string>
     <string name="wgk_split_show_system">System apps</string>
     <string name="wgk_split_exclude_hint">Selected apps will bypass the VPN. Everything else goes through the tunnel.</string>
