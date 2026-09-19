@@ -11,6 +11,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,7 +23,7 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Monitors physical networks (WiFi, Cellular) and provides the "best" available one.
  * Ignores VPN interfaces to avoid tracking our own tunnel.
- * Priority: WiFi > Cellular.
+ * The choice itself is [PhysicalNetworkChoice].
  */
 class PhysicalNetworkMonitor(context: Context) {
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -197,41 +198,59 @@ class PhysicalNetworkMonitor(context: Context) {
         return "${lp.interfaceName.orEmpty()}|${parts.joinToString(",")}"
     }
 
+    // Whether the last choice kept the current network against the transport
+    // order, so that the log says so once per episode and not on every callback.
+    private var keptAgainstTransportOrder = false
+
     private fun update() {
-        val candidates = networks.entries.toList()
-        val validatedCandidates = candidates.filter { (_, caps) ->
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        val candidates = networks.entries.map { (network, caps) ->
+            PhysicalNetworkChoice.Candidate(
+                id = network,
+                transport = when {
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> PhysicalNetworkChoice.Transport.WIFI
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> PhysicalNetworkChoice.Transport.CELLULAR
+                    else -> PhysicalNetworkChoice.Transport.OTHER
+                },
+                validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+            )
         }
+        val current = _bestPath.value?.network
+        val best = PhysicalNetworkChoice.pick(candidates, current)
 
-        fun bestFrom(entries: List<Map.Entry<Network, NetworkCapabilities>>): Map.Entry<Network, NetworkCapabilities>? =
-            entries.firstOrNull { it.value.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) }
-                ?: entries.firstOrNull { it.value.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) }
-                ?: entries.firstOrNull()
+        val kept = PhysicalNetworkChoice.keptAgainstTransportOrder(candidates, current)
+        if (kept && !keptAgainstTransportOrder)
+            Log.i(TAG, "Nothing is validated: staying on $current rather than moving by transport order")
+        keptAgainstTransportOrder = kept
 
-        // Prefer a usable validated path over associated-but-dead Wi-Fi. If no
-        // path is validated yet, retain the old priority as a passive baseline.
-        val bestEntry = bestFrom(validatedCandidates) ?: bestFrom(candidates)
-        _bestPath.value = bestEntry?.key?.let { network ->
-            NetworkPath(network, identityFor(network))
-        }
-        _validated.value = bestEntry?.value?.let { caps ->
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-        } == true
+        _bestPath.value = best?.let { network -> NetworkPath(network, identityFor(network)) }
+        _validated.value = candidates.firstOrNull { it.id == best }?.validated == true
     }
 
     fun start() {
         // Initial state: identify current best physical network before registering callback
-        // We look through all networks because activeNetwork might be the VPN itself
-        @Suppress("DEPRECATION")
-        cm.allNetworks.forEach { network ->
-            val caps = cm.getNetworkCapabilities(network)
-            if (caps != null &&
-                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) {
-                networks[network] = caps
-                cm.getLinkProperties(network)?.let { links[network] = addressIdentity(it) }
+        // We look through all networks because activeNetwork might be the VPN itself.
+        //
+        // Foreground networks only, which is what the callback below reports: without
+        // CHANGE_NETWORK_STATE every listen is implicitly foreground. allNetworks
+        // also returns the ones the system keeps in the background (cellular under
+        // a Wi-Fi default, "mobile data always active"), and an entry taken from
+        // there is never reported lost — it outlived its network for as long as the
+        // process ran, a dead Network that the transport order could still pick, and
+        // next to a live one of the same transport the pick between the two was the
+        // map's iteration order. Before API 28 the capability is not public; the
+        // callback delivers the existing networks within milliseconds anyway.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            @Suppress("DEPRECATION")
+            cm.allNetworks.forEach { network ->
+                val caps = cm.getNetworkCapabilities(network)
+                if (caps != null &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_FOREGROUND)) {
+                    networks[network] = caps
+                    cm.getLinkProperties(network)?.let { links[network] = addressIdentity(it) }
+                }
             }
         }
         update()
@@ -253,5 +272,9 @@ class PhysicalNetworkMonitor(context: Context) {
         links.clear()
         _bestPath.value = null
         _validated.value = false
+    }
+
+    private companion object {
+        const val TAG = "WireGuard/PhysicalNetworkMonitor"
     }
 }
