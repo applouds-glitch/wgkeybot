@@ -21,7 +21,9 @@ import androidx.core.view.updatePadding
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.wireguard.android.Application
+import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
 import com.wireguard.android.databinding.AppSettingsActivityBinding
 import com.wireguard.android.databinding.ViewWgkSettingsChoiceRowBinding
@@ -35,12 +37,18 @@ import com.wireguard.android.tether.TetherToggle
 import com.wireguard.android.tether.messageRes
 import com.wireguard.android.turn.ConnectionMode
 import com.wireguard.android.turn.RelayTransport
+import com.wireguard.android.updater.GithubReleases
+import com.wireguard.android.updater.UpdateActivity
 import com.wireguard.android.util.AuthStore
+import com.wireguard.android.util.ThemeMode
 import com.wireguard.android.util.applicationScope
 import com.wireguard.android.util.localeWrapped
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The app's own settings screen: everything that belongs to this fork and not to
@@ -91,6 +99,7 @@ class AppSettingsActivity : AppCompatActivity() {
         bindConnectionMode()
         bindRelayTransport()
         bindTheme()
+        bindUpdateCheck()
         if (bindTether()) {
             observeTether()
             // Arrived from the chip on the connect screen, which is the sharing
@@ -179,6 +188,9 @@ class AppSettingsActivity : AppCompatActivity() {
             wgkChoiceDesc.setText(R.string.wgk_relay_transport_tcp_desc)
             wgkChoiceRoot.setOnClickListener { setRelayTransport(RelayTransport.Mode.TCP) }
         }
+        binding.wgkTransportAuto.compact()
+        binding.wgkTransportUdp.compact()
+        binding.wgkTransportTcp.compact()
         renderRelayTransport()
     }
 
@@ -210,51 +222,166 @@ class AppSettingsActivity : AppCompatActivity() {
         )
     }
 
+    /**
+     * The slimmer row of the cards that are set once and left alone — relay
+     * transport and theme — under the full-height rows of sharing and the
+     * connection mode, which are what this screen is opened for.
+     *
+     * Only the height goes: the radio keeps its 48dp width, so its circle stays
+     * on the same vertical line as the radios and switches of the other cards.
+     * Both minimums are cleared because a radio is a TextView, which keeps a
+     * minimum height of its own next to the View one, and the style sets both.
+     */
+    private fun ViewWgkSettingsChoiceRowBinding.compact() {
+        val pad = resources.getDimensionPixelSize(R.dimen.wgk_settings_choice_compact_pad)
+        wgkChoiceRoot.minimumHeight = resources.getDimensionPixelSize(R.dimen.wgk_settings_choice_compact_min)
+        wgkChoiceRoot.updatePadding(top = pad, bottom = pad)
+        wgkChoiceRadio.minHeight = 0
+        wgkChoiceRadio.minimumHeight = 0
+    }
+
     // ── Appearance ─────────────────────────────────────────────────────────────
 
     /**
-     * The theme switch, moved here from an unlabelled icon in the connect screen's
-     * toolbar.
-     *
-     * Two states and no "follow the system": the stored default is dark, and a
-     * theme picked by hand is meant to stay picked. Flipping it recreates every
-     * activity in the task — this one included — so the row is rendered from the
-     * store on each bind and nothing has to be updated in place.
+     * The theme, moved here from an unlabelled icon in the connect screen's
+     * toolbar: the phone's own, or light or dark picked by hand. The stored
+     * default stays dark (see [ThemeMode]); following the system is opt-in.
      */
     private fun bindTheme() {
-        binding.wgkThemeRow.apply {
-            wgkSwitchLabel.setText(R.string.wgk_theme_dark_label)
-            // The switch already says which way this row is set; a value line
-            // under the label would only repeat it.
-            wgkSwitchValue.isVisible = false
-            // Asks the store, not the switch it is about to flip. The switch is
-            // only a projection of that store, and reading the next value off a
-            // view means a tap does nothing at all if the view is ever out of
-            // step: setDefaultNightMode ignores the mode it is already in.
-            wgkSwitchRoot.setOnClickListener { setDarkTheme(!isDarkTheme()) }
+        binding.wgkThemeSystem.apply {
+            wgkChoiceTitle.setText(R.string.wgk_theme_system_value)
+            wgkChoiceDesc.setText(R.string.wgk_theme_system_desc)
+            wgkChoiceRoot.setOnClickListener { setTheme(ThemeMode.SYSTEM) }
         }
+        // Light and dark need no second line: the name is the whole of it.
+        binding.wgkThemeLight.apply {
+            wgkChoiceTitle.setText(R.string.wgk_theme_light_value)
+            wgkChoiceDesc.isVisible = false
+            wgkChoiceRoot.setOnClickListener { setTheme(ThemeMode.LIGHT) }
+        }
+        binding.wgkThemeDark.apply {
+            wgkChoiceTitle.setText(R.string.wgk_theme_dark_value)
+            wgkChoiceDesc.isVisible = false
+            wgkChoiceRoot.setOnClickListener { setTheme(ThemeMode.DARK) }
+        }
+        binding.wgkThemeSystem.compact()
+        binding.wgkThemeLight.compact()
+        binding.wgkThemeDark.compact()
         renderTheme()
     }
 
-    private fun setDarkTheme(dark: Boolean) {
-        AuthStore.getInstance(this).setThemeMode(if (dark) "dark" else "light")
-        AppCompatDelegate.setDefaultNightMode(
-            if (dark) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO
-        )
+    private fun setTheme(mode: ThemeMode) {
+        val store = AuthStore.getInstance(this)
+        if (store.getThemeMode() == mode) return
+        store.setThemeMode(mode)
+        // Rendered here and not left to the recreation: that only happens when
+        // the colours actually change, and going from dark to "as on the phone"
+        // on a phone that is itself dark changes none — the radio would stay
+        // where it was.
+        renderTheme()
+        AppCompatDelegate.setDefaultNightMode(mode.nightMode)
     }
 
-    /**
-     * "light" or "dark" are the only values ever written, here and in the store's
-     * own default, so anything else can only be dark.
-     */
-    private fun isDarkTheme(): Boolean = AuthStore.getInstance(this).getThemeMode() != "light"
-
     private fun renderTheme() {
-        val dark = isDarkTheme()
-        binding.wgkThemeRow.wgkSwitch.isChecked = dark
-        binding.wgkThemeRow.wgkSwitchIcon.setImageResource(
-            if (dark) R.drawable.ic_theme_dark else R.drawable.ic_theme_light
-        )
+        val mode = AuthStore.getInstance(this).getThemeMode()
+        binding.wgkThemeSystem.select(mode == ThemeMode.SYSTEM, R.color.wgk_primary)
+        binding.wgkThemeLight.select(mode == ThemeMode.LIGHT, R.color.wgk_primary)
+        binding.wgkThemeDark.select(mode == ThemeMode.DARK, R.color.wgk_primary)
+    }
+
+    // ── Update check ───────────────────────────────────────────────────────────
+
+    /** What the row says; [Available] also changes what a tap does. */
+    private sealed interface UpdateCheck {
+        data object Idle : UpdateCheck
+        data object Running : UpdateCheck
+        data object Latest : UpdateCheck
+        data class Available(val release: GithubReleases.Release) : UpdateCheck
+        data class Failed(val message: String) : UpdateCheck
+    }
+
+    private var updateCheck: UpdateCheck = UpdateCheck.Idle
+
+    /**
+     * The installed version, and a check for a newer one on GitHub made by hand.
+     *
+     * The server already announces updates with the config, but only when a config
+     * is fetched and only what it has been told about; this asks the place the
+     * releases are published, whenever the user wants to know. Installing is the
+     * same [UpdateActivity] either way, with the same package, version and
+     * signature checks — GitHub is where the file is fetched from, not why it is
+     * trusted.
+     *
+     * Absent without a repository to ask, and in the Play build, which the store
+     * updates and which may not update itself.
+     */
+    private fun bindUpdateCheck() {
+        val repo = BuildConfig.RELEASES_REPO
+        val offered = BuildConfig.BUILD_TYPE != "googleplay" && GithubReleases.isRepo(repo)
+        binding.wgkUpdateSection.isVisible = offered
+        if (!offered) return
+        binding.wgkUpdateRow.apply {
+            wgkRowIcon.setImageResource(R.drawable.ic_refresh)
+            wgkRowLabel.text = getString(R.string.wgk_update_check_label, BuildConfig.VERSION_NAME)
+            wgkRowChevron.isVisible = false
+            wgkRowBtn.setOnClickListener {
+                when (val state = updateCheck) {
+                    UpdateCheck.Running -> Unit
+                    is UpdateCheck.Available -> offerUpdate(state.release)
+                    else -> checkForUpdate(repo)
+                }
+            }
+        }
+        renderUpdateCheck()
+    }
+
+    private fun checkForUpdate(repo: String) {
+        updateCheck = UpdateCheck.Running
+        renderUpdateCheck()
+        lifecycleScope.launch {
+            updateCheck = try {
+                val release = withContext(Dispatchers.IO) { GithubReleases.latest(repo) }
+                if (GithubReleases.isNewer(release.version, BuildConfig.VERSION_NAME)) UpdateCheck.Available(release)
+                else UpdateCheck.Latest
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: GithubReleases.NoReleaseException) {
+                UpdateCheck.Failed(getString(R.string.wgk_update_check_no_release))
+            } catch (e: Exception) {
+                Log.w(TAG, "Update check failed", e)
+                UpdateCheck.Failed(getString(R.string.wgk_update_check_failed, e.localizedMessage ?: e.javaClass.simpleName))
+            }
+            renderUpdateCheck()
+            (updateCheck as? UpdateCheck.Available)?.let { offerUpdate(it.release) }
+        }
+    }
+
+    /** The same question the config refresh asks when the server names a newer version. */
+    private fun offerUpdate(release: GithubReleases.Release) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.wgk_update_available_title, release.version))
+            .setMessage(R.string.wgk_update_available_message)
+            .setPositiveButton(R.string.wgk_update_now) { _, _ -> UpdateActivity.open(this, release.downloadUrl) }
+            .setNegativeButton(R.string.wgk_update_later, null)
+            .show()
+    }
+
+    private fun renderUpdateCheck() {
+        binding.wgkUpdateRow.wgkRowValue.apply {
+            val state = updateCheck
+            text = when (state) {
+                UpdateCheck.Idle -> getString(R.string.wgk_update_check_idle)
+                UpdateCheck.Running -> getString(R.string.wgk_update_check_running)
+                UpdateCheck.Latest -> getString(R.string.wgk_update_check_latest)
+                is UpdateCheck.Available -> getString(R.string.wgk_update_check_available, state.release.version)
+                is UpdateCheck.Failed -> state.message
+            }
+            setTextColor(ContextCompat.getColor(this@AppSettingsActivity, when (state) {
+                is UpdateCheck.Available -> R.color.wgk_primary
+                is UpdateCheck.Failed -> R.color.wgk_warning
+                else -> R.color.wgk_on_surface_variant
+            }))
+        }
     }
 
     // ── Internet sharing ───────────────────────────────────────────────────────

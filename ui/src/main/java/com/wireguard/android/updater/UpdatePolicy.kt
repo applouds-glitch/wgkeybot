@@ -12,6 +12,17 @@ internal object UpdatePolicy {
             !uri.host.isNullOrBlank() && uri.rawUserInfo == null && uri.rawFragment == null
     }.getOrDefault(false)
 
+    /** MAJOR.MINOR.PATCH, numerically; a missing or unreadable part counts as 0. */
+    fun compareVersions(a: String, b: String): Int {
+        val ap = a.split(".").map { it.toIntOrNull() ?: 0 }
+        val bp = b.split(".").map { it.toIntOrNull() ?: 0 }
+        for (i in 0..2) {
+            val diff = ap.getOrElse(i) { 0 } - bp.getOrElse(i) { 0 }
+            if (diff != 0) return diff
+        }
+        return 0
+    }
+
     fun compatibleSigners(
         installed: Set<String>,
         incoming: Set<String>,

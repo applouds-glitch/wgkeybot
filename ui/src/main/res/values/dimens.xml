@@ -76,4 +76,12 @@
     <!-- A minimum, not a fixed height: with a large system font the row has to
          grow rather than clip its text. -->
     <dimen name="wgk_settings_row_min">56dp</dimen>
+    <!-- The slimmer choice row of the set-once cards (relay transport, theme).
+         A full row is 72dp tall, and none of that is the text: it is the radio's
+         48dp touch-target box plus 12dp either side, around a radio that is not
+         a touch target at all. Here the radio stops holding the row open and the
+         padding comes down a step: 58dp with a description, 52dp without, still
+         a minimum and still over the 48dp the row itself owes as a target. -->
+    <dimen name="wgk_settings_choice_compact_min">52dp</dimen>
+    <dimen name="wgk_settings_choice_compact_pad">10dp</dimen>
 </resources>

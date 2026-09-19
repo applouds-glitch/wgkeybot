@@ -66,6 +66,7 @@ jobs:
           ./gradlew :ui:assembleRelease \
             -PwireguardVersionName=${{ steps.version.outputs.version }} \
             -PwireguardVersionCode=${{ steps.version.outputs.version_code }} \
+            -PwgkReleasesRepo=${{ github.repository }} \
             --stacktrace
 
       - name: Generate release notes
