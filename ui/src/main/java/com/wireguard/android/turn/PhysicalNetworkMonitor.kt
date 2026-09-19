@@ -11,6 +11,8 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,9 +23,13 @@ import java.net.NetworkInterface
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Monitors physical networks (WiFi, Cellular) and provides the "best" available one.
+ * Tells the rest of the app which physical network the TURN sockets bind to.
  * Ignores VPN interfaces to avoid tracking our own tunnel.
- * The choice itself is [PhysicalNetworkChoice].
+ *
+ * The choice is Android's, not ours — see [PhysicalNetworkChoice] for why. On
+ * API 31+ the platform reports its pick directly (the best network matching
+ * "internet, not a VPN", which is the one every app outside the tunnel uses);
+ * before that, and until its first report, the networks are ranked by transport.
  */
 class PhysicalNetworkMonitor(context: Context) {
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -57,9 +63,10 @@ class PhysicalNetworkMonitor(context: Context) {
     val rawPath: StateFlow<NetworkPath?> = _bestPath.asStateFlow()
 
     /**
-     * Whether [currentPath] currently has validated upstream connectivity.
-     * This is separate from [rawPath] because Android can add or remove
-     * NET_CAPABILITY_VALIDATED without changing the Network object.
+     * Whether Android reports [currentPath] as validated. For the log and nothing
+     * else: no decision is made from it, here or in native. It stays because "was
+     * the network validated" is the first question about any field log — a
+     * cellular network that never validates is what a mobile whitelist looks like.
      */
     val validated = _validated.asStateFlow()
 
@@ -114,24 +121,49 @@ class PhysicalNetworkMonitor(context: Context) {
         }
     }
 
-    /**
-     * True if [network] currently reports validated internet connectivity
-     * (NET_CAPABILITY_VALIDATED) — the system confirmed a real upstream, not
-     * just an associated link. A captive portal, associated-but-dead Wi-Fi or
-     * no-signal cell reports INTERNET but not VALIDATED. Native combines this
-     * hint with observed TURN reachability and a rate-limited recovery probe, so
-     * probe-blocking corporate networks are not treated as permanently offline.
-     */
-    fun isValidated(network: Network?): Boolean {
-        if (network == null) return false
-        val caps = cm.getNetworkCapabilities(network) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-    }
-
     private val networks = ConcurrentHashMap<Network, NetworkCapabilities>()
     private val links = ConcurrentHashMap<Network, String>()
 
+    // Android's pick, once it has told us (API 31+); null until then, and for
+    // good on older platforms. SystemPick(null) is "Android has no network".
+    @Volatile private var systemPick: PhysicalNetworkChoice.SystemPick<Network>? = null
+    private var systemCallbackThread: HandlerThread? = null
+
+    /**
+     * Follows the best network matching the request, the way a network *request*
+     * does but without holding one: when the pick moves from A to B there is an
+     * onAvailable(B) and no onLost(A); onLost means there is nothing left at all.
+     * Capabilities and link properties come for the pick only.
+     */
+    private val systemCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            networks.keys.retainAll(setOf(network))
+            links.keys.retainAll(setOf(network))
+            systemPick = PhysicalNetworkChoice.SystemPick(network)
+            update()
+        }
+
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            if (systemPick?.network != network) return
+            networks[network] = caps
+            update()
+        }
+
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+            if (systemPick?.network != network) return
+            links[network] = addressIdentity(linkProperties)
+            update()
+        }
+
+        override fun onLost(network: Network) {
+            networks.remove(network)
+            links.remove(network)
+            if (systemPick?.network == network) systemPick = PhysicalNetworkChoice.SystemPick(null)
+            update()
+        }
+    }
+
+    // The ranking of our own, for platforms that do not report theirs.
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
             // Ignore VPNs to avoid feedback loops with our own tunnel
@@ -198,10 +230,8 @@ class PhysicalNetworkMonitor(context: Context) {
         return "${lp.interfaceName.orEmpty()}|${parts.joinToString(",")}"
     }
 
-    // Whether the last choice kept the current network against the transport
-    // order, so that the log says so once per episode and not on every callback.
-    private var keptAgainstTransportOrder = false
-
+    // Called from the callback thread and, once, from start().
+    @Synchronized
     private fun update() {
         val candidates = networks.entries.map { (network, caps) ->
             PhysicalNetworkChoice.Candidate(
@@ -211,27 +241,24 @@ class PhysicalNetworkMonitor(context: Context) {
                     caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> PhysicalNetworkChoice.Transport.CELLULAR
                     else -> PhysicalNetworkChoice.Transport.OTHER
                 },
-                validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
             )
         }
-        val current = _bestPath.value?.network
-        val best = PhysicalNetworkChoice.pick(candidates, current)
-
-        val kept = PhysicalNetworkChoice.keptAgainstTransportOrder(candidates, current)
-        if (kept && !keptAgainstTransportOrder)
-            Log.i(TAG, "Nothing is validated: staying on $current rather than moving by transport order")
-        keptAgainstTransportOrder = kept
+        val best = PhysicalNetworkChoice.pick(systemPick, candidates)
 
         _bestPath.value = best?.let { network -> NetworkPath(network, identityFor(network)) }
-        _validated.value = candidates.firstOrNull { it.id == best }?.validated == true
+        // onAvailable comes ahead of the pick's capabilities, hence the direct query.
+        val caps = best?.let { networks[it] ?: cm.getNetworkCapabilities(it) }
+        _validated.value = caps != null &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
     fun start() {
-        // Initial state: identify current best physical network before registering callback
+        // Initial state: rank what is there before any callback has fired, so that a
+        // connect started right after the process came up has a network to bind to.
         // We look through all networks because activeNetwork might be the VPN itself.
         //
-        // Foreground networks only, which is what the callback below reports: without
+        // Foreground networks only, which is what the callbacks below report: without
         // CHANGE_NETWORK_STATE every listen is implicitly foreground. allNetworks
         // also returns the ones the system keeps in the background (cellular under
         // a Wi-Fi default, "mobile data always active"), and an entry taken from
@@ -259,15 +286,42 @@ class PhysicalNetworkMonitor(context: Context) {
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && followSystemPick(request)) return
+        Log.i(TAG, "Ranking the physical networks by transport (API ${Build.VERSION.SDK_INT})")
         cm.registerNetworkCallback(request, callback)
     }
 
-    fun stop() {
-        try {
-            cm.unregisterNetworkCallback(callback)
-        } catch (e: Exception) {
-            // Ignore
+    /**
+     * Asks Android for its own pick. False if the platform refuses (it limits the
+     * callbacks one app may hold), in which case the caller ranks the networks
+     * itself, as it does before API 31.
+     */
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.S)
+    private fun followSystemPick(request: NetworkRequest): Boolean {
+        val thread = HandlerThread("wgk-netmon").apply { start() }
+        return try {
+            cm.registerBestMatchingNetworkCallback(request, systemCallback, Handler(thread.looper))
+            systemCallbackThread = thread
+            Log.i(TAG, "Following Android's pick of the physical network")
+            true
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "registerBestMatchingNetworkCallback refused: $e")
+            thread.quitSafely()
+            false
         }
+    }
+
+    fun stop() {
+        for (cb in listOf(callback, systemCallback)) {
+            try {
+                cm.unregisterNetworkCallback(cb)
+            } catch (e: Exception) {
+                // Ignore: only one of the two was ever registered.
+            }
+        }
+        systemCallbackThread?.quitSafely()
+        systemCallbackThread = null
+        systemPick = null
         networks.clear()
         links.clear()
         _bestPath.value = null
