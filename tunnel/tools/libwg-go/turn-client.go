@@ -1153,6 +1153,15 @@ func wgSetPhysicalNetwork(handle C.longlong) {
 	setBoundNetwork(int64(handle), time.Now())
 }
 
+// wgSetRelayTransport says how the relays are reached over the network that
+// wgSetNetwork is reporting — see relay_transport.go. Called ahead of
+// wgSetPhysicalNetwork, so the dials that report sets off already follow it.
+//
+//export wgSetRelayTransport
+func wgSetRelayTransport(choice C.int) {
+	setRelayTransport(int32(choice))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Link parsing helpers
 // ─────────────────────────────────────────────────────────────────────────────

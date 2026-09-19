@@ -103,19 +103,47 @@ class TurnProxyManager(private val context: Context) {
         // for the same reason: a handover that moved the binding but not the DNS
         // list left every lookup starting at the dead network's servers.
         scope.launch {
-            networkMonitor.rawPath.collect { path ->
-                val network = path?.network
-                // The MTU comes with every path, not just the one a start saw: a
-                // handover can put the tunnel on a link with a smaller one.
-                Log.i(TAG, if (network == null) "Physical network: none"
-                    else "Physical network: $network (type=${getNetworkTypeString(network)}, mtu=${networkMonitor.mtuOf(network)})")
-                TurnBackend.wgSetNetwork(
-                    network,
-                    network?.getNetworkHandle() ?: 0L,
-                    networkMonitor.dnsServersOf(network),
-                )
-            }
+            networkMonitor.rawPath.collect { path -> pushNetwork(path?.network) }
         }
+    }
+
+    /**
+     * Hands native the physical network and what belongs to it: the resolvers, and
+     * how the relays are reached over it ([RelayTransport]). The transport rides
+     * here because it is a property of the network — it differs between the Wi-Fi
+     * at home and an operator that drops relayed UDP — and because native reads it
+     * on every dial: a session that moves onto such a network redials at once, and
+     * that dial must already go out over TCP.
+     */
+    private fun pushNetwork(network: Network?) {
+        val type = getNetworkTypeString(network)
+        val transport = RelayTransport.choose(
+            RelayTransport.mode(context),
+            onCellular = type == "cellular",
+            // Only asked for on a mobile network: the operator of a SIM says
+            // nothing about the Wi-Fi the tunnel is running over.
+            operator = if (type == "cellular") RelayTransport.currentOperator(context) else RelayTransport.Operator.NONE,
+        )
+        // The MTU comes with every path, not just the one a start saw: a
+        // handover can put the tunnel on a link with a smaller one.
+        Log.i(TAG, if (network == null) "Physical network: none"
+            else "Physical network: $network (type=$type, mtu=${networkMonitor.mtuOf(network)}, relay transport: ${transport.reason})")
+        TurnBackend.wgSetNetwork(
+            network,
+            network?.getNetworkHandle() ?: 0L,
+            networkMonitor.dnsServersOf(network),
+            transport.wire,
+        )
+    }
+
+    /**
+     * The relay transport was changed in settings. Native compares the network
+     * itself and takes the transport as given, so pushing the same path again
+     * changes that and nothing else: sessions that are up stay as they are, and
+     * every dial from here on uses the new transport.
+     */
+    fun onRelayTransportChanged() {
+        scope.launch { pushNetwork(networkMonitor.currentPath?.network) }
     }
 
     /** What [rebuildTransport] did. */

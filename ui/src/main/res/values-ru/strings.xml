@@ -435,6 +435,13 @@
     <string name="wgk_connection_mode_reserve_option">Резервный — медленнее, если основной не работает</string>
     <string name="wgk_connection_mode_standard_desc">Быстрее, рекомендуется</string>
     <string name="wgk_connection_mode_reserve_desc">Медленнее — включите, если основной не работает</string>
+    <string name="wgk_relay_transport_title">Транспорт до релеев</string>
+    <string name="wgk_relay_transport_auto_value">Авто</string>
+    <string name="wgk_relay_transport_auto_desc">UDP; в мобильной сети Ростелекома — TCP</string>
+    <string name="wgk_relay_transport_udp_value">UDP</string>
+    <string name="wgk_relay_transport_udp_desc">Всегда UDP — быстрее</string>
+    <string name="wgk_relay_transport_tcp_value">TCP (Ростелеком)</string>
+    <string name="wgk_relay_transport_tcp_desc">Медленнее — включите, если в мобильной сети подключение не поднимается</string>
     <string name="wgk_connect_cd_connect">Подключить VPN</string>
     <string name="wgk_connect_cd_disconnect">Отключить VPN</string>
     <string name="wgk_connect_cd_cancel">Отменить подключение</string>
