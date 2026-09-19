@@ -452,6 +452,14 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	defer w.client.Close()
 	defer w.relay.Close()
 
+	// Over TCP the socket is watched for as long as the session runs
+	// (relay_tcp_watch.go). Deferred last, so it is let go before anything above
+	// closes it.
+	if tc := relayTCPConn(w.raw); tc != nil {
+		relaySockets.register(s.id, w.addr, tc)
+		defer func() { relaySockets.unregister(s.id, tc, time.Now()) }()
+	}
+
 	turnLog("[STREAM %d] TURN %s rtt=%v (group %d)", s.id, w.addr, w.rtt, cfg.GroupID)
 	turnLog("[STREAM %d] Relay: %s", s.id, w.relay.LocalAddr())
 
