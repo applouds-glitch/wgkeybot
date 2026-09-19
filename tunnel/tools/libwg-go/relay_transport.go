@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -135,4 +136,49 @@ func (c *splitFirstWriteConn) Write(p []byte) (int, error) {
 	time.Sleep(firstWriteSplitPause)
 	m, err := c.Conn.Write(p[firstWriteSplit:])
 	return n + m, err
+}
+
+// relayCloseWriteBudget is how long closing a relay over TCP may spend writing.
+//
+// Closing the relay conn is how every teardown here starts — the transports do
+// it to unblock their reads, the blackhole watchdog to recycle an allocation,
+// runSession on the way out — and pion's Close makes one synchronous write, the
+// Refresh(lifetime=0) that releases the allocation. Over UDP a write never
+// waits. Over TCP it waits for room in the socket's send buffer, and a flow
+// that has stopped moving (field log 19.09, Rostelecom: flows to a relay hang
+// for seconds at a time, some for good) has none to give: the stream's writer
+// is already blocked in that socket with the buffer full behind it, the release
+// queues up behind the writer, the transport waits for the writer, and
+// runSession's raw.Close() — the one call that would free them all — is a defer
+// that never runs. The worker is held until the kernel gives the connection up,
+// a quarter of an hour; a stop or a move to another network leaves it behind on
+// the old one. pion's relay conn has no write deadline to set (its
+// SetWriteDeadline is a stub), so the deadline goes on the socket beneath it:
+// it frees the blocked writer and bounds the release at once. vk-turn-proxy-ios
+// found the same hang on a real allocation (2026-09-06) and bounds it the same
+// way, with the same half second.
+//
+// A release that does not make it out in time fails Close with a timeout, which
+// trackedRelay already reads as "this relay still holds our quota".
+const relayCloseWriteBudget = 500 * time.Millisecond
+
+// boundedCloseRelay is a relay allocated over a TCP connection: its first Close
+// puts relayCloseWriteBudget on that connection's writes before pion makes its
+// own. Later Closes (pion answers them "already closed" without writing) leave
+// the deadline where the first one put it.
+type boundedCloseRelay struct {
+	net.PacketConn
+	sock net.Conn
+	once sync.Once
+}
+
+func boundRelayClose(relay net.PacketConn, sock net.Conn) net.PacketConn {
+	return &boundedCloseRelay{PacketConn: relay, sock: sock}
+}
+
+func (r *boundedCloseRelay) Close() error {
+	r.once.Do(func() {
+		_ = r.sock.SetWriteDeadline(time.Now().Add(relayCloseWriteBudget))
+	})
+	return r.PacketConn.Close()
 }
