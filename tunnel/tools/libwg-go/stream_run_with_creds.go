@@ -436,6 +436,11 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 	// Counted live until closed, so that losing it without a release marks this
 	// relay as still holding our quota (orphaned_allocations.go).
 	relay = trackAllocation(relay, user, addr)
+	if overTCP {
+		// Outermost, so the deadline is on the socket before the release is
+		// written; trackedRelay beneath it books a release that timed out.
+		relay = boundRelayClose(relay, raw)
+	}
 
 	return client, raw, relay, dialed + time.Since(allocStart), perm, nil
 }
