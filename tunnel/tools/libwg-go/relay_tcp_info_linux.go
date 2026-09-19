@@ -54,3 +54,19 @@ func readRelaySocket(c *net.TCPConn) (relaySocketSample, bool) {
 	}
 	return s, true
 }
+
+// setTCPUserTimeout sets TCP_USER_TIMEOUT: an ordinary socket option, open to an
+// app on Android like any other, there since Linux 2.6.37.
+func setTCPUserTimeout(c *net.TCPConn, d time.Duration) error {
+	raw, err := c.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var optErr error
+	if err := raw.Control(func(fd uintptr) {
+		optErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT, int(d/time.Millisecond))
+	}); err != nil {
+		return err
+	}
+	return optErr
+}

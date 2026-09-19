@@ -7,10 +7,16 @@
 
 package main
 
-import "net"
+import (
+	"net"
+	"time"
+)
 
 // readRelaySocket has nothing to read off Linux: the package is built there only
 // to run its tests, and the watcher skips a socket it cannot sample.
 func readRelaySocket(*net.TCPConn) (relaySocketSample, bool) {
 	return relaySocketSample{}, false
 }
+
+// setTCPUserTimeout is Linux's; elsewhere the connection keeps the defaults.
+func setTCPUserTimeout(*net.TCPConn, time.Duration) error { return nil }

@@ -57,139 +57,18 @@
                     app:layout_constraintTop_toTopOf="parent"
                     app:layout_constraintWidth_max="@dimen/wgk_settings_content_max">
 
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginBottom="8dp"
-                        android:paddingStart="4dp"
-                        android:paddingEnd="4dp"
-                        android:text="@string/wgk_settings_section_connection"
-                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
-
-                    <com.google.android.material.card.MaterialCardView
-                        style="@style/Widget.WGKeyBot.Card"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        app:cardCornerRadius="16dp">
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical">
-
-                            <include
-                                android:id="@+id/wgk_choice_standard"
-                                layout="@layout/view_wgk_settings_choice_row"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content" />
-
-                            <View
-                                android:layout_width="match_parent"
-                                android:layout_height="1dp"
-                                android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
-
-                            <include
-                                android:id="@+id/wgk_choice_reserve"
-                                layout="@layout/view_wgk_settings_choice_row"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content" />
-                        </LinearLayout>
-                    </com.google.android.material.card.MaterialCardView>
-
-                    <!-- How the relays are reached. A card of its own rather than a
-                         third row above: it is a separate question from the mode
-                         (which protocol runs through the relay), and the two
-                         combine freely. -->
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
-                        android:layout_marginBottom="8dp"
-                        android:paddingStart="4dp"
-                        android:paddingEnd="4dp"
-                        android:text="@string/wgk_relay_transport_title"
-                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
-
-                    <com.google.android.material.card.MaterialCardView
-                        style="@style/Widget.WGKeyBot.Card"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        app:cardCornerRadius="16dp">
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical">
-
-                            <include
-                                android:id="@+id/wgk_transport_auto"
-                                layout="@layout/view_wgk_settings_choice_row"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content" />
-
-                            <View
-                                android:layout_width="match_parent"
-                                android:layout_height="1dp"
-                                android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
-
-                            <include
-                                android:id="@+id/wgk_transport_udp"
-                                layout="@layout/view_wgk_settings_choice_row"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content" />
-
-                            <View
-                                android:layout_width="match_parent"
-                                android:layout_height="1dp"
-                                android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
-
-                            <include
-                                android:id="@+id/wgk_transport_tcp"
-                                layout="@layout/view_wgk_settings_choice_row"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content" />
-                        </LinearLayout>
-                    </com.google.android.material.card.MaterialCardView>
-
-                    <!-- Appearance. This was an unlabelled icon in the connect
-                         screen's toolbar — a control you had to tap to find out
-                         what it did, next to the gear that leads here. As a row
-                         it carries a name and its own state. -->
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
-                        android:layout_marginBottom="8dp"
-                        android:paddingStart="4dp"
-                        android:paddingEnd="4dp"
-                        android:text="@string/wgk_settings_section_appearance"
-                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
-
-                    <com.google.android.material.card.MaterialCardView
-                        style="@style/Widget.WGKeyBot.Card"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        app:cardCornerRadius="16dp">
-
-                        <include
-                            android:id="@+id/wgk_theme_row"
-                            layout="@layout/view_wgk_settings_switch_row"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content" />
-                    </com.google.android.material.card.MaterialCardView>
-
-                    <!-- Sharing needs API 26 for startLocalOnlyHotspot; below that
-                         there is no way to raise an access point at all, so the
-                         whole section — header, card and status line — is absent
-                         rather than shown disabled. -->
+                    <!-- Sharing leads the column: it is the one thing here that is
+                         switched on and off from day to day, while everything under
+                         it is set once. It needs API 26 for startLocalOnlyHotspot;
+                         below that there is no way to raise an access point at all,
+                         so the whole section — header, card and status line — is
+                         absent rather than shown disabled. The gap to the next
+                         section is this one's bottom margin, so it goes with it. -->
                     <LinearLayout
                         android:id="@+id/wgk_tether_section"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
+                        android:layout_marginBottom="@dimen/wgk_settings_section_gap"
                         android:orientation="vertical">
 
                         <TextView
@@ -296,6 +175,198 @@
                             android:textColor="@color/wgk_on_surface_variant"
                             android:visibility="gone" />
                     </LinearLayout>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:text="@string/wgk_settings_section_connection"
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/Widget.WGKeyBot.Card"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        app:cardCornerRadius="16dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical">
+
+                            <include
+                                android:id="@+id/wgk_choice_standard"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+
+                            <View
+                                android:layout_width="match_parent"
+                                android:layout_height="1dp"
+                                android:layout_marginStart="16dp"
+                                android:background="@color/wgk_outline_variant" />
+
+                            <include
+                                android:id="@+id/wgk_choice_reserve"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <!-- How the relays are reached. A card of its own rather than a
+                         third row above: it is a separate question from the mode
+                         (which protocol runs through the relay), and the two
+                         combine freely. -->
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
+                        android:layout_marginBottom="8dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:text="@string/wgk_relay_transport_title"
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/Widget.WGKeyBot.Card"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        app:cardCornerRadius="16dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical">
+
+                            <include
+                                android:id="@+id/wgk_transport_auto"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+
+                            <View
+                                android:layout_width="match_parent"
+                                android:layout_height="1dp"
+                                android:layout_marginStart="16dp"
+                                android:background="@color/wgk_outline_variant" />
+
+                            <include
+                                android:id="@+id/wgk_transport_udp"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+
+                            <View
+                                android:layout_width="match_parent"
+                                android:layout_height="1dp"
+                                android:layout_marginStart="16dp"
+                                android:background="@color/wgk_outline_variant" />
+
+                            <include
+                                android:id="@+id/wgk_transport_tcp"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <!-- Appearance. This was an unlabelled icon in the connect
+                         screen's toolbar — a control you had to tap to find out
+                         what it did, next to the gear that leads here. Three
+                         named options now, the same in-place choice as the two
+                         cards above: a switch has no third position for
+                         "follow the phone". -->
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
+                        android:layout_marginBottom="8dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:text="@string/wgk_settings_section_appearance"
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/Widget.WGKeyBot.Card"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        app:cardCornerRadius="16dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical">
+
+                            <include
+                                android:id="@+id/wgk_theme_system"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+
+                            <View
+                                android:layout_width="match_parent"
+                                android:layout_height="1dp"
+                                android:layout_marginStart="16dp"
+                                android:background="@color/wgk_outline_variant" />
+
+                            <include
+                                android:id="@+id/wgk_theme_light"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+
+                            <View
+                                android:layout_width="match_parent"
+                                android:layout_height="1dp"
+                                android:layout_marginStart="16dp"
+                                android:background="@color/wgk_outline_variant" />
+
+                            <include
+                                android:id="@+id/wgk_theme_dark"
+                                layout="@layout/view_wgk_settings_choice_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <!-- The installed version, and the check for a newer one made
+                         by hand. Last, because it is the least visited; absent
+                         altogether in a build that has no releases to ask about
+                         (no repository configured, or the Play build, which is
+                         updated by the store and may not update itself). -->
+                    <LinearLayout
+                        android:id="@+id/wgk_update_section"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="8dp"
+                            android:paddingStart="4dp"
+                            android:paddingEnd="4dp"
+                            android:text="@string/wgk_settings_section_app"
+                            android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+
+                        <com.google.android.material.card.MaterialCardView
+                            style="@style/Widget.WGKeyBot.Card"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            app:cardCornerRadius="16dp">
+
+                            <include
+                                android:id="@+id/wgk_update_row"
+                                layout="@layout/view_wgk_settings_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+                        </com.google.android.material.card.MaterialCardView>
+                    </LinearLayout>
+
                 </LinearLayout>
             </androidx.constraintlayout.widget.ConstraintLayout>
         </androidx.core.widget.NestedScrollView>

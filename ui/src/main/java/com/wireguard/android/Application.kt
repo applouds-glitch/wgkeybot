@@ -111,11 +111,7 @@ class Application : android.app.Application() {
                 android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
         AppCompatDelegate.setDefaultNightMode(
             if (isTvDevice) AppCompatDelegate.MODE_NIGHT_YES
-            else when (AuthStore.getInstance(this).getThemeMode()) {
-                "light" -> AppCompatDelegate.MODE_NIGHT_NO
-                "dark"  -> AppCompatDelegate.MODE_NIGHT_YES
-                else    -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
-            }
+            else AuthStore.getInstance(this).getThemeMode().nightMode
         )
         tunnelManager = TunnelManager(
             FileConfigStore(applicationContext),

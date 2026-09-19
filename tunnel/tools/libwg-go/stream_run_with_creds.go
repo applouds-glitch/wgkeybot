@@ -470,12 +470,21 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// notices, because a shaped-but-alive path keeps the liveness clock fresh.
 	// Closing here also sends Refresh(lifetime=0), releasing the server-side
 	// allocation instead of leaving it to eat the credential's quota.
+	//
+	// The same goes for a TCP flow the kernel has given up (relayTCPUserTimeout).
+	// Its one ETIMEDOUT may have gone to pion's read loop, which drops it, and the
+	// session would then linger until its next write broke — or, on an idle
+	// tunnel, until the dead-stream detector. Over UDP the channel is nil.
 	sessCtx, sessCancel := context.WithCancel(ctx)
 	defer sessCancel()
 	go func() {
 		select {
 		case <-w.perm.deadCh():
 			turnLog("[STREAM %d] Recycling allocation after blackhole", s.id)
+			w.relay.Close()
+		case <-relayFlowGaveUp(w.raw):
+			turnLog("[STREAM %d] TCP flow to %s given up by the kernel: no progress for %v — reconnecting",
+				s.id, w.addr, relayTCPUserTimeout)
 			w.relay.Close()
 		case <-sessCtx.Done():
 		}
@@ -506,7 +515,20 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	}
 
 	// Health accounting for the static assignment (see turn_server_health.go).
-	switch sessionOutcome(ctx.Err() != nil, w.perm.fired(), time.Since(started), err) {
+	//
+	// A TCP flow that timed out is not held against the relay. On the network
+	// that needs TCP, flows die one at a time while their neighbours to the very
+	// same address carry on (field log 19.09: both relays hit alike, a flow hung
+	// next to one answering in 200ms), so the death says nothing about the host —
+	// and three of them, young, would stand a working relay down for five
+	// minutes. A relay that really is gone earns its strikes on the redial, where
+	// the connect or the Allocate fails.
+	flowTimedOut := relayFlowTimedOut(w.raw)
+	verdict := sessionOutcome(ctx.Err() != nil, w.perm.fired(), time.Since(started), err)
+	if flowTimedOut && verdict == verdictFailure {
+		verdict = verdictNone
+	}
+	switch verdict {
 	case verdictSuccess:
 		noteServerSuccess(w.addr)
 	case verdictHandshakeFailure:
@@ -536,6 +558,16 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 			return fmt.Errorf("TURN blackhole: %s", w.perm.why())
 		}
 		return fmt.Errorf("TURN blackhole: %s (%s)", w.perm.why(), err)
+	}
+	// Likewise for a flow the kernel gave up: what the transport returns is the
+	// closed relay, or nil if its loops simply wound down — and nil would be read
+	// as "the server closed the stream". No credential wording can hide in this
+	// one, so the cause is kept in the chain.
+	if flowTimedOut {
+		if err == nil {
+			return fmt.Errorf("TCP flow to the relay timed out: no progress for %v", relayTCPUserTimeout)
+		}
+		return fmt.Errorf("TCP flow to the relay timed out: no progress for %v: %w", relayTCPUserTimeout, err)
 	}
 	return err
 }

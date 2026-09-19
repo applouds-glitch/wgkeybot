@@ -26,6 +26,11 @@ android {
         versionCode = providers.gradleProperty("wireguardVersionCode").get().toInt()
         versionName = providers.gradleProperty("wireguardVersionName").get()
         buildConfigField("int", "MIN_SDK_VERSION", minSdk.toString())
+        // owner/name of the GitHub repository whose releases the settings screen
+        // checks by hand. Empty means there is nothing to check and the row is
+        // absent; release.yml passes the repository it is running in.
+        buildConfigField("String", "RELEASES_REPO",
+            "\"${providers.gradleProperty("wgkReleasesRepo").getOrElse("")}\"")
         ndk {
             abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a"))
         }

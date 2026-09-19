@@ -38,6 +38,7 @@ import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.turn.ConnectionMode
 import com.wireguard.android.util.ConnectionImport
 import com.wireguard.android.util.AuthStore
+import com.wireguard.android.util.ThemeMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -139,9 +140,9 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
     /** Drives the tint of the bar's icons; the theme itself is set from the settings screen. */
     private fun isEffectivelyDark(): Boolean {
         return when (AuthStore.getInstance(this).getThemeMode()) {
-            "dark"  -> true
-            "light" -> false
-            else    -> (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            ThemeMode.DARK -> true
+            ThemeMode.LIGHT -> false
+            ThemeMode.SYSTEM -> (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                     Configuration.UI_MODE_NIGHT_YES
         }
     }

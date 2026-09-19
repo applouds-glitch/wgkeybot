@@ -16,16 +16,18 @@ import (
 )
 
 // stallingFront stands between the worker and a TCP relay and, once frozen,
-// stops taking the worker's bytes. That is what a hung flow looks like from the
+// stops taking the worker's bytes. A connection that was parked stays parked
+// when the front is thawed again; only connections made after that flow. That is what a hung flow looks like from the
 // phone: the connection stays up, nothing more is acknowledged, the send buffer
 // fills and the next write waits for room that never comes. Loopback cannot lose
 // segments, but a reader that stops reading fills the same buffer.
 type stallingFront struct {
-	addr   string
-	frozen atomic.Bool
-	done   chan struct{}
-	mu     sync.Mutex
-	conns  []net.Conn
+	addr     string
+	frozen   atomic.Bool
+	accepted atomic.Int32
+	done     chan struct{}
+	mu       sync.Mutex
+	conns    []net.Conn
 }
 
 func startStallingFront(t *testing.T, relayAddr string) *stallingFront {
@@ -46,6 +48,7 @@ func startStallingFront(t *testing.T, relayAddr string) *stallingFront {
 				down.Close()
 				continue
 			}
+			f.accepted.Add(1)
 			// A small window: less to fill before the worker's writes start to wait.
 			down.(*net.TCPConn).SetReadBuffer(4096)
 			f.mu.Lock()

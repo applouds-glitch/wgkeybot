@@ -7,9 +7,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -103,7 +105,107 @@ func connectRelayTCP(ctx context.Context, d *net.Dialer, addr string) (net.Conn,
 	if err != nil {
 		return nil, err
 	}
-	return &splitFirstWriteConn{Conn: c}, nil
+	// After the connect, so the SYN keeps its own, shorter limit above.
+	if tc, ok := c.(*net.TCPConn); ok {
+		if err := setTCPUserTimeout(tc, relayTCPUserTimeout); err != nil {
+			userTimeoutRefused.Do(func() {
+				turnLog("[NETWORK] TCP_USER_TIMEOUT refused (%v) — a hung flow to a relay is left to the kernel's default", err)
+			})
+		}
+	}
+	return &splitFirstWriteConn{Conn: &relayFlowConn{Conn: c, gaveUp: make(chan struct{})}}, nil
+}
+
+// relayTCPUserTimeout is how long a connection to a relay may make no progress
+// — data the relay has not acknowledged, or will not open its window for —
+// before the kernel gives it up (TCP_USER_TIMEOUT).
+//
+// Without it the kernel keeps retransmitting for a quarter of an hour, and
+// nothing above it cuts that short for a flow that hangs while it carries
+// traffic: the stream's writer is blocked in the socket, its keepalive queues up
+// behind the writer on the same descriptor, and the dead-stream detector lives
+// in the keepalive's loop — so the one stream that most needs replacing is the
+// one that cannot notice. It stays "ready", is skipped as stale after 35s, and
+// the pool is a stream short for good. On the network TCP is here for, flows
+// hang one by one (field log 19.09: four of ten within a minute of coming up).
+//
+// 30s, from both sides. The hangs seen to clear on their own there lasted 2-8s,
+// so this is four times clear of them. And past ~25s waiting stops being worth
+// it even for a path that comes back: the retransmission timer doubles each
+// time (0.4, 1.2, 2.8, 6, 12, 25, 51s… from a 400ms start), so a flow silent for
+// 30s will not try again until the 51st second, while a redial takes a second
+// or a few. It also lands before dispatchStaleAfter: the stream is replaced
+// rather than parked.
+//
+// The kernel applies the same limit to its keepalive probes (Go turns them on,
+// 15s idle), so an idle flow that has gone dark is given up within the minute
+// too, not only one with a writer stuck in it.
+//
+// A var for the host tests, which cannot wait 30s.
+var relayTCPUserTimeout = 30 * time.Second
+
+var userTimeoutRefused sync.Once
+
+// relayFlowConn is the TCP connection to a relay with one thing added: it notes
+// the kernel giving the flow up. That verdict is delivered once, as ETIMEDOUT,
+// to whichever call meets it first — pion's read loop, which swallows it, as
+// often as the stream's writer — and every call after that sees only a broken
+// pipe. runSession needs to know either way: to end the session at once rather
+// than at the next failed write, and to keep the relay out of the blame (see
+// there). A deadline of our own expiring is a different error and is not this.
+type relayFlowConn struct {
+	net.Conn
+	gaveUp chan struct{}
+	once   sync.Once
+}
+
+func (c *relayFlowConn) note(err error) {
+	if errors.Is(err, syscall.ETIMEDOUT) {
+		c.once.Do(func() { close(c.gaveUp) })
+	}
+}
+
+func (c *relayFlowConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if err != nil {
+		c.note(err)
+	}
+	return n, err
+}
+
+func (c *relayFlowConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if err != nil {
+		c.note(err)
+	}
+	return n, err
+}
+
+// relayFlow finds the flow under a dialed relay conn; nil over UDP.
+func relayFlow(c net.Conn) *relayFlowConn {
+	if split, ok := c.(*splitFirstWriteConn); ok {
+		c = split.Conn
+	}
+	flow, _ := c.(*relayFlowConn)
+	return flow
+}
+
+// relayFlowGaveUp is closed when the kernel gives the relay's flow up. Over UDP
+// it is nil, which a select waits on for ever.
+func relayFlowGaveUp(c net.Conn) <-chan struct{} {
+	if flow := relayFlow(c); flow != nil {
+		return flow.gaveUp
+	}
+	return nil
+}
+
+func relayFlowTimedOut(c net.Conn) bool {
+	select {
+	case <-relayFlowGaveUp(c):
+		return true
+	default:
+		return false
+	}
 }
 
 // firstWriteSplit is where the first write to a relay over TCP is cut in two:

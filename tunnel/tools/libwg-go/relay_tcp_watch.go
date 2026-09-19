@@ -153,6 +153,9 @@ func relayTCPConn(c net.Conn) *net.TCPConn {
 	if split, ok := c.(*splitFirstWriteConn); ok {
 		c = split.Conn
 	}
+	if flow, ok := c.(*relayFlowConn); ok {
+		c = flow.Conn
+	}
 	tc, _ := c.(*net.TCPConn)
 	return tc
 }

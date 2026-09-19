@@ -63,9 +63,8 @@ class AuthStore private constructor(context: Context) {
     fun getLastConfigHash(): String? = prefs.getString(KEY_LAST_CONFIG_HASH, null)
     fun saveLastConfigHash(hash: String) = prefs.edit().putString(KEY_LAST_CONFIG_HASH, hash).apply()
 
-    /** "system" | "light" | "dark" */
-    fun getThemeMode(): String = prefs.getString(KEY_THEME, "dark") ?: "dark"
-    fun setThemeMode(mode: String) = prefs.edit().putString(KEY_THEME, mode).apply()
+    fun getThemeMode(): ThemeMode = ThemeMode.fromPref(prefs.getString(KEY_THEME, null))
+    fun setThemeMode(mode: ThemeMode) = prefs.edit().putString(KEY_THEME, mode.pref).apply()
 
     /** One-time first-launch split-tunneling wizard. */
     fun isSplitWizardShown(): Boolean = prefs.getBoolean(KEY_SPLIT_WIZARD_SHOWN, false)

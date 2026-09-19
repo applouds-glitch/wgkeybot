@@ -62,6 +62,7 @@ import com.wireguard.android.turn.TurnConfigProcessor
 import com.wireguard.android.util.ConnectionImport
 import com.wireguard.android.util.ConnectionLink
 import com.wireguard.android.updater.UpdateActivity
+import com.wireguard.android.updater.UpdatePolicy
 import com.wireguard.android.widget.TvTokenKeyboard
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1280,7 +1281,7 @@ class TunnelListFragment : BaseFragment() {
 
     private fun checkForUpdate(latestVersion: String?, downloadUrl: String?) {
         if (updateShownThisSession || latestVersion == null) return
-        if (compareVersions(latestVersion, BuildConfig.VERSION_NAME) <= 0) return
+        if (UpdatePolicy.compareVersions(latestVersion, BuildConfig.VERSION_NAME) <= 0) return
         updateShownThisSession = true
         MaterialAlertDialogBuilder(requireContext())
             .setTitle(getString(R.string.wgk_update_available_title, latestVersion))
@@ -1301,16 +1302,6 @@ class TunnelListFragment : BaseFragment() {
             }
             .setCancelable(false)
             .show()
-    }
-
-    private fun compareVersions(a: String, b: String): Int {
-        val ap = a.split(".").map { it.toIntOrNull() ?: 0 }
-        val bp = b.split(".").map { it.toIntOrNull() ?: 0 }
-        for (i in 0..2) {
-            val diff = (ap.getOrElse(i) { 0 }) - (bp.getOrElse(i) { 0 })
-            if (diff != 0) return diff
-        }
-        return 0
     }
 
     // ── Config timestamp ───────────────────────────────────────────────────────
