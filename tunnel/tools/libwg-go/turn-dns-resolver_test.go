@@ -16,7 +16,7 @@ import (
 
 // withFakeDNS swaps the active server list and the resolver seam for one test,
 // restoring both — and the last-successful bias, which the race writes — after.
-func withFakeDNS(t *testing.T, servers []DNSServer, fn func(context.Context, string, DNSServer) (string, error)) {
+func withFakeDNS(t *testing.T, servers []DNSServer, fn func(context.Context, string, DNSServer) ([]string, error)) {
 	t.Helper()
 
 	prevServers, prevFn := activeDNSServers(), resolveAnyFn
@@ -53,19 +53,19 @@ func TestResolveWithOrderedServersLeavesHealthyServerAlone(t *testing.T) {
 	var queried []string
 
 	withFakeDNS(t, fakeServers("192.168.1.1", "77.88.8.8", "8.8.8.8"),
-		func(ctx context.Context, domain string, s DNSServer) (string, error) {
+		func(ctx context.Context, domain string, s DNSServer) ([]string, error) {
 			mu.Lock()
 			queried = append(queried, s.IP)
 			mu.Unlock()
-			return "93.186.237.1", nil
+			return []string{"93.186.237.1"}, nil
 		})
 
-	ip, err := resolveWithOrderedServers(context.Background(), "login.vk.ru")
+	ips, err := resolveWithOrderedServers(context.Background(), "login.vk.ru")
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}
-	if ip != "93.186.237.1" {
-		t.Fatalf("got %q, want 93.186.237.1", ip)
+	if len(ips) != 1 || ips[0] != "93.186.237.1" {
+		t.Fatalf("got %q, want 93.186.237.1", ips)
 	}
 
 	mu.Lock()
@@ -80,23 +80,23 @@ func TestResolveWithOrderedServersLeavesHealthyServerAlone(t *testing.T) {
 // before it, or the head start the last-successful bias buys would be gone.
 func TestResolveWithOrderedServersHedgesPastHungServer(t *testing.T) {
 	withFakeDNS(t, fakeServers("192.168.1.1", "8.8.8.8"),
-		func(ctx context.Context, domain string, s DNSServer) (string, error) {
+		func(ctx context.Context, domain string, s DNSServer) ([]string, error) {
 			if s.IP == "192.168.1.1" {
 				<-ctx.Done()
-				return "", ctx.Err()
+				return nil, ctx.Err()
 			}
-			return "93.186.237.1", nil
+			return []string{"93.186.237.1"}, nil
 		})
 
 	start := time.Now()
-	ip, err := resolveWithOrderedServers(context.Background(), "login.vk.ru")
+	ips, err := resolveWithOrderedServers(context.Background(), "login.vk.ru")
 	elapsed := time.Since(start)
 
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}
-	if ip != "93.186.237.1" {
-		t.Fatalf("got %q, want the second server's answer", ip)
+	if len(ips) != 1 || ips[0] != "93.186.237.1" {
+		t.Fatalf("got %q, want the second server's answer", ips)
 	}
 	if elapsed+time.Millisecond < dnsHedgeDelay {
 		t.Fatalf("second server started after %v, before the %v hedge", elapsed, dnsHedgeDelay)
@@ -110,22 +110,22 @@ func TestResolveWithOrderedServersHedgesPastHungServer(t *testing.T) {
 // so a list of fast failures is walked at the speed of the failures.
 func TestResolveWithOrderedServersBringsNextForwardOnFailure(t *testing.T) {
 	withFakeDNS(t, fakeServers("192.168.1.1", "77.88.8.8", "8.8.8.8"),
-		func(ctx context.Context, domain string, s DNSServer) (string, error) {
+		func(ctx context.Context, domain string, s DNSServer) ([]string, error) {
 			if s.IP == "8.8.8.8" {
-				return "93.186.237.1", nil
+				return []string{"93.186.237.1"}, nil
 			}
-			return "", errors.New("i/o timeout")
+			return nil, errors.New("i/o timeout")
 		})
 
 	start := time.Now()
-	ip, err := resolveWithOrderedServers(context.Background(), "login.vk.ru")
+	ips, err := resolveWithOrderedServers(context.Background(), "login.vk.ru")
 	elapsed := time.Since(start)
 
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}
-	if ip != "93.186.237.1" {
-		t.Fatalf("got %q, want the third server's answer", ip)
+	if len(ips) != 1 || ips[0] != "93.186.237.1" {
+		t.Fatalf("got %q, want the third server's answer", ips)
 	}
 	if elapsed >= dnsHedgeDelay {
 		t.Fatalf("two instant failures took %v — the next server waited out the hedge", elapsed)
@@ -135,8 +135,8 @@ func TestResolveWithOrderedServersBringsNextForwardOnFailure(t *testing.T) {
 // Every server failing is still an error, and it carries a cause now.
 func TestResolveWithOrderedServersReportsTotalFailure(t *testing.T) {
 	withFakeDNS(t, fakeServers("192.168.1.1", "8.8.8.8"),
-		func(ctx context.Context, domain string, s DNSServer) (string, error) {
-			return "", errors.New("i/o timeout")
+		func(ctx context.Context, domain string, s DNSServer) ([]string, error) {
+			return nil, errors.New("i/o timeout")
 		})
 
 	if _, err := resolveWithOrderedServers(context.Background(), "login.vk.ru"); err == nil {
@@ -152,18 +152,18 @@ func TestResolveCollapsesConcurrentLookups(t *testing.T) {
 	release := make(chan struct{})
 
 	withFakeDNS(t, fakeServers("192.168.1.1"),
-		func(ctx context.Context, domain string, s DNSServer) (string, error) {
+		func(ctx context.Context, domain string, s DNSServer) ([]string, error) {
 			lookups.Add(1)
 			select {
 			case started <- struct{}{}:
 			default:
 			}
 			<-release
-			return "93.186.237.1", nil
+			return []string{"93.186.237.1"}, nil
 		})
 
 	cache := &DnsCache{
-		ips:      make(map[string]string),
+		ips:      make(map[string][]string),
 		inflight: make(map[string]*dnsLookup),
 	}
 
@@ -196,7 +196,7 @@ func TestResolveCollapsesConcurrentLookups(t *testing.T) {
 			t.Fatalf("caller %d got %q", i, results[i])
 		}
 	}
-	if cached, ok := cache.ips["login.vk.ru"]; !ok || cached != "93.186.237.1" {
+	if cached, ok := cache.ips["login.vk.ru"]; !ok || len(cached) != 1 || cached[0] != "93.186.237.1" {
 		t.Fatalf("answer not cached: %q (present=%v)", cached, ok)
 	}
 	if len(cache.inflight) != 0 {
@@ -208,12 +208,12 @@ func TestResolveCollapsesConcurrentLookups(t *testing.T) {
 // wedged in the inflight map either.
 func TestResolveDoesNotCacheFailures(t *testing.T) {
 	withFakeDNS(t, fakeServers("192.168.1.1"),
-		func(ctx context.Context, domain string, s DNSServer) (string, error) {
-			return "", errors.New("i/o timeout")
+		func(ctx context.Context, domain string, s DNSServer) ([]string, error) {
+			return nil, errors.New("i/o timeout")
 		})
 
 	cache := &DnsCache{
-		ips:      make(map[string]string),
+		ips:      make(map[string][]string),
 		inflight: make(map[string]*dnsLookup),
 	}
 	if _, err := cache.Resolve(context.Background(), "login.vk.ru"); err == nil {

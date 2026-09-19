@@ -133,7 +133,7 @@ func TestAMoveForgetsWhatTheOldNetworkTaught(t *testing.T) {
 	learn := func() {
 		noteServerDemotedAt(healthTestAddr, time.Now())
 		hostCache.mu.Lock()
-		hostCache.ips["relay.example"] = "192.0.2.1"
+		hostCache.ips["relay.example"] = []string{"192.0.2.1"}
 		hostCache.mu.Unlock()
 	}
 	learned := func() (health, dns bool) {
