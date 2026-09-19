@@ -254,21 +254,11 @@ func getCustomNetDialer() net.Dialer {
 	}
 }
 
-// Custom dial context that resolves domains via DNS cache
+// Custom dial context that resolves domains via DNS cache and tries every
+// address of the answer — see vk_dial.go.
 func getCustomDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = addr
-		port = "443"
-	}
-
-	resolvedIP, err := hostCache.Resolve(ctx, host)
-	if err != nil {
-		return nil, fmt.Errorf("DNS resolution failed for %s: %w", host, err)
-	}
-
 	dialer := getCustomNetDialer()
-	return dialer.DialContext(ctx, network, net.JoinHostPort(resolvedIP, port))
+	return dialVKHost(ctx, hostCache, network, addr, dialer.DialContext)
 }
 
 // fetchVkCreds performs the actual VK/OK API calls to fetch credentials.

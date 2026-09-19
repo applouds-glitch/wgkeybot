@@ -25,7 +25,17 @@ import (
 	"time"
 )
 
-// DnsCache stores cached IP addresses.
+// DnsCache stores cached IP addresses: every A record of the answer, the
+// preferred one first.
+//
+// It used to keep the first A record and nothing else, for as long as the proxy
+// ran. api.vk.ru answers with nine addresses in rotating order, and behind a
+// mobile whitelist not all of VK's address space is open — a whitelist is a list
+// of subnets, and the public copies of it miss some that VK's round robin hands
+// out. A lookup that happened to open with such an address pinned every request
+// to VK for the rest of the session to an address that never answers, at 20s a
+// connect. The VK dial walks the whole list now (vk_dial.go) and reorders it by
+// what it learns: SetAside below.
 //
 // inflight collapses concurrent lookups of the same name into one. Credential
 // fetches run two at a time (vkSemaphore) over the same handful of VK hosts,
@@ -33,7 +43,7 @@ import (
 // twice the queries to resolvers that were already timing out, for one answer.
 type DnsCache struct {
 	mu       sync.RWMutex
-	ips      map[string]string
+	ips      map[string][]string
 	inflight map[string]*dnsLookup
 }
 
@@ -41,7 +51,7 @@ type DnsCache struct {
 // for the same name while it was running.
 type dnsLookup struct {
 	done chan struct{}
-	ip   string
+	ips  []string
 	err  error
 }
 
@@ -133,30 +143,43 @@ var (
 
 var (
 	hostCache = &DnsCache{
-		ips:      make(map[string]string),
+		ips:      make(map[string][]string),
 		inflight: make(map[string]*dnsLookup),
 	}
 )
 
-// Resolve resolves DNS name using cache and ordered server list. Callers asking
-// for the same name at the same time share one lookup: the first becomes its
-// leader and the rest wait on its answer.
+// Resolve returns the preferred address of domain. For callers that have no use
+// for the alternatives: a TURN server or the peer, named once and dialled as
+// one address.
 func (c *DnsCache) Resolve(ctx context.Context, domain string) (string, error) {
+	ips, err := c.ResolveAll(ctx, domain)
+	if err != nil {
+		return "", err
+	}
+	return ips[0], nil
+}
+
+// ResolveAll resolves DNS name using cache and ordered server list, and returns
+// every address of the answer, preferred first — never an empty list without an
+// error. The slice is the caller's own. Callers asking for the same name at the
+// same time share one lookup: the first becomes its leader and the rest wait on
+// its answer.
+func (c *DnsCache) ResolveAll(ctx context.Context, domain string) ([]string, error) {
 	for {
 		c.mu.Lock()
 		if cached, ok := c.ips[domain]; ok {
 			c.mu.Unlock()
-			return cached, nil
+			return append([]string(nil), cached...), nil
 		}
 		if call, ok := c.inflight[domain]; ok {
 			c.mu.Unlock()
 			select {
 			case <-call.done:
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return nil, ctx.Err()
 			}
 			if call.err == nil {
-				return call.ip, nil
+				return append([]string(nil), call.ips...), nil
 			}
 			// The leader may have failed only because ITS caller went away — a
 			// worker torn down while we are still very much alive. That says
@@ -165,7 +188,7 @@ func (c *DnsCache) Resolve(ctx context.Context, domain string) (string, error) {
 			if isContextErr(call.err) && ctx.Err() == nil {
 				continue
 			}
-			return "", call.err
+			return nil, call.err
 		}
 		call := &dnsLookup{done: make(chan struct{})}
 		if c.inflight == nil {
@@ -174,21 +197,58 @@ func (c *DnsCache) Resolve(ctx context.Context, domain string) (string, error) {
 		c.inflight[domain] = call
 		c.mu.Unlock()
 
-		call.ip, call.err = resolveWithOrderedServers(ctx, domain)
+		call.ips, call.err = resolveWithOrderedServers(ctx, domain)
 
 		// Only successes are cached; a failure must not pin a name to an error.
 		// The entry leaves inflight under the same lock that publishes the
 		// answer, so a caller arriving now reads the cache instead of waiting.
 		c.mu.Lock()
 		if call.err == nil {
-			c.ips[domain] = call.ip
+			c.ips[domain] = call.ips
 		}
 		delete(c.inflight, domain)
 		c.mu.Unlock()
 		close(call.done)
 
-		return call.ip, call.err
+		if call.err != nil {
+			return nil, call.err
+		}
+		return append([]string(nil), call.ips...), nil
 	}
+}
+
+// SetAside moves ip to the tail of domain's addresses: it refused, timed out,
+// was outrun by an address started after it, or took a connection and never
+// said a word. It stays in the list — a wrong call here costs the address its
+// place in the queue and nothing else.
+//
+// An address the cache no longer holds (the name was resolved again meanwhile)
+// is left alone. A new slice is published rather than the old one shuffled in
+// place: ResolveAll copies under the lock, but a lookup's followers copy
+// call.ips after it, and that is the very slice the cache holds.
+func (c *DnsCache) SetAside(domain, ip string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ips := c.ips[domain]
+	out := make([]string, 0, len(ips))
+	for _, other := range ips {
+		if other != ip {
+			out = append(out, other)
+		}
+	}
+	if len(out) == len(ips) {
+		return
+	}
+	c.ips[domain] = append(out, ip)
+}
+
+// Forget drops domain from the cache, so that the next dial resolves it again.
+// For a name none of whose addresses connected: either there is no network, and
+// asking again costs nothing, or the answer itself has gone stale.
+func (c *DnsCache) Forget(domain string) {
+	c.mu.Lock()
+	delete(c.ips, domain)
+	c.mu.Unlock()
 }
 
 func isContextErr(err error) bool {
@@ -201,7 +261,7 @@ var resolveAnyFn = resolveAny
 
 type dnsRaceResult struct {
 	idx int
-	ip  string
+	ips []string
 	err error
 }
 
@@ -214,13 +274,13 @@ type dnsRaceResult struct {
 // in hedge delays, so the common case is one query to one server — but a server
 // that has stopped answering no longer costs its full timeout before the next
 // one is even tried.
-func resolveWithOrderedServers(ctx context.Context, domain string) (string, error) {
+func resolveWithOrderedServers(ctx context.Context, domain string) ([]string, error) {
 	// Snapshot both, so the whole race runs against one list and one resolver
 	// even if InitSystemDns swaps the slice — or a test restores the seam — while
 	// a straggler is still in flight.
 	servers, resolve := activeDNSServers(), resolveAnyFn
 	if len(servers) == 0 {
-		return "", fmt.Errorf("no DNS servers configured for %s", domain)
+		return nil, fmt.Errorf("no DNS servers configured for %s", domain)
 	}
 
 	lastSuccessfulMu.RLock()
@@ -255,7 +315,7 @@ func resolveWithOrderedServers(ctx context.Context, domain string) (string, erro
 
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return nil, ctx.Err()
 
 		case <-nextServer:
 			idx := (startIndex + started) % len(servers)
@@ -263,10 +323,13 @@ func resolveWithOrderedServers(ctx context.Context, domain string) (string, erro
 			started++
 			turnLog("[DNS] Trying server %d (%v, %s) for %s", idx, server.Type, server.IP, domain)
 			go func() {
-				ip, err := resolve(ctx, domain, server)
+				ips, err := resolve(ctx, domain, server)
+				if err == nil && len(ips) == 0 {
+					err = errors.New("no addresses in DNS answer")
+				}
 				// Buffered for every server, so a straggler losing the race
 				// still delivers and exits instead of leaking.
-				results <- dnsRaceResult{idx: idx, ip: ip, err: err}
+				results <- dnsRaceResult{idx: idx, ips: ips, err: err}
 			}()
 			if started < len(servers) {
 				hedge.Reset(dnsHedgeDelay)
@@ -275,11 +338,11 @@ func resolveWithOrderedServers(ctx context.Context, domain string) (string, erro
 		case res := <-results:
 			finished++
 			if res.err == nil {
-				turnLog("[DNS] Success with server %d: %s -> %s", res.idx, domain, res.ip)
+				turnLog("[DNS] Success with server %d: %s -> %s", res.idx, domain, strings.Join(res.ips, ", "))
 				lastSuccessfulMu.Lock()
 				lastSuccessfulIndex = res.idx
 				lastSuccessfulMu.Unlock()
-				return res.ip, nil
+				return res.ips, nil
 			}
 			turnLog("[DNS] Server %d failed: %v", res.idx, res.err)
 			if firstErr == nil {
@@ -294,11 +357,11 @@ func resolveWithOrderedServers(ctx context.Context, domain string) (string, erro
 		}
 	}
 
-	return "", fmt.Errorf("all DNS servers failed for %s: %w", domain, firstErr)
+	return nil, fmt.Errorf("all DNS servers failed for %s: %w", domain, firstErr)
 }
 
 // resolveAny resolves DNS using the specified server
-func resolveAny(ctx context.Context, domain string, server DNSServer) (string, error) {
+func resolveAny(ctx context.Context, domain string, server DNSServer) ([]string, error) {
 	switch server.Type {
 	case DNSPlain:
 		return resolveUDPWithServer(ctx, domain, server.IP)
@@ -307,19 +370,19 @@ func resolveAny(ctx context.Context, domain string, server DNSServer) (string, e
 	case DNSDoT:
 		return resolveDoTWithServer(ctx, domain, server.IP, server.Domain)
 	default:
-		return "", fmt.Errorf("unknown DNS server type: %v", server.Type)
+		return nil, fmt.Errorf("unknown DNS server type: %v", server.Type)
 	}
 }
 
 // resolveUDPWithServer resolves DNS via standard UDP query to specified server
-func resolveUDPWithServer(ctx context.Context, domain string, serverIP string) (string, error) {
+func resolveUDPWithServer(ctx context.Context, domain string, serverIP string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, dnsTimeout)
 	defer cancel()
 
 	// Build DNS query (A record)
 	query, err := buildDNSQuery(domain)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// Use DialContext with protectControl (same as old protectedResolver).
@@ -332,7 +395,7 @@ func resolveUDPWithServer(ctx context.Context, domain string, serverIP string) (
 	}
 	conn, err := dialer.DialContext(ctx, "udp", addr)
 	if err != nil {
-		return "", fmt.Errorf("failed to dial UDP: %w", err)
+		return nil, fmt.Errorf("failed to dial UDP: %w", err)
 	}
 	defer conn.Close()
 
@@ -350,33 +413,28 @@ func resolveUDPWithServer(ctx context.Context, domain string, serverIP string) (
 	conn.SetDeadline(time.Now().Add(dnsTimeout))
 	_, err = conn.Write(query)
 	if err != nil {
-		return "", fmt.Errorf("failed to send DNS query: %w", err)
+		return nil, fmt.Errorf("failed to send DNS query: %w", err)
 	}
 
 	// Read response
 	response := make([]byte, 512)
 	n, err := conn.Read(response)
 	if err != nil {
-		return "", fmt.Errorf("failed to read DNS response: %w", err)
+		return nil, fmt.Errorf("failed to read DNS response: %w", err)
 	}
 
 	// Parse response
-	ip, err := parseDNSResponse(response[:n], domain)
-	if err != nil {
-		return "", err
-	}
-
-	return ip, nil
+	return parseDNSResponse(response[:n], domain)
 }
 
 // resolveDoHWithServer resolves DNS via DNS-over-HTTPS to specified server
-func resolveDoHWithServer(ctx context.Context, domain string, serverIP string, serverName string) (string, error) {
+func resolveDoHWithServer(ctx context.Context, domain string, serverIP string, serverName string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, dohTimeout)
 	defer cancel()
 
 	query, err := buildDNSQuery(domain)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// Build HTTP request with IP directly (no DNS resolution needed)
@@ -385,7 +443,7 @@ func resolveDoHWithServer(ctx context.Context, domain string, serverIP string, s
 	ipURL := "https://" + addr + "/dns-query"
 	req, err := http.NewRequestWithContext(ctx, "POST", ipURL, bytes.NewReader(query))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
@@ -412,35 +470,30 @@ func resolveDoHWithServer(ctx context.Context, domain string, serverIP string, s
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("DoH request failed: %w", err)
+		return nil, fmt.Errorf("DoH request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("DoH returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("DoH returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	ip, err := parseDNSResponse(body, domain)
-	if err != nil {
-		return "", err
-	}
-
-	return ip, nil
+	return parseDNSResponse(body, domain)
 }
 
 // resolveDoTWithServer resolves DNS via DNS-over-TLS to specified server
-func resolveDoTWithServer(ctx context.Context, domain string, serverIP string, serverName string) (string, error) {
+func resolveDoTWithServer(ctx context.Context, domain string, serverIP string, serverName string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, dotTimeout)
 	defer cancel()
 
 	query, err := buildDNSQuery(domain)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	tlsConfig := &tls.Config{
@@ -451,7 +504,7 @@ func resolveDoTWithServer(ctx context.Context, domain string, serverIP string, s
 	// DoT uses port 853
 	tcpConn, err := protectAndDial(ctx, "tcp", net.JoinHostPort(serverIP, "853"))
 	if err != nil {
-		return "", fmt.Errorf("failed to connect to DoT server: %w", err)
+		return nil, fmt.Errorf("failed to connect to DoT server: %w", err)
 	}
 	defer tcpConn.Close()
 
@@ -468,7 +521,7 @@ func resolveDoTWithServer(ctx context.Context, domain string, serverIP string, s
 
 	err = tlsConn.HandshakeContext(ctx)
 	if err != nil {
-		return "", fmt.Errorf("TLS handshake failed: %w", err)
+		return nil, fmt.Errorf("TLS handshake failed: %w", err)
 	}
 
 	// Send DNS query with 2-byte length prefix (DoT protocol)
@@ -477,29 +530,24 @@ func resolveDoTWithServer(ctx context.Context, domain string, serverIP string, s
 
 	_, err = tlsConn.Write(append(lengthPrefix, query...))
 	if err != nil {
-		return "", fmt.Errorf("failed to send DoT query: %w", err)
+		return nil, fmt.Errorf("failed to send DoT query: %w", err)
 	}
 
 	// Read response length
 	lengthBuf := make([]byte, 2)
 	_, err = io.ReadFull(tlsConn, lengthBuf)
 	if err != nil {
-		return "", fmt.Errorf("failed to read DoT response length: %w", err)
+		return nil, fmt.Errorf("failed to read DoT response length: %w", err)
 	}
 
 	responseLen := binary.BigEndian.Uint16(lengthBuf)
 	response := make([]byte, responseLen)
 	_, err = io.ReadFull(tlsConn, response)
 	if err != nil {
-		return "", fmt.Errorf("failed to read DoT response: %w", err)
+		return nil, fmt.Errorf("failed to read DoT response: %w", err)
 	}
 
-	ip, err := parseDNSResponse(response, domain)
-	if err != nil {
-		return "", err
-	}
-
-	return ip, nil
+	return parseDNSResponse(response, domain)
 }
 
 // buildDNSQuery builds DNS query for A record
@@ -533,28 +581,30 @@ func buildDNSQuery(domain string) ([]byte, error) {
 	return append(query, nameBuf.Bytes()...), nil
 }
 
-// parseDNSResponse parses DNS response and extracts A record
-func parseDNSResponse(response []byte, domain string) (string, error) {
+// parseDNSResponse parses DNS response and extracts every A record, in the
+// order the server gave them. All of them, because the first is not always one
+// that can be reached — see DnsCache.
+func parseDNSResponse(response []byte, domain string) ([]string, error) {
 	if len(response) < 12 {
-		return "", fmt.Errorf("DNS response too short")
+		return nil, fmt.Errorf("DNS response too short")
 	}
 
 	// Check response flag
 	flags := binary.BigEndian.Uint16(response[2:4])
 	if flags&0x8000 == 0 {
-		return "", fmt.Errorf("not a DNS response")
+		return nil, fmt.Errorf("not a DNS response")
 	}
 
 	// Check response code
 	rcode := flags & 0x000F
 	if rcode != 0 {
-		return "", fmt.Errorf("DNS error: rcode=%d", rcode)
+		return nil, fmt.Errorf("DNS error: rcode=%d", rcode)
 	}
 
 	// Get answer count
 	ansCount := binary.BigEndian.Uint16(response[6:8])
 	if ansCount == 0 {
-		return "", fmt.Errorf("no answers in DNS response")
+		return nil, fmt.Errorf("no answers in DNS response")
 	}
 
 	// Skip question section
@@ -569,6 +619,7 @@ func parseDNSResponse(response []byte, domain string) (string, error) {
 	offset += 5 // Null byte + QTYPE (2) + QCLASS (2)
 
 	// Read answers
+	var ips []string
 	for i := 0; i < int(ansCount) && offset < len(response); i++ {
 		// Skip name (may have compression pointer)
 		nameSkipped := false
@@ -598,18 +649,20 @@ func parseDNSResponse(response []byte, domain string) (string, error) {
 
 		// Check if this is A record (TYPE=1, length=4)
 		if qtype == 1 && rdLength == 4 && offset+4 <= len(response) {
-			ip := fmt.Sprintf("%d.%d.%d.%d",
+			ips = append(ips, fmt.Sprintf("%d.%d.%d.%d",
 				response[offset],
 				response[offset+1],
 				response[offset+2],
-				response[offset+3])
-			return ip, nil
+				response[offset+3]))
 		}
 
 		offset += int(rdLength)
 	}
 
-	return "", fmt.Errorf("no A record found in DNS response")
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no A record found in DNS response")
+	}
+	return ips, nil
 }
 
 // protectAndDial creates TCP connection and protects it via Control callback
@@ -632,7 +685,7 @@ func protectAndDial(ctx context.Context, network, addr string) (net.Conn, error)
 func ClearCache() {
 	hostCache.mu.Lock()
 	defer hostCache.mu.Unlock()
-	hostCache.ips = make(map[string]string)
+	hostCache.ips = make(map[string][]string)
 	lastSuccessfulMu.Lock()
 	lastSuccessfulIndex = 0
 	lastSuccessfulMu.Unlock()
