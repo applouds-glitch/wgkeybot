@@ -322,7 +322,7 @@
     <string name="wgk_tether_off_value">Off</string>
     <string name="wgk_tether_starting_value">Starting…</string>
     <string name="wgk_tether_details_title">Network details and QR code</string>
-    <string name="wgk_tether_needs_tunnel">Connect first — sharing works only through the tunnel.</string>
+    <string name="wgk_tether_needs_tunnel">Connect first: sharing works only through the tunnel.</string>
     <string name="wgk_tether_ssid_label">Network</string>
     <string name="wgk_tether_pass_label">Password</string>
     <string name="wgk_tether_proxy_label">Proxy</string>
@@ -334,8 +334,8 @@
     <string name="wgk_tether_counters">Devices: %1$d · connections: %2$d · sent %3$s · received %4$s</string>
     <string name="wgk_tether_notification_channel">Internet sharing</string>
     <string name="wgk_tether_stop_action">Stop</string>
-    <string name="wgk_tether_proxy_required">Set the proxy on the client. Without it the device has no internet at all — that is what guarantees nothing slips past the tunnel.</string>
-    <string name="wgk_tether_howto">Android and iOS: Wi-Fi network settings → Proxy → Manual (or Auto with the config URL).\nWindows and macOS: system proxy settings, HTTP and HTTPS.\nBrowsers and terminals also accept the address as a SOCKS5 proxy.\nGames and Telegram usually ignore the system proxy — set the same address as a SOCKS5 proxy in the app\'s own settings, or they stay offline.</string>
+    <string name="wgk_tether_proxy_required">Set the proxy on the client. Without it the device has no internet at all. That is what guarantees nothing slips past the tunnel.</string>
+    <string name="wgk_tether_howto">Android and iOS: Wi-Fi network settings → Proxy → Manual (or Auto with the config URL).\nWindows and macOS: system proxy settings, HTTP and HTTPS.\nBrowsers and terminals also accept the address as a SOCKS5 proxy.\nGames and Telegram usually ignore the system proxy. Set the same address as a SOCKS5 proxy in the app\'s own settings, or they stay offline.</string>
     <string name="wgk_tether_error_tunnel_down">The tunnel went down, so sharing stopped.</string>
     <string name="wgk_tether_error_location">Turn on location in system settings: without it Android refuses to raise the access point, even with the permission granted.</string>
     <string name="wgk_tether_error_permission">Sharing needs permission to manage nearby Wi-Fi devices.</string>
@@ -348,7 +348,7 @@
     <string name="wgk_tether_routing_label">Split routing</string>
     <string name="wgk_tether_routing_desc">Russian sites bypass the tunnel; ads and trackers are refused</string>
     <string name="wgk_tether_routing_note_on">Split routing is on: Russian sites and services leave the phone outside the tunnel.</string>
-    <string name="wgk_tether_routing_note_unavailable">Split routing is on, but the rules could not be downloaded — everything goes through the tunnel for now.</string>
+    <string name="wgk_tether_routing_note_unavailable">Split routing is on, but the rules could not be downloaded. Everything goes through the tunnel for now.</string>
     <string name="wgk_routing_settings_title">Routing rules</string>
     <string name="wgk_routing_section_source">Source</string>
     <string name="wgk_routing_url_label">Rules profile (Happ)</string>
@@ -356,7 +356,7 @@
     <string name="wgk_routing_url_invalid">The address must start with http:// or https://</string>
     <string name="wgk_routing_dns_label">DNS for direct destinations</string>
     <string name="wgk_routing_dns_from_profile">From the profile (%1$s)</string>
-    <string name="wgk_routing_dns_hint">IP addresses, comma separated; empty — from the profile</string>
+    <string name="wgk_routing_dns_hint">IP addresses, comma separated. Leave empty to take them from the profile</string>
     <string name="wgk_routing_dns_invalid">Enter IP addresses, comma separated</string>
     <string name="wgk_routing_section_files">Files</string>
     <string name="wgk_routing_profile_label">Profile</string>
@@ -371,8 +371,8 @@
     <string name="wgk_routing_updating">Updating…</string>
     <string name="wgk_routing_status_applied">Rules updated and applied to the running session; client connections were reopened.</string>
     <string name="wgk_routing_status_next_start">Rules updated. They apply when sharing is next switched on.</string>
-    <string name="wgk_routing_status_restart_failed">Rules updated, but the sharing proxy could not be restarted — sharing has stopped.</string>
-    <string name="wgk_routing_status_kept_old">Could not download an update — the previous rules are kept.</string>
+    <string name="wgk_routing_status_restart_failed">Rules updated, but the sharing proxy could not be restarted. Sharing has stopped.</string>
+    <string name="wgk_routing_status_kept_old">Could not download an update, so the previous rules are kept.</string>
     <string name="wgk_routing_status_no_rules">Could not download the rules. Check the connection and the profile address.</string>
     <string name="wgk_routing_status_dns_applied">Applied to the running session; client connections were reopened.</string>
     <string name="wgk_routing_note">Downloads go through the tunnel. The .dat files are fetched again only when the profile points at a new version; changing the profile address discards the cached files.</string>
@@ -416,16 +416,16 @@
     <string name="wgk_status_sub_handshake">Checking the server connection</string>
     <string name="wgk_status_sub_connected">Your traffic is protected</string>
     <string name="wgk_status_sub_connected_time">Online for %1$s</string>
-    <string name="wgk_status_sub_reconnecting">Server not responding — retrying</string>
-    <string name="wgk_status_sub_failed">Server unreachable — check your network</string>
+    <string name="wgk_status_sub_reconnecting">Server not responding, retrying</string>
+    <string name="wgk_status_sub_failed">Server unreachable, check your network</string>
 
     <!-- Terminal failures the app can name. Each has to fit the status card's
          single subtitle line, so they stay short and end in the one action that
          helps. -->
-    <string name="wgk_status_sub_failed_call_gone">Call link is gone — refresh the config</string>
-    <string name="wgk_status_sub_failed_call_auth">Call needs an account — refresh the config</string>
-    <string name="wgk_status_sub_failed_captcha">Captcha could not be solved — try later</string>
-    <string name="wgk_status_sub_failed_creds">Could not get credentials — try later</string>
+    <string name="wgk_status_sub_failed_call_gone">Call link is gone, refresh the config</string>
+    <string name="wgk_status_sub_failed_call_auth">Call needs an account, refresh the config</string>
+    <string name="wgk_status_sub_failed_captcha">Captcha could not be solved, try later</string>
+    <string name="wgk_status_sub_failed_creds">Could not get credentials, try later</string>
 
     <!-- Chip under the connect button while internet sharing is up. -->
     <string name="wgk_tether_chip">Sharing · %1$d</string>
@@ -445,17 +445,17 @@
     <string name="wgk_connection_mode_title">Connection mode</string>
     <string name="wgk_connection_mode_standard_value">Standard</string>
     <string name="wgk_connection_mode_reserve_value">Fallback</string>
-    <string name="wgk_connection_mode_standard_option">Standard — faster, recommended</string>
-    <string name="wgk_connection_mode_reserve_option">Fallback — slower, use if standard mode fails</string>
+    <string name="wgk_connection_mode_standard_option">Standard: faster, recommended</string>
+    <string name="wgk_connection_mode_reserve_option">Fallback: slower, use if standard mode fails</string>
     <string name="wgk_connection_mode_standard_desc">Faster, recommended</string>
-    <string name="wgk_connection_mode_reserve_desc">Slower — turn it on if the standard mode does not work</string>
+    <string name="wgk_connection_mode_reserve_desc">Slower. Turn it on if the standard mode does not work</string>
     <string name="wgk_relay_transport_title">Relay transport</string>
     <string name="wgk_relay_transport_auto_value">Automatic</string>
     <string name="wgk_relay_transport_auto_desc">UDP; TCP on the Rostelecom mobile network</string>
     <string name="wgk_relay_transport_udp_value">UDP</string>
-    <string name="wgk_relay_transport_udp_desc">Always UDP — faster</string>
+    <string name="wgk_relay_transport_udp_desc">Always UDP, which is faster</string>
     <string name="wgk_relay_transport_tcp_value">TCP (Rostelecom)</string>
-    <string name="wgk_relay_transport_tcp_desc">Slower — turn it on if the connection never comes up on the mobile network</string>
+    <string name="wgk_relay_transport_tcp_desc">Turn it on if the connection never comes up on the mobile network</string>
     <string name="wgk_split_search_hint">Search apps</string>
     <string name="wgk_split_show_system">System apps</string>
     <string name="wgk_split_exclude_hint">Selected apps will bypass the VPN. Everything else goes through the tunnel.</string>
@@ -499,7 +499,7 @@
     <string name="wgk_split_only_count">Only: %d apps</string>
     <string name="wgk_split_excluded_count">Excluded: %d apps</string>
     <string name="wgk_split_wizard_title">Set up split tunneling</string>
-    <string name="wgk_split_wizard_body">Choose which apps go through the VPN. We recommend setting this up: frequent reconnects can lead to IP-based restrictions on the services you use — this is not on our side, and routing only the apps you need through the VPN helps avoid it.</string>
+    <string name="wgk_split_wizard_body">Choose which apps go through the VPN. We recommend setting this up: frequent reconnects can lead to IP-based restrictions on the services you use. This is not on our side, and routing only the apps you need through the VPN helps avoid it.</string>
     <string name="wgk_split_wizard_mode_include_title">Only selected apps via VPN</string>
     <string name="wgk_split_wizard_mode_include_desc">Everything else connects directly</string>
     <string name="wgk_split_wizard_mode_exclude_title">Selected apps bypass the VPN</string>

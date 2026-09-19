@@ -3,9 +3,6 @@ package com.wireguard.android.captcha
 import android.annotation.SuppressLint
 import android.content.Context
 import android.hardware.display.DisplayManager
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
 import android.view.Display
 import android.os.Handler
 import android.os.Looper
@@ -35,7 +32,7 @@ import kotlin.random.Random
  * Невидимый WebView для автоматического прохождения VK Smart Captcha.
  *
  * Один запрос = один свежий WebView:
- * 1. Привязывает процесс к физической сети (bypass VPN kill-switch)
+ * 1. Привязывает процесс к физической сети, на которой работает TURN (CaptchaNetworkBinding)
  * 2. Создаёт WebView с рандомизированным fingerprint (UA, viewport)
  * 3. Загружает redirect_uri, ждёт ~2.7с загрузки
  * 4. Находит чекбокс "Я не робот" (label.vkc__Checkbox-module__Checkbox)
@@ -63,7 +60,6 @@ object CaptchaWebViewManager {
 
     @Volatile private var isTunnelActive = false
     @Volatile private var appContext: Context? = null
-    @Volatile private var previousNetwork: Network? = null
 
     private val pendingResult = AtomicReference<CompletableDeferred<Result<String>>?>(null)
     private val postClickSliderWatcher = AtomicReference<Runnable?>(null)
@@ -154,7 +150,9 @@ object CaptchaWebViewManager {
         isTunnelActive = false
         cancelPendingResult("tunnel stopped")
         destroyCurrentWebView()
-        appContext?.let { restoreNetworkBinding(it) }
+        // A solve in flight lets go by itself (its finally runs on the cancel
+        // above); this is for anything still holding the process bound.
+        appContext?.let { CaptchaNetworkBinding.reset(it) }
         appContext = null
         Log.d(TAG, "Туннель остановлен")
     }
@@ -168,56 +166,18 @@ object CaptchaWebViewManager {
         val ctx = appContext ?: throw IllegalStateException("WV не готов — контекст null")
 
         return captchaMutex.withLock {
+            // Out from under the tunnel, over the network TURN is on — see
+            // CaptchaNetworkBinding.
+            val bound = CaptchaNetworkBinding.bind(ctx)
             try {
-                bindToPhysicalNetwork(ctx)
                 withTimeout(CAPTCHA_TIMEOUT_MS) {
                     doSolveCaptcha(ctx, redirectUri, onStep)
                 }
             } finally {
                 pendingResult.set(null)
                 destroyCurrentWebView()
-                restoreNetworkBinding(ctx)
+                if (bound) CaptchaNetworkBinding.release(ctx)
             }
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Network binding — bypass VPN kill-switch для WebView
-    // ═══════════════════════════════════════════════════════════════
-
-    private fun bindToPhysicalNetwork(context: Context) {
-        try {
-            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            previousNetwork = cm.boundNetworkForProcess
-            @Suppress("DEPRECATION")
-            val networks = cm.allNetworks
-            for (network in networks) {
-                val caps = cm.getNetworkCapabilities(network) ?: continue
-                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
-                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
-                cm.bindProcessToNetwork(network)
-                val type = when {
-                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WiFi"
-                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
-                    else -> "Other"
-                }
-                Log.d(TAG, "Привязан к физической сети ($type)")
-                return
-            }
-            Log.w(TAG, "Физическая сеть не найдена")
-        } catch (e: Exception) {
-            Log.e(TAG, "bindToPhysicalNetwork: ${e.message}")
-        }
-    }
-
-    private fun restoreNetworkBinding(context: Context) {
-        try {
-            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            cm.bindProcessToNetwork(previousNetwork)
-            previousNetwork = null
-            Log.d(TAG, "Сетевая привязка восстановлена")
-        } catch (e: Exception) {
-            Log.e(TAG, "restoreNetworkBinding: ${e.message}")
         }
     }
 

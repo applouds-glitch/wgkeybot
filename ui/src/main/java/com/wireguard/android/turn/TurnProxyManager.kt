@@ -62,6 +62,10 @@ class TurnProxyManager(private val context: Context) {
     val hasPhysicalNetwork: Boolean
         get() = networkMonitor.currentPath != null
 
+    /** The physical network the TURN sockets bind to right now, if there is one. */
+    val physicalNetwork: Network?
+        get() = networkMonitor.currentPath?.network
+
     @Volatile private var activeSettings: TurnSettings? = null
     @Volatile private var userInitiatedStop: Boolean = false
 
