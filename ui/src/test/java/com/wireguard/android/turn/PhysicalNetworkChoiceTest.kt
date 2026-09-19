@@ -49,4 +49,29 @@ class PhysicalNetworkChoiceTest {
     fun `no network is no choice`() {
         assertNull(PhysicalNetworkChoice.pick(null, emptyList<Candidate<String>>()))
     }
+
+    // ── bindOrder: where the captcha WebView goes ──────────────────────────────
+
+    @Test
+    fun `the captcha goes out over the network turn is on`() {
+        // Cellular carries the tunnel while a Wi-Fi is up next to it: the platform
+        // lists them in no particular order, and the first one used to win.
+        assertEquals(listOf("cell", "wifi"), PhysicalNetworkChoice.bindOrder("cell", listOf(wifi, cell)))
+    }
+
+    @Test
+    fun `the rest follow by transport, for when binding is refused`() {
+        assertEquals(listOf("eth", "wifi", "cell"), PhysicalNetworkChoice.bindOrder("eth", listOf(cell, eth, wifi)))
+    }
+
+    @Test
+    fun `the network in use leads even if we have not listed it ourselves`() {
+        assertEquals(listOf("cell", "wifi"), PhysicalNetworkChoice.bindOrder("cell", listOf(wifi)))
+    }
+
+    @Test
+    fun `with no network in use the order is by transport`() {
+        assertEquals(listOf("wifi", "cell", "eth"), PhysicalNetworkChoice.bindOrder(null, listOf(eth, cell, wifi)))
+        assertEquals(emptyList<String>(), PhysicalNetworkChoice.bindOrder(null, emptyList<Candidate<String>>()))
+    }
 }

@@ -47,8 +47,29 @@ internal object PhysicalNetworkChoice {
      */
     fun <T> pick(system: SystemPick<T>?, candidates: List<Candidate<T>>): T? {
         if (system != null) return system.network
-        return (candidates.firstOrNull { it.transport == Transport.WIFI }
-            ?: candidates.firstOrNull { it.transport == Transport.CELLULAR }
-            ?: candidates.firstOrNull())?.id
+        return byTransport(candidates).firstOrNull()
     }
+
+    /**
+     * The networks to try binding something else of ours to, best first: the one
+     * the TURN sockets are on, then the rest by transport.
+     *
+     * For the captcha WebView, which binds the whole process to a physical
+     * network to get out from under the tunnel. It used to take the first non-VPN
+     * network the platform listed — in no particular order, background networks
+     * included — so with Wi-Fi and cellular both up the captcha could go out over
+     * a different network than the relays are reached over, or over one the app
+     * is not allowed to bind to. A solve ladder that fails arms the captcha
+     * lockout, and enough of those end the session (onTurnFatal).
+     *
+     * A list and not one answer because binding can be refused; [inUse] leads
+     * even when we have not seen it among [candidates] ourselves.
+     */
+    fun <T> bindOrder(inUse: T?, candidates: List<Candidate<T>>): List<T> =
+        (listOfNotNull(inUse) + byTransport(candidates)).distinct()
+
+    private fun <T> byTransport(candidates: List<Candidate<T>>): List<T> =
+        (candidates.filter { it.transport == Transport.WIFI } +
+            candidates.filter { it.transport == Transport.CELLULAR } +
+            candidates.filter { it.transport == Transport.OTHER }).map { it.id }
 }

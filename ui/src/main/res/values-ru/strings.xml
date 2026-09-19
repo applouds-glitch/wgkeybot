@@ -401,16 +401,16 @@
     <string name="wgk_status_sub_handshake">Проверяем связь с сервером</string>
     <string name="wgk_status_sub_connected">Ваш трафик защищён</string>
     <string name="wgk_status_sub_connected_time">В сети %1$s</string>
-    <string name="wgk_status_sub_reconnecting">Сервер не отвечает — повторная попытка</string>
-    <string name="wgk_status_sub_failed">Сервер недоступен — проверьте сеть</string>
+    <string name="wgk_status_sub_reconnecting">Сервер не отвечает, повторная попытка</string>
+    <string name="wgk_status_sub_failed">Сервер недоступен, проверьте сеть</string>
 
     <!-- Terminal failures the app can name. Each has to fit the status card's
          single subtitle line, so they stay short and end in the one action that
          helps. -->
-    <string name="wgk_status_sub_failed_call_gone">Ссылка на звонок мертва — обновите конфиг</string>
-    <string name="wgk_status_sub_failed_call_auth">Звонок требует входа — обновите конфиг</string>
-    <string name="wgk_status_sub_failed_captcha">Капча не пройдена — попробуйте позже</string>
-    <string name="wgk_status_sub_failed_creds">Нет данных для подключения — позже</string>
+    <string name="wgk_status_sub_failed_call_gone">Ссылка на звонок мертва, обновите конфиг</string>
+    <string name="wgk_status_sub_failed_call_auth">Звонок требует входа, обновите конфиг</string>
+    <string name="wgk_status_sub_failed_captcha">Капча не пройдена, попробуйте позже</string>
+    <string name="wgk_status_sub_failed_creds">Нет данных, попробуйте позже</string>
 
     <!-- Chip under the connect button while internet sharing is up. -->
     <string name="wgk_tether_chip">Раздача · %1$d</string>
@@ -431,17 +431,17 @@
     <string name="wgk_connection_mode_title">Режим соединения</string>
     <string name="wgk_connection_mode_standard_value">Основной</string>
     <string name="wgk_connection_mode_reserve_value">Резервный</string>
-    <string name="wgk_connection_mode_standard_option">Основной — быстрее, рекомендуется</string>
-    <string name="wgk_connection_mode_reserve_option">Резервный — медленнее, если основной не работает</string>
+    <string name="wgk_connection_mode_standard_option">Основной: быстрее, рекомендуется</string>
+    <string name="wgk_connection_mode_reserve_option">Резервный: медленнее, если основной не работает</string>
     <string name="wgk_connection_mode_standard_desc">Быстрее, рекомендуется</string>
-    <string name="wgk_connection_mode_reserve_desc">Медленнее — включите, если основной не работает</string>
+    <string name="wgk_connection_mode_reserve_desc">Медленнее. Включите, если основной не работает</string>
     <string name="wgk_relay_transport_title">Транспорт до релеев</string>
     <string name="wgk_relay_transport_auto_value">Авто</string>
-    <string name="wgk_relay_transport_auto_desc">UDP; в мобильной сети Ростелекома — TCP</string>
+    <string name="wgk_relay_transport_auto_desc">UDP, а в мобильной сети Ростелекома TCP</string>
     <string name="wgk_relay_transport_udp_value">UDP</string>
-    <string name="wgk_relay_transport_udp_desc">Всегда UDP — быстрее</string>
+    <string name="wgk_relay_transport_udp_desc">Всегда UDP, так быстрее</string>
     <string name="wgk_relay_transport_tcp_value">TCP (Ростелеком)</string>
-    <string name="wgk_relay_transport_tcp_desc">Медленнее — включите, если в мобильной сети подключение не поднимается</string>
+    <string name="wgk_relay_transport_tcp_desc">Включите, если в мобильной сети подключение не поднимается</string>
     <string name="wgk_connect_cd_connect">Подключить VPN</string>
     <string name="wgk_connect_cd_disconnect">Отключить VPN</string>
     <string name="wgk_connect_cd_cancel">Отменить подключение</string>
@@ -450,7 +450,7 @@
     <string name="wgk_split_only_count">Только: %d прил.</string>
     <string name="wgk_split_excluded_count">Исключено: %d прил.</string>
     <string name="wgk_split_wizard_title">Настройте раздельный туннель</string>
-    <string name="wgk_split_wizard_body">Выберите, какие приложения пускать через VPN. Рекомендуем настроить: из-за частых переподключений сервисы могут вводить ограничения по IP — это не с нашей стороны, и если пускать через VPN только нужные приложения, этого проще избежать.</string>
+    <string name="wgk_split_wizard_body">Выберите, какие приложения пускать через VPN. Рекомендуем настроить: из-за частых переподключений сервисы могут вводить ограничения по IP. Это не с нашей стороны, и если пускать через VPN только нужные приложения, этого проще избежать.</string>
     <string name="wgk_split_wizard_mode_include_title">Только выбранные приложения через VPN</string>
     <string name="wgk_split_wizard_mode_include_desc">Остальные подключаются напрямую</string>
     <string name="wgk_split_wizard_mode_exclude_title">Выбранные приложения мимо VPN</string>
@@ -461,8 +461,8 @@
     <string name="wgk_split_show_system">Системные приложения</string>
     <string name="wgk_split_toggle_all">Переключить все</string>
     <string name="wgk_split_selected_of">%1$d из %2$d выбрано</string>
-    <string name="wgk_split_include_hint">Только выбранные приложения пойдут через VPN. Остальные — напрямую.</string>
-    <string name="wgk_split_exclude_hint">Выбранные приложения пойдут в обход VPN. Остальные — через туннель.</string>
+    <string name="wgk_split_include_hint">Только выбранные приложения пойдут через VPN, остальные напрямую.</string>
+    <string name="wgk_split_exclude_hint">Выбранные приложения пойдут в обход VPN, остальные через туннель.</string>
     <string name="wgk_split_apply">Применить</string>
     <string name="wgk_split_apply_n">Применить · %d</string>
     <string name="wgk_split_cancel">Отмена</string>
@@ -492,7 +492,7 @@
     <string name="wgk_tether_off_value">Выкл</string>
     <string name="wgk_tether_starting_value">Запуск…</string>
     <string name="wgk_tether_details_title">Данные сети и QR-код</string>
-    <string name="wgk_tether_needs_tunnel">Сначала подключитесь — раздача работает только через туннель.</string>
+    <string name="wgk_tether_needs_tunnel">Сначала подключитесь: раздача работает только через туннель.</string>
     <string name="wgk_tether_ssid_label">Сеть</string>
     <string name="wgk_tether_pass_label">Пароль</string>
     <string name="wgk_tether_proxy_label">Прокси</string>
@@ -504,8 +504,8 @@
     <string name="wgk_tether_counters">Устройств: %1$d · соединений: %2$d · отдано %3$s · принято %4$s</string>
     <string name="wgk_tether_notification_channel">Раздача интернета</string>
     <string name="wgk_tether_stop_action">Остановить</string>
-    <string name="wgk_tether_proxy_required">Пропишите прокси на клиенте. Без него у устройства не будет интернета вовсе — именно это и гарантирует, что мимо туннеля ничего не уйдёт.</string>
-    <string name="wgk_tether_howto">Android и iOS: настройки сети Wi-Fi → Прокси → Вручную (или Авто с адресом автонастройки).\nWindows и macOS: системные настройки прокси, HTTP и HTTPS.\nБраузеры и терминалы принимают этот же адрес как SOCKS5-прокси.\nИгры и Telegram обычно игнорируют системный прокси — впишите этот же адрес как SOCKS5 в настройках самого приложения, иначе они останутся без сети.</string>
+    <string name="wgk_tether_proxy_required">Пропишите прокси на клиенте. Без него у устройства не будет интернета вовсе. Именно это и гарантирует, что мимо туннеля ничего не уйдёт.</string>
+    <string name="wgk_tether_howto">Android и iOS: настройки сети Wi-Fi → Прокси → Вручную (или Авто с адресом автонастройки).\nWindows и macOS: системные настройки прокси, HTTP и HTTPS.\nБраузеры и терминалы принимают этот же адрес как SOCKS5-прокси.\nИгры и Telegram обычно игнорируют системный прокси. Впишите этот же адрес как SOCKS5 в настройках самого приложения, иначе они останутся без сети.</string>
     <string name="wgk_tether_error_tunnel_down">Туннель отключился, раздача остановлена.</string>
     <string name="wgk_tether_error_location">Включите геолокацию в настройках системы: без неё Android не поднимает точку доступа, даже когда разрешение выдано.</string>
     <string name="wgk_tether_error_permission">Для раздачи нужно разрешение на управление устройствами Wi-Fi поблизости.</string>
@@ -516,17 +516,17 @@
     <string name="wgk_tether_auto_off_label">Выключать без активности</string>
     <string name="wgk_tether_auto_off_desc">Гасит раздачу через 2 часа, если ей никто не пользуется</string>
     <string name="wgk_tether_routing_label">Раздельная маршрутизация</string>
-    <string name="wgk_tether_routing_desc">Российские сайты — мимо туннеля, реклама и трекеры блокируются</string>
+    <string name="wgk_tether_routing_desc">Российские сайты идут мимо туннеля, реклама и трекеры блокируются</string>
     <string name="wgk_tether_routing_note_on">Раздельная маршрутизация включена: российские сайты и сервисы уходят с телефона мимо туннеля.</string>
-    <string name="wgk_tether_routing_note_unavailable">Раздельная маршрутизация включена, но правила не скачались — пока всё идёт через туннель.</string>
+    <string name="wgk_tether_routing_note_unavailable">Раздельная маршрутизация включена, но правила не скачались. Пока всё идёт через туннель.</string>
     <string name="wgk_routing_settings_title">Правила маршрутизации</string>
     <string name="wgk_routing_section_source">Источник</string>
     <string name="wgk_routing_url_label">Профиль правил (Happ)</string>
-    <string name="wgk_routing_url_hint">Адрес профиля; пусто — вернуть стандартный</string>
+    <string name="wgk_routing_url_hint">Адрес профиля. Оставьте пустым, чтобы вернуть стандартный</string>
     <string name="wgk_routing_url_invalid">Адрес должен начинаться с http:// или https://</string>
     <string name="wgk_routing_dns_label">DNS для прямых адресов</string>
     <string name="wgk_routing_dns_from_profile">Из профиля (%1$s)</string>
-    <string name="wgk_routing_dns_hint">IP-адреса через запятую; пусто — из профиля</string>
+    <string name="wgk_routing_dns_hint">IP-адреса через запятую. Оставьте пустым, чтобы взять из профиля</string>
     <string name="wgk_routing_dns_invalid">Укажите IP-адреса через запятую</string>
     <string name="wgk_routing_section_files">Файлы</string>
     <string name="wgk_routing_profile_label">Профиль</string>
@@ -541,8 +541,8 @@
     <string name="wgk_routing_updating">Обновление…</string>
     <string name="wgk_routing_status_applied">Правила обновлены и применены к текущей раздаче; соединения клиентов переоткрыты.</string>
     <string name="wgk_routing_status_next_start">Правила обновлены. Применятся при следующем включении раздачи.</string>
-    <string name="wgk_routing_status_restart_failed">Правила обновлены, но перезапустить прокси раздачи не удалось — раздача остановлена.</string>
-    <string name="wgk_routing_status_kept_old">Не удалось скачать обновление — оставлены прежние правила.</string>
+    <string name="wgk_routing_status_restart_failed">Правила обновлены, но перезапустить прокси раздачи не удалось. Раздача остановлена.</string>
+    <string name="wgk_routing_status_kept_old">Не удалось скачать обновление, оставлены прежние правила.</string>
     <string name="wgk_routing_status_no_rules">Не удалось скачать правила. Проверьте подключение и адрес профиля.</string>
     <string name="wgk_routing_status_dns_applied">Применено к текущей раздаче; соединения клиентов переоткрыты.</string>
     <string name="wgk_routing_note">Загрузка идёт через туннель. Файлы .dat перекачиваются, только когда профиль указывает на новую версию; смена адреса профиля сбрасывает скачанные файлы.</string>
