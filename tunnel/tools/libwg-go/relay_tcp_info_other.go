@@ -9,6 +9,7 @@ package main
 
 import (
 	"net"
+	"syscall"
 	"time"
 )
 
@@ -20,3 +21,6 @@ func readRelaySocket(*net.TCPConn) (relaySocketSample, bool) {
 
 // setTCPUserTimeout is Linux's; elsewhere the connection keeps the defaults.
 func setTCPUserTimeout(*net.TCPConn, time.Duration) error { return nil }
+
+// setTCPMaxSegment: likewise.
+func setTCPMaxSegment(syscall.RawConn, int) error { return nil }

@@ -475,6 +475,10 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// Its one ETIMEDOUT may have gone to pion's read loop, which drops it, and the
 	// session would then linger until its next write broke — or, on an idle
 	// tunnel, until the dead-stream detector. Over UDP the channel is nil.
+	//
+	// And for pion's read loop ending on any other error — over TCP, a reset or a
+	// close from the far side (permWatch.readerStopped). Nothing can arrive on
+	// this session any more, whatever its writes report.
 	sessCtx, sessCancel := context.WithCancel(ctx)
 	defer sessCancel()
 	go func() {
@@ -485,6 +489,10 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 		case <-relayFlowGaveUp(w.raw):
 			turnLog("[STREAM %d] TCP flow to %s given up by the kernel: no progress for %v — reconnecting",
 				s.id, w.addr, relayTCPUserTimeout)
+			w.relay.Close()
+		case <-w.perm.readerGoneCh():
+			turnLog("[STREAM %d] nothing reads from %s any more (%v) — reconnecting",
+				s.id, w.addr, w.perm.readerStoppedBy())
 			w.relay.Close()
 		case <-sessCtx.Done():
 		}
@@ -523,9 +531,16 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// and three of them, young, would stand a working relay down for five
 	// minutes. A relay that really is gone earns its strikes on the redial, where
 	// the connect or the Allocate fails.
+	//
+	// The same goes for a flow that ended under pion's reader — reset or closed
+	// from the far side. In the field those came singly too (19.09: thirteen,
+	// spread over both relays, usually half a minute after the flow had gone
+	// deaf, with the neighbours carrying on).
 	flowTimedOut := relayFlowTimedOut(w.raw)
+	readerErr := w.perm.readerStoppedBy()
+	flowEnded := flowTimedOut || (readerErr != nil && relayFlow(w.raw) != nil)
 	verdict := sessionOutcome(ctx.Err() != nil, w.perm.fired(), time.Since(started), err)
-	if flowTimedOut && verdict == verdictFailure {
+	if flowEnded && verdict == verdictFailure {
 		verdict = verdictNone
 	}
 	switch verdict {
@@ -568,6 +583,13 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 			return fmt.Errorf("TCP flow to the relay timed out: no progress for %v", relayTCPUserTimeout)
 		}
 		return fmt.Errorf("TCP flow to the relay timed out: no progress for %v: %w", relayTCPUserTimeout, err)
+	}
+	// And for a reader that stopped: the transport's own error is again only the
+	// relay we closed, or nil. The reader's error is a transport error and stays
+	// in the chain as one — its text carries addresses and ports, which must not
+	// reach the substring fallback of classifyCredError (see isTransportError).
+	if readerErr != nil {
+		return fmt.Errorf("the relay connection is no longer read: %w", readerErr)
 	}
 	return err
 }
