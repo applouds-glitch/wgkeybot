@@ -104,6 +104,7 @@ func noteNetworkSwitch(handle int64) {
 	networkSwitch.Unlock()
 
 	resetServerHealth()
+	resetRelayConnectPacing()
 	ClearCache()
 	turnLog("[NETWORK] moved from network %d to %d: %d session(s) on the old one recycled; server health and DNS cache reset",
 		from, handle, len(recycled))

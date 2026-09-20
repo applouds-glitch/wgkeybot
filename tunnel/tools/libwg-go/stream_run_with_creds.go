@@ -295,6 +295,12 @@ type dialOpts struct {
 func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cfg WorkerGroupConfig, opts dialOpts) (*turn.Client, net.Conn, net.PacketConn, time.Duration, *permWatch, error) {
 	// Decided per dial, not per proxy start — see relayTransportChoice.
 	overTCP := relayOverTCP(cfg)
+	// Ahead of everything that is timed or logged below: the wait is our own
+	// queue, not the relay's silence, so neither the head start nor the rtt may
+	// count it (see relay_connect_pacing.go).
+	if overTCP && !awaitRelayConnectSlot(ctx, addr) {
+		return nil, nil, nil, 0, nil, ctx.Err()
+	}
 	if overTCP {
 		turnLog("[STREAM %d] Dial TURN %s over TCP (group %d)", s.id, addr, cfg.GroupID)
 	} else {

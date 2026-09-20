@@ -74,6 +74,8 @@ func runWorkersAgainst(t *testing.T, group int, n int, addrs []string) *raceHarn
 	resetNetworkAvailabilityForTest()
 	resetServerHealth()
 	t.Cleanup(resetServerHealth)
+	resetRelayConnectPacing()
+	t.Cleanup(resetRelayConnectPacing)
 
 	prev := globalGetCreds
 	globalGetCreds = func(context.Context, string, int) (string, string, []string, error) {
