@@ -1190,8 +1190,9 @@ func parseLinks(raw string, maxLinks int) []string {
 
 //export wgTurnProxyStart
 func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char) int32 {
-	clearTransientState()    // flush DNS without clearing credential caches
-	resetServerHealth()      // new credentials, usually a new server list
+	clearTransientState() // flush DNS without clearing credential caches
+	resetServerHealth()   // new credentials, usually a new server list
+	resetRelayConnectPacing()
 	resetWorkerFatalState(0) // re-armed with the real worker count in StartTunnelGroups
 
 	// The system DNS list is not read here: it belongs to wgSetNetwork, which has
