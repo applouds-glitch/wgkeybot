@@ -337,7 +337,8 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 			if session == nil {
 				session = ctx
 			}
-			if session.Err() == nil && ctx.Err() == nil {
+			// Nor one that failed on the phone's own network (relayNotToBlame).
+			if session.Err() == nil && ctx.Err() == nil && !relayNotToBlame(err, dialStart) {
 				noteServerFailure(addr)
 			}
 			return nil, nil, nil, 0, nil, fmt.Errorf("TURN TCP dial: %w", err)
@@ -434,7 +435,10 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		if session == nil {
 			session = ctx
 		}
-		if session.Err() == nil && !isQuotaError(err) {
+		//
+		// Nor an Allocate the phone's own network failed: a write the local stack
+		// refused, or silence while the network was leaving (relayNotToBlame).
+		if session.Err() == nil && !isQuotaError(err) && !relayNotToBlame(err, dialStart) {
 			noteServerFailure(addr)
 		}
 		return nil, nil, nil, 0, nil, fmt.Errorf("TURN allocate: %w", err)
@@ -547,6 +551,13 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	flowEnded := flowTimedOut || (readerErr != nil && relayFlow(w.raw) != nil)
 	verdict := sessionOutcome(ctx.Err() != nil, w.perm.fired(), time.Since(started), err)
 	if flowEnded && verdict == verdictFailure {
+		verdict = verdictNone
+	}
+	// And whatever ended with the phone's own network: every session on it dies
+	// at that moment, on every relay alike, and a handshake that was under way
+	// times out for the same reason (local_network_failure.go).
+	if (verdict == verdictFailure || verdict == verdictHandshakeFailure) && relayNotToBlame(err, started) {
+		turnLog("[STREAM %d] %s is not held to account for this session: the phone's own network failed under it", s.id, w.addr)
 		verdict = verdictNone
 	}
 	switch verdict {
