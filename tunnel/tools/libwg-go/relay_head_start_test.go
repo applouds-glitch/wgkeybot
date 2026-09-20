@@ -69,6 +69,14 @@ type raceHarness struct {
 // relay proof, until the test ends.
 func runWorkersAgainst(t *testing.T, group int, n int, addrs []string) *raceHarness {
 	t.Helper()
+	answer := make(chan struct{})
+	close(answer)
+	return runWorkersAgainstPeer(t, group, n, addrs, fakeRelay(t, answer))
+}
+
+// runWorkersAgainstPeer is runWorkersAgainst with a peer of the test's own.
+func runWorkersAgainstPeer(t *testing.T, group int, n int, addrs []string, peer *net.UDPAddr) *raceHarness {
+	t.Helper()
 	resetAllocationBook(t)
 	resetNetworkSwitch(t)
 	resetNetworkAvailabilityForTest()
@@ -82,10 +90,6 @@ func runWorkersAgainst(t *testing.T, group int, n int, addrs []string) *raceHarn
 		return t.Name(), "pass", addrs, nil
 	}
 	t.Cleanup(func() { globalGetCreds = prev })
-
-	answer := make(chan struct{})
-	close(answer)
-	peer := fakeRelay(t, answer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &raceHarness{cancel: cancel, done: &sync.WaitGroup{}}

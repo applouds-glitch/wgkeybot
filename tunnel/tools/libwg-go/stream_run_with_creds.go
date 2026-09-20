@@ -512,6 +512,10 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// (noteServerHandshakeOK), which is what lets a sibling's success vouch for
 	// the uplink when another server fails its handshake in the same window.
 	s.serverAddr = w.addr
+	// Whether this session's flow has a fate of its own, and who else is on the
+	// relay to vouch for it if its handshake fails (relay_heard_by_others.go).
+	s.overTCP = relayFlow(w.raw) != nil
+	defer trackLiveSession(w.addr, s)()
 
 	// Stamped before the transport runs, so a server that goes on to prove its
 	// data plane already has a latency the election can rank it by.
@@ -556,6 +560,11 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// And whatever ended with the phone's own network: every session on it dies
 	// at that moment, on every relay alike, and a handshake that was under way
 	// times out for the same reason (local_network_failure.go).
+	if verdict == verdictHandshakeFailure && s.overTCP && relayHeardByOthers(w.addr, s, time.Now()) {
+		turnLog("[STREAM %d] %s handshake: %s — a flow's failure, not the relay's: other streams are hearing it",
+			s.id, w.addr, relay.describe(time.Now()))
+		verdict = verdictNone
+	}
 	if (verdict == verdictFailure || verdict == verdictHandshakeFailure) && relayNotToBlame(err, started) {
 		turnLog("[STREAM %d] %s is not held to account for this session: the phone's own network failed under it", s.id, w.addr)
 		verdict = verdictNone
