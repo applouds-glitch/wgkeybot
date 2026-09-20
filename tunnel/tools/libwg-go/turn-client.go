@@ -150,6 +150,8 @@ type stream struct {
 	// handshake verdict to turn_server_health.go; it is rewritten on every
 	// attempt and read only by the single goroutine driving this stream.
 	serverAddr string
+	// overTCP says the attempt reaches its relay over TCP; set and read likewise.
+	overTCP bool
 
 	// wrapKey is an optional 32-byte ChaCha20 key for WRAP obfuscation.
 	// When non-nil, raw UDP packets to/from the TURN relay are encrypted with
@@ -353,6 +355,9 @@ const (
 	// RTT plus a lost probe — a full DTLS-SRTP handshake over these relays
 	// measures 130-220ms, so a single round trip has an order of magnitude of
 	// headroom here.
+	//
+	// That is over UDP, where a probe that is not answered was lost. Over TCP it
+	// cannot be lost, only late: see relayProofLimit.
 	relayProofTimeout = 2 * time.Second
 
 	// relayProbeInterval re-sends the probe (and the session header with it, in
@@ -660,14 +665,36 @@ func (s *stream) probeRelay(relayConn net.PacketConn, peer net.Addr, sessionHS [
 	return err
 }
 
+// relayProofLimit is how long this stream waits for its relay proof.
+//
+// Over TCP the probe sits in a byte stream: it arrives, late, or the connection
+// dies — and on the network that needs TCP "late" is the usual case, flows hang
+// for 2-8s and then move (field log 19.09). Two seconds there ruled against
+// flows about to work, and each ruling costs more than the wait it saves: the
+// release of an allocation cannot leave through a hung flow either, so it stays
+// on the relay for 600s, counted against the credential's quota of ten. The
+// limit over TCP is the one DTLS and SRTP already have on the same path,
+// dataPlaneHandshakeTimeout — past the hangs that were seen to clear, and still
+// a third of the connect budget.
+func (s *stream) relayProofLimit() time.Duration {
+	if s.overTCP {
+		return relayProofTimeoutTCP
+	}
+	return relayProofTimeout
+}
+
+// A var for the host tests that wait it out.
+var relayProofTimeoutTCP = dataPlaneHandshakeTimeout
+
 // awaitRelayProof probes until the relay answers, the context dies, or
-// relayProofTimeout runs out. Returning an error means the stream never proved
+// relayProofLimit runs out. Returning an error means the stream never proved
 // its data path and must not be offered to the dispatcher.
 func (s *stream) awaitRelayProof(ctx context.Context, proof <-chan struct{}, probe func() error) error {
 	if err := probe(); err != nil {
 		return err
 	}
-	deadline := time.NewTimer(relayProofTimeout)
+	limit := s.relayProofLimit()
+	deadline := time.NewTimer(limit)
 	defer deadline.Stop()
 	ticker := time.NewTicker(relayProbeInterval)
 	defer ticker.Stop()
@@ -679,7 +706,7 @@ func (s *stream) awaitRelayProof(ctx context.Context, proof <-chan struct{}, pro
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return fmt.Errorf("relay never answered in %v", relayProofTimeout)
+			return fmt.Errorf("relay never answered in %v", limit)
 		case <-ticker.C:
 			if err := probe(); err != nil {
 				return err
