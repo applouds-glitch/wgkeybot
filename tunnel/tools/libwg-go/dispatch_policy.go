@@ -119,6 +119,10 @@ func (w *staleWatch) observe(streams []*stream, now time.Time) []string {
 		if isStale {
 			lines = append(lines, fmt.Sprintf("[DISPATCH] stream %d silent for %v — skipped while siblings hear echoes",
 				st.id, st.activity.Load().rxAge(now).Round(time.Second)))
+			// Over TCP, what the socket looked like at that moment (nothing over UDP).
+			if line := relaySockets.silentSocketLine(st.id); line != "" {
+				lines = append(lines, line)
+			}
 		} else {
 			lines = append(lines, fmt.Sprintf("[DISPATCH] stream %d heard its relay again — back in rotation", st.id))
 		}

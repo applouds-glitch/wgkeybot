@@ -90,10 +90,55 @@ type permWatch struct {
 	reason atomic.Pointer[string]
 	dead   chan struct{}
 	once   sync.Once
+
+	// pion's read loop ending is a different fact from the three above, and is
+	// kept apart from them: it says nothing about the allocation (see
+	// readerStopped), so it must not read as a blackhole.
+	readerErr  atomic.Pointer[error]
+	readerGone chan struct{}
+	readerOnce sync.Once
 }
 
 func newPermWatch(streamID int) *permWatch {
-	return &permWatch{streamID: streamID, dead: make(chan struct{})}
+	return &permWatch{streamID: streamID, dead: make(chan struct{}), readerGone: make(chan struct{})}
+}
+
+// readerStopped latches pion's read loop having ended on an error that is not
+// our own close. pion logs it at debug level and carries on: the client stays
+// open, writes keep "succeeding" for as long as the socket takes them, and
+// nothing is ever read again — no data, no keepalive echo, no answer to a
+// Refresh. Over TCP this is what a reset from the far side looks like; on an
+// idle tunnel the only write that would trip over the dead socket is the
+// keepalive, whose error is logged and retried, so the stream stayed "ready"
+// until the dead-stream detector 90s later (field log 19.09: 5 of 13 resets,
+// 40-57s each as a stream that could only lose packets).
+func (w *permWatch) readerStopped(err error) {
+	if w == nil {
+		return
+	}
+	w.readerOnce.Do(func() {
+		w.readerErr.Store(&err)
+		close(w.readerGone)
+	})
+}
+
+// readerGoneCh is closed once pion has stopped reading; nil for a nil watcher.
+func (w *permWatch) readerGoneCh() <-chan struct{} {
+	if w == nil {
+		return nil
+	}
+	return w.readerGone
+}
+
+// readerStoppedBy returns the error pion's read loop ended on, nil if it runs.
+func (w *permWatch) readerStoppedBy() error {
+	if w == nil {
+		return nil
+	}
+	if err := w.readerErr.Load(); err != nil {
+		return *err
+	}
+	return nil
 }
 
 // note inspects one pion log line. Callers pass Warn lines already formatted

@@ -91,6 +91,11 @@ type relaySocketSample struct {
 
 	// How the time with data to send was spent, per the kernel's own accounting.
 	busy, waitedOnPeerWindow, waitedOnSendBuffer time.Duration
+
+	// Only for the line about a stream that went silent (silentSocketLine).
+	sinceData, sinceAck time.Duration // since the relay's last data / last ACK
+	sndMSS, rcvMSS      int
+	pathMTU             int
 }
 
 type watchedRelaySocket struct {
@@ -194,6 +199,42 @@ func (w *relaySocketWatch) unregister(stream int, conn *net.TCPConn, now time.Ti
 	}
 	delete(w.socks, stream)
 	w.endStallLocked(s, now, "and had not moved again when the session ended")
+}
+
+// silentSocketLine describes the socket of a stream the dispatcher has just
+// found silent; "" over UDP. Silence is judged by the keepalive echo, which the
+// relay writes into this same TCP stream — so which of the two directions still
+// moves tells the causes apart, and the phone is the only place it can be read:
+//
+//   - ACKs fresh, data old: the relay hears us and answers, its small segments
+//     arrive and what it SENDS does not. A data segment lost over and over while
+//     ACKs pass is loss by size — a path MTU below what both ends believe, with
+//     the ICMP that would say so filtered — and the echo is stuck behind it.
+//   - both old, timeouts counting: nothing comes down at all, or nothing of ours
+//     goes up. The flow is dark, not its big segments.
+//   - data fresh: the socket is fine and the silence is further out — the relay
+//     forwards nothing from the server on this allocation.
+func (w *relaySocketWatch) silentSocketLine(stream int) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	s := w.socks[stream]
+	if s == nil {
+		return ""
+	}
+	cur, ok := w.sample(s.conn)
+	if !ok {
+		return ""
+	}
+	up := "nothing of ours unacknowledged"
+	if cur.backlog > 0 {
+		up = fmt.Sprintf("up to %s of ours unacknowledged", kilobytes(uint64(cur.backlog)))
+		if cur.timeouts > 0 {
+			up += fmt.Sprintf(" after %d timeout(s) in a row", cur.timeouts)
+		}
+	}
+	return fmt.Sprintf("[TCP] stream %d (%s) went silent with its socket at: last data from the relay %v ago, last ACK %v ago; %s; %s received in all; mss %d out / %d in, path mtu %d",
+		s.stream, s.relay, cur.sinceData.Round(100*time.Millisecond), cur.sinceAck.Round(100*time.Millisecond),
+		up, kilobytes(cur.received), cur.sndMSS, cur.rcvMSS, cur.pathMTU)
 }
 
 func (w *relaySocketWatch) count() int {

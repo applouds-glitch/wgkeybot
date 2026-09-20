@@ -101,6 +101,23 @@ var dialRelayTCP = func(ctx context.Context, d *net.Dialer, addr string) (net.Co
 // traffic to it is written through.
 func connectRelayTCP(ctx context.Context, d *net.Dialer, addr string) (net.Conn, error) {
 	d.Timeout = relayTCPConnectTimeout
+	// Before the connect: the limit has to be in the SYN for the relay to keep to
+	// it (see relayTCPMaxSegment). After whatever the dialer already does there —
+	// protecting the socket.
+	before := d.Control
+	d.Control = func(network, address string, c syscall.RawConn) error {
+		if before != nil {
+			if err := before(network, address, c); err != nil {
+				return err
+			}
+		}
+		if err := setTCPMaxSegment(c, relayTCPMaxSegment); err != nil {
+			maxSegmentRefused.Do(func() {
+				turnLog("[NETWORK] TCP_MAXSEG refused (%v) — segments to and from a relay stay as large as the interface allows", err)
+			})
+		}
+		return nil
+	}
 	c, err := dialRelayTCP(ctx, d, addr)
 	if err != nil {
 		return nil, err
@@ -115,6 +132,30 @@ func connectRelayTCP(ctx context.Context, d *net.Dialer, addr string) (net.Conn,
 	}
 	return &splitFirstWriteConn{Conn: &relayFlowConn{Conn: c, gaveUp: make(chan struct{})}}, nil
 }
+
+// relayTCPMaxSegment caps the TCP segments between the phone and a relay, in both
+// directions: set before the connect it is the MSS our SYN announces, which the
+// relay may not exceed, and the ceiling on our own.
+//
+// The tunnel's MTU is capped at 1200 because on cellular paths whose real MTU is
+// ~1350-1400 large datagrams were lost while small ones passed (TURN_MAX_MTU).
+// Over TCP that cap does nothing for this leg: the relay writes ChannelData into
+// a byte stream and the kernels cut it by MSS, not by packet — under load that is
+// full segments, 1460-byte packets on an interface that says 1460 (field log
+// 19.09), over the very kind of path the cap exists for, with ICMP filtered so
+// that nobody learns. A lost full-size segment is retransmitted at the same size
+// for ever; everything behind it in the stream waits, the keepalive echo
+// included, and the relay's TCP eventually gives up. It would look like what the
+// field showed: flows going deaf under load and reset half a minute later, idle
+// ones and small transactions fine — "only text goes through".
+//
+// Not proven to be the cause there: the log had no socket telemetry yet (see
+// silentSocketLine for what will tell). But the cost is a few per cent more
+// segments, and 1240 makes packets of at most 1280 — the IPv6 minimum, below
+// what the 1200 cap already puts on the same paths over UDP (~1310).
+const relayTCPMaxSegment = 1240
+
+var maxSegmentRefused sync.Once
 
 // relayTCPUserTimeout is how long a connection to a relay may make no progress
 // — data the relay has not acknowledged, or will not open its window for —

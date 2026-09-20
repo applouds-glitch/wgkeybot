@@ -9,6 +9,7 @@ package main
 
 import (
 	"net"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -46,6 +47,12 @@ func readRelaySocket(c *net.TCPConn) (relaySocketSample, bool) {
 		busy:               time.Duration(info.Busy_time) * time.Microsecond,
 		waitedOnPeerWindow: time.Duration(info.Rwnd_limited) * time.Microsecond,
 		waitedOnSendBuffer: time.Duration(info.Sndbuf_limited) * time.Microsecond,
+
+		sinceData: time.Duration(info.Last_data_recv) * time.Millisecond,
+		sinceAck:  time.Duration(info.Last_ack_recv) * time.Millisecond,
+		sndMSS:    int(info.Snd_mss),
+		rcvMSS:    int(info.Rcv_mss),
+		pathMTU:   int(info.Pmtu),
 	}
 	// A closed window is probed rather than retransmitted into: the head segment
 	// was never sent, so Retransmits stays zero while Probes counts.
@@ -65,6 +72,17 @@ func setTCPUserTimeout(c *net.TCPConn, d time.Duration) error {
 	var optErr error
 	if err := raw.Control(func(fd uintptr) {
 		optErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT, int(d/time.Millisecond))
+	}); err != nil {
+		return err
+	}
+	return optErr
+}
+
+// setTCPMaxSegment sets TCP_MAXSEG on a socket that has not connected yet.
+func setTCPMaxSegment(c syscall.RawConn, mss int) error {
+	var optErr error
+	if err := c.Control(func(fd uintptr) {
+		optErr = unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_MAXSEG, mss)
 	}); err != nil {
 		return err
 	}

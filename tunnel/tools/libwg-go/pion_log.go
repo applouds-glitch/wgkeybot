@@ -60,7 +60,19 @@ func (l pionLogger) Debugf(f string, args ...any) {
 	l.watch.note(f)
 	if l.scope == permWatchScope && pionReceiveFailure(f, args...) {
 		l.log("WARN", f, args...)
+		l.watch.readerStopped(pionReceiveError(f, args...))
 	}
+}
+
+// pionReceiveError is the error a receive failure was logged with, kept as an
+// error so that what the session returns still classifies as a transport error.
+func pionReceiveError(format string, args ...any) error {
+	if len(args) > 0 {
+		if err, ok := args[0].(error); ok && err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf(format, args...)
 }
 
 // A closed socket is expected during cancellation/teardown. Other read errors
