@@ -42,8 +42,9 @@ import (
 
 var networkSwitch = struct {
 	sync.Mutex
-	current  int64 // network our dials bind to now; 0 = none
-	last     int64 // the last network we were on; stays put while there is none
+	current  int64     // network our dials bind to now; 0 = none
+	last     int64     // the last network we were on; stays put while there is none
+	leftAt   time.Time // when a network we were bound to was last lost or left
 	nextID   uint64
 	attempts map[uint64]*networkAttempt
 }{attempts: map[uint64]*networkAttempt{}}
@@ -83,6 +84,9 @@ func beginNetworkAttempt(parent context.Context) (context.Context, func() (moved
 // resets what was learned over the old network.
 func noteNetworkSwitch(handle int64) {
 	networkSwitch.Lock()
+	if networkSwitch.current != 0 && networkSwitch.current != handle {
+		networkSwitch.leftAt = time.Now()
+	}
 	networkSwitch.current = handle
 	if handle == 0 {
 		networkSwitch.Unlock()

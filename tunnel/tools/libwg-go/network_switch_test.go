@@ -26,6 +26,7 @@ func resetNetworkSwitch(t *testing.T) {
 		networkSwitch.Lock()
 		networkSwitch.current = 0
 		networkSwitch.last = 0
+		networkSwitch.leftAt = time.Time{}
 		networkSwitch.attempts = map[uint64]*networkAttempt{}
 		networkSwitch.Unlock()
 	}
