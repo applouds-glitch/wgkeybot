@@ -337,8 +337,10 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 			if session == nil {
 				session = ctx
 			}
-			// Nor one that failed on the phone's own network (relayNotToBlame).
-			if session.Err() == nil && ctx.Err() == nil && !relayNotToBlame(err, dialStart) {
+			// Nor a local network failure or an isolated TCP flow failure
+			// while another stream is receiving from this same relay.
+			if session.Err() == nil && ctx.Err() == nil && !relayNotToBlame(err, dialStart) &&
+				!tcpAttemptFailureIsIsolated(addr, s, err) {
 				noteServerFailure(addr)
 			}
 			return nil, nil, nil, 0, nil, fmt.Errorf("TURN TCP dial: %w", err)
@@ -438,7 +440,10 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		//
 		// Nor an Allocate the phone's own network failed: a write the local stack
 		// refused, or silence while the network was leaving (relayNotToBlame).
-		if session.Err() == nil && !isQuotaError(err) && !relayNotToBlame(err, dialStart) {
+		// Over TCP a live sibling also excuses transport failure or silence;
+		// explicit TURN refusals keep their existing handling.
+		if session.Err() == nil && !isQuotaError(err) && !relayNotToBlame(err, dialStart) &&
+			(!overTCP || !tcpAttemptFailureIsIsolated(addr, s, err)) {
 			noteServerFailure(addr)
 		}
 		return nil, nil, nil, 0, nil, fmt.Errorf("TURN allocate: %w", err)

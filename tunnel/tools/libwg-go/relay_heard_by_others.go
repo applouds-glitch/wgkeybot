@@ -6,6 +6,9 @@
 package main
 
 import (
+	"errors"
+	"io"
+	"net"
 	"sync"
 	"time"
 )
@@ -30,7 +33,9 @@ import (
 // gets the verdict as before, so one that allocates and never carries a byte is
 // still out after its first handshake. What this gives up: a relay that serves
 // its old sessions and fails every NEW one keeps being dialed until the old ones
-// go. Over UDP, where a flow has no fate of its own, nothing changes.
+// go. The same evidence excuses TCP connect/Allocate transport failures, but
+// never an explicit TURN refusal or a malformed response. Over UDP nothing
+// changes.
 var liveSessions = struct {
 	sync.Mutex
 	byRelay map[string]map[*stream]struct{}
@@ -73,4 +78,38 @@ func relayHeardByOthers(addr string, except *stream, now time.Time) bool {
 		}
 	}
 	return false
+}
+
+// tcpAttemptFailureIsIsolated keeps a failed new TCP flow from penalizing a
+// relay that another stream is receiving from. Server replies remain meaningful
+// even while old allocations work: a full or rejecting server may still carry
+// their traffic.
+func tcpAttemptFailureIsIsolated(addr string, s *stream, err error) bool {
+	if err == nil {
+		return false
+	}
+	if _, ok := turnErrorCode(err); ok {
+		return false
+	}
+	if !isTransportError(err) && !errors.Is(err, io.EOF) &&
+		!errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
+		// Pion v5.0.13 wraps these private sentinels without a net.Error;
+		// the retransmit write failure also discards the underlying socket
+		// error. Match only the unwrapped sentinel, not response text, IPs,
+		// transaction IDs or unrelated protocol errors.
+		cause := err
+		for errors.Unwrap(cause) != nil {
+			cause = errors.Unwrap(cause)
+		}
+		switch cause.Error() {
+		case "all retransmissions failed for", "turn: failed to retransmit transaction":
+		default:
+			return false
+		}
+	}
+	if !relayHeardByOthers(addr, s, time.Now()) {
+		return false
+	}
+	turnLog("[STREAM %d] TCP attempt to %s failed while another stream is receiving; no relay penalty: %v", s.id, addr, err)
+	return true
 }

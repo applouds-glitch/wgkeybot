@@ -53,10 +53,8 @@ var relayConnectGap = func() time.Duration {
 	return workerStagger + time.Duration(rand.Intn(200))*time.Millisecond
 }
 
-// resetRelayConnectPacing forgets the slots handed out so far. They were
-// reserved by attempts that a proxy start or a move to another network has just
-// ended; the redials that follow must not queue behind connects that will never
-// be made.
+// resetRelayConnectPacing clears the spacing left by the previous network or
+// proxy run. The first connect on the new one can leave immediately.
 func resetRelayConnectPacing() {
 	relayConnectPacing.Lock()
 	relayConnectPacing.next = map[string]time.Time{}
@@ -64,33 +62,48 @@ func resetRelayConnectPacing() {
 }
 
 // awaitRelayConnectSlot holds a TCP connect to addr until its turn; false if ctx
-// ended first. The slot of a caller that gave up is not handed on: the next one
-// simply leaves a gap later, which costs a fraction of a second and no burst.
+// ended first. Each admission starts a fresh gap. Waiters recheck under the lock
+// after waking: reserving future slots would let all expired timers release
+// their connects together after a process pause. Cancelled waiters reserve no
+// slots and leave no extra delay behind.
 func awaitRelayConnectSlot(ctx context.Context, addr string) bool {
-	now := time.Now()
 	p := &relayConnectPacing
-	p.Lock()
-	at := p.next[addr]
-	if at.Before(now) {
-		at = now
-	}
-	p.next[addr] = at.Add(relayConnectGap())
-	wait := at.Sub(now)
-	if wait <= 0 {
-		p.Unlock()
-		return ctx.Err() == nil
-	}
-	p.waiting[addr]++
-	first := p.waiting[addr] == 1
-	p.Unlock()
+	waiting := false
+	defer func() {
+		if waiting {
+			p.Lock()
+			p.waiting[addr]--
+			p.Unlock()
+		}
+	}()
 
-	// One line per burst, from whoever is first to be held.
-	if first {
-		turnLog("[NETWORK] TCP connects to %s are being spaced %v apart instead of leaving at once", addr, workerStagger)
+	for {
+		p.Lock()
+		if ctx.Err() != nil {
+			p.Unlock()
+			return false
+		}
+		now := time.Now()
+		at := p.next[addr]
+		if !now.Before(at) {
+			p.next[addr] = now.Add(relayConnectGap())
+			p.Unlock()
+			return true
+		}
+		first := false
+		if !waiting {
+			waiting = true
+			p.waiting[addr]++
+			first = p.waiting[addr] == 1
+		}
+		p.Unlock()
+
+		// One line per burst, from whoever is first to be held.
+		if first {
+			turnLog("[NETWORK] TCP connects to %s are being spaced %v apart instead of leaving at once", addr, workerStagger)
+		}
+		if !waitUntil(ctx, at) {
+			return false
+		}
 	}
-	ok := waitUntil(ctx, at)
-	p.Lock()
-	p.waiting[addr]--
-	p.Unlock()
-	return ok
 }
