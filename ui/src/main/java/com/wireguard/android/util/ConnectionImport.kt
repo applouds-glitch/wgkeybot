@@ -5,11 +5,13 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.security.MessageDigest
 
 /** Resolve and validate everything before replacing a tunnel or its auth state. */
 object ConnectionImport {
     class Prepared(val response: ApiClient.InitResponse, val config: Config)
+    class FetchException(cause: IOException) : Exception("Connection fetch failed", cause)
 
     /** Finish local persistence even if the importing Activity is destroyed.
      * A failed write never publishes the new session/hash. Reconnect and UI work
@@ -34,7 +36,11 @@ object ConnectionImport {
     fun prepare(raw: String): Prepared {
         val input = ConnectionLink.parse(raw)
         val response = when (input) {
-            is ConnectionLink.Input.Token -> ApiClient.init(input.value)
+            is ConnectionLink.Input.Token -> try {
+                ApiClient.init(input.value)
+            } catch (e: IOException) {
+                throw FetchException(e)
+            }
             is ConnectionLink.Input.Embedded -> ApiClient.InitResponse(
                 input.accessToken, input.subscriptionExpiresAt, input.config, null, null,
             )
@@ -42,7 +48,10 @@ object ConnectionImport {
         val config = try {
             Config.parse(response.config.byteInputStream()).also { require(it.peers.isNotEmpty()) }
         } catch (_: Exception) {
-            throw ConnectionLink.InvalidLinkException()
+            throw ConnectionLink.InvalidLinkException(
+                if (input is ConnectionLink.Input.Token) ConnectionLink.Failure.INVALID_SERVER_CONFIG
+                else ConnectionLink.Failure.INVALID_CONFIG
+            )
         }
         return Prepared(response, config)
     }

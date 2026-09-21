@@ -145,11 +145,11 @@ class QuickTileService : TileService() {
     override fun onCreate() {
         isAdded = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            iconOn = Icon.createWithResource(this, R.drawable.ic_launcher_foreground)
+            iconOn = Icon.createWithResource(this, R.drawable.ic_tile)
             iconOff = iconOn
             return
         }
-        val icon = SlashDrawable(resources.getDrawable(R.drawable.ic_launcher_foreground, Application.get().theme))
+        val icon = SlashDrawable(resources.getDrawable(R.drawable.ic_tile, Application.get().theme))
         icon.setAnimationEnabled(false) /* Unfortunately we can't have animations, since Icons are marshaled. */
         icon.setSlashed(false)
         var b = Bitmap.createBitmap(icon.intrinsicWidth, icon.intrinsicHeight, Bitmap.Config.ARGB_8888)
@@ -242,6 +242,7 @@ class QuickTileService : TileService() {
             TunnelState.Handshake -> R.string.widget_status_handshake
             TunnelState.Connected -> R.string.widget_status_on
             TunnelState.Reconnecting -> R.string.widget_status_reconnecting
+            TunnelState.WaitingForNetwork -> R.string.widget_status_waiting_network
             TunnelState.Failed -> R.string.widget_status_failed
             TunnelState.Disconnected -> R.string.widget_status_off
         }

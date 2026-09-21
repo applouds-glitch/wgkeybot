@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Innermost halo ring — doubles as the track the busy arc sweeps along, so its
-     diameter must match wgk_busy_arc. Size and alpha set in layout. -->
+<!-- Innermost halo ring. Its diameter matches the busy arc.
+     Size and alpha are set in layout and animated with the other rings. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="oval">
-    <stroke android:width="1dp" android:color="@color/wgk_outline" />
+    <stroke android:width="1dp" android:color="@color/wgk_halo_inner" />
     <solid android:color="@android:color/transparent" />
 </shape>

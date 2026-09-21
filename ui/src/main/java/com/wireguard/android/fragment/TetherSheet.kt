@@ -38,9 +38,7 @@ private const val TAG = "WireGuard/TetherSheet"
  * address, and a plain warning that a client which ignores the proxy gets no
  * internet at all.
  *
- * It reports a live access point and never switches one on: the switch belongs
- * to the settings row that opens this sheet, and that row only exists while
- * sharing is up.
+ * It reports a live access point; the main screen and settings own the switches.
  */
 class TetherSheet : BottomSheetDialogFragment() {
 
@@ -49,6 +47,8 @@ class TetherSheet : BottomSheetDialogFragment() {
     // What the QR currently on screen encodes, and the bitmap for it; see showWifiQr.
     private var qrPayload: String? = null
     private var qrBitmap: Bitmap? = null
+
+    override fun getTheme(): Int = R.style.ThemeOverlay_WGKeyBot_InstrumentSheet
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -62,14 +62,19 @@ class TetherSheet : BottomSheetDialogFragment() {
         b.wgkTetherPassRow.wgkCopyLabel.setText(R.string.wgk_tether_pass_label)
         b.wgkTetherProxyRow.wgkCopyLabel.setText(R.string.wgk_tether_proxy_label)
         b.wgkTetherPacRow.wgkCopyLabel.setText(R.string.wgk_tether_pac_label)
+        b.wgkTetherConnections.wgkMetricLabel.setText(R.string.wgk_tether_connections_label)
+        b.wgkTetherClients.wgkMetricLabel.setText(R.string.wgk_tether_devices_label)
+        b.wgkTetherRx.wgkMetricLabel.setText(R.string.wgk_tether_rx_label)
+        b.wgkTetherTx.wgkMetricLabel.setText(R.string.wgk_tether_tx_label)
+        b.wgkTetherClose.setOnClickListener { dismiss() }
 
         return b.root
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 Application.getTetherManager().state.collect { render(it) }
             }
         }
@@ -104,22 +109,15 @@ class TetherSheet : BottomSheetDialogFragment() {
         bindCopy(b.wgkTetherProxyRow.wgkCopyBtn, proxy)
         bindCopy(b.wgkTetherPacRow.wgkCopyBtn, "http://$proxy/pac")
 
-        b.wgkTetherCounters.text = getString(
-            R.string.wgk_tether_counters,
-            state.clients,
-            state.connections,
-            formatTetherBytes(state.bytesUp),
-            formatTetherBytes(state.bytesDown)
-        )
+        b.wgkTetherConnections.wgkMetricValue.text = state.connections.toString().padStart(2, '0')
+        b.wgkTetherClients.wgkMetricValue.text = state.clients.toString().padStart(2, '0')
+        b.wgkTetherRx.wgkMetricValue.text = formatTetherBytes(state.bytesDown)
+        b.wgkTetherTx.wgkMetricValue.text = formatTetherBytes(state.bytesUp)
         showWifiQr(state.ssid, state.passphrase)
         showRoutingNote(state.routing)
     }
 
-    /**
-     * Split routing contradicts the "nothing slips past the tunnel" line right
-     * above it, so while it is on the sheet says so in the same colour; when it
-     * was asked for but no rules could be had, that is said too, quietly.
-     */
+    /** Explain direct routes, or missing rules, alongside the client setup instructions. */
     private fun showRoutingNote(routing: TetherRoutingStatus) {
         val b = binding ?: return
         b.wgkTetherRoutingNote.isVisible = routing != TetherRoutingStatus.OFF
@@ -157,10 +155,8 @@ class TetherSheet : BottomSheetDialogFragment() {
             Log.w(TAG, "cannot encode the Wi-Fi QR", e)
             null
         }
-        if (bitmap == null) {
-            b.wgkTetherQr.isVisible = false
-            return
-        }
+        b.wgkTetherQrPanel.isVisible = bitmap != null
+        if (bitmap == null) return
         qrPayload = payload
         qrBitmap = bitmap
         b.wgkTetherQr.setImageBitmap(bitmap)

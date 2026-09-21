@@ -260,25 +260,45 @@ func credsTag(user string) string {
 
 // settlingQuotaError reports whether err, the outcome of an attempt on user's
 // credential over addrs, is a 486 that our own recent release explains: one of
-// those relays saw a release of ours go out less than releaseSettleWindow ago
-// and holds no orphans of ours. It names that relay and the release's age. An
+// those relays — of the ones that answered 486, where the error says which did
+// (quotaAnsweredBy): a release on one relay explains nothing about another's
+// quota — saw a release of ours go out less than releaseSettleWindow ago and
+// holds no orphans of ours. It names that relay and the release's age. An
 // orphaned relay is left out on purpose: its 486 is our ghosts, which will not
 // be gone in seconds.
 func settlingQuotaError(err error, user string, addrs []string, now time.Time) (string, time.Duration, bool) {
 	if err == nil || !isQuotaError(err) {
 		return "", 0, false
 	}
+	answers := quotaAnsweredBy(err, addrs)
 	allocationBook.Lock()
 	defer allocationBook.Unlock()
-	for _, addr := range addrs {
+	for _, answer := range answers {
+		addr := answer.addr
 		key := relayIdentity{user: user, relay: addr}
 		at, ok := allocationBook.releasedAt[key]
 		if !ok {
 			continue
 		}
-		age := now.Sub(at)
-		if age >= releaseSettleWindow {
+		// Every worker of the group comes back with an attempt of its own, some
+		// long after the 486 in it came in (a fallback can queue for an Allocate
+		// slot behind a silent relay), so the first to ask must not take the
+		// entry from the rest: it is judged by the 486's own time below, and
+		// only swept here once it is as old as an orphan mark gets.
+		if now.Sub(at) >= orphanedAllocationLifetime {
 			delete(allocationBook.releasedAt, key)
+			continue
+		}
+		// Judged at the moment the relay said 486, not when the attempt ended:
+		// another relay's silence can hold the attempt open for eight seconds
+		// more, and the window would run out on a 486 that was well inside it.
+		// A 486 from before the release is explained by it all the more.
+		heard := answer.at
+		if heard.IsZero() {
+			heard = now
+		}
+		age := max(heard.Sub(at), 0)
+		if age >= releaseSettleWindow {
 			continue
 		}
 		if till, orphaned := allocationBook.orphanedTill[key]; orphaned && now.Before(till) {

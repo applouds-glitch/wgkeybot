@@ -18,7 +18,8 @@
             android:minHeight="?attr/actionBarSize"
             app:navigationIcon="@drawable/ic_arrow_back"
             app:title="@string/wgk_routing_settings_title"
-            app:titleTextColor="@color/wgk_on_surface" />
+            app:titleTextColor="@color/wgk_on_surface"
+            app:titleTextAppearance="@style/TextAppearance.WGKeyBot.ScreenTitle" />
 
         <androidx.core.widget.NestedScrollView
             android:id="@+id/wgk_routing_scroll"
@@ -59,10 +60,9 @@
                         android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
 
                     <com.google.android.material.card.MaterialCardView
-                        style="@style/Widget.WGKeyBot.Card"
+                        style="@style/Widget.WGKeyBot.InstrumentCard"
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        app:cardCornerRadius="16dp">
+                        android:layout_height="wrap_content">
 
                         <LinearLayout
                             android:layout_width="match_parent"
@@ -79,7 +79,8 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="1dp"
                                 android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
+                                android:layout_marginEnd="16dp"
+                                android:background="@color/wgk_divider" />
 
                             <include
                                 android:id="@+id/wgk_routing_dns_row"
@@ -102,10 +103,9 @@
                         android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
 
                     <com.google.android.material.card.MaterialCardView
-                        style="@style/Widget.WGKeyBot.Card"
+                        style="@style/Widget.WGKeyBot.InstrumentCard"
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        app:cardCornerRadius="16dp">
+                        android:layout_height="wrap_content">
 
                         <LinearLayout
                             android:layout_width="match_parent"
@@ -122,7 +122,8 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="1dp"
                                 android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
+                                android:layout_marginEnd="16dp"
+                                android:background="@color/wgk_divider" />
 
                             <include
                                 android:id="@+id/wgk_routing_geoip_row"
@@ -134,7 +135,8 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="1dp"
                                 android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
+                                android:layout_marginEnd="16dp"
+                                android:background="@color/wgk_divider" />
 
                             <include
                                 android:id="@+id/wgk_routing_geosite_row"
@@ -146,7 +148,8 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="1dp"
                                 android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
+                                android:layout_marginEnd="16dp"
+                                android:background="@color/wgk_divider" />
 
                             <include
                                 android:id="@+id/wgk_routing_fetched_row"
@@ -156,12 +159,12 @@
 
                             <com.google.android.material.button.MaterialButton
                                 android:id="@+id/wgk_routing_update_btn"
-                                style="@style/Widget.Material3.Button.TonalButton"
+                                style="@style/Widget.WGKeyBot.InstrumentButton"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginStart="12dp"
+                                android:layout_marginStart="16dp"
                                 android:layout_marginTop="4dp"
-                                android:layout_marginEnd="12dp"
+                                android:layout_marginEnd="16dp"
                                 android:layout_marginBottom="12dp"
                                 android:text="@string/wgk_routing_update_btn"
                                 app:icon="@drawable/ic_refresh" />

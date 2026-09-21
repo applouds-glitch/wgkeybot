@@ -28,8 +28,8 @@ type StreamCredentialsCache struct {
 	creds TurnCredentials
 	mutex sync.RWMutex
 
-	// refreshMu guards lastRefresh and serialises the throttle decision in
-	// refreshGroupCreds independently of the creds lock above.
+	// refreshMu guards lastRefresh, the throttle's clock in refreshGroupCreds
+	// (taken there inside mutex, never the other way round).
 	refreshMu   sync.Mutex
 	lastRefresh time.Time // guarded by refreshMu
 }
@@ -118,32 +118,54 @@ func invalidateAllCaches() {
 	turnLog("[Auth] All credential caches cleared (streamsPerCred=%d)", streamsPerCredValue())
 }
 
-// invalidateGroupCreds force-expires the cached credential for a single group so
-// the next getCredsCached goes back to the VK API for a fresh one. Unlike
-// invalidateAllCaches it does NOT delete the slot: keeping the same
-// *StreamCredentialsCache pointer means the per-slot cache.mutex in
-// getCredsCached still single-flights the re-fetch across the group's workers
-// (the first re-fetches, the rest get a cache hit). Called when the TURN server
-// rejects allocations for this credential (stale/401/486).
-func invalidateGroupCreds(groupID int) {
-	cache := getStreamCache(groupID * streamsPerCredValue())
-	cache.mutex.Lock()
+// expireCredsLocked force-expires the slot, so that the next getCredsCached goes
+// back to the VK API, and says how long its credential had lived; cache.mutex is
+// held for writing. The slot is kept, not deleted (unlike invalidateAllCaches):
+// the same *StreamCredentialsCache means its mutex still single-flights the
+// re-fetch across the group's workers — the first re-fetches, the rest get a
+// cache hit.
+func expireCredsLocked(cache *StreamCredentialsCache) time.Duration {
 	var lived time.Duration
 	if !cache.creds.FetchedAt.IsZero() {
 		lived = time.Since(cache.creds.FetchedAt).Round(time.Second)
 	}
 	cache.creds.ExpiresAt = time.Now().Add(-time.Second)
-	cache.mutex.Unlock()
-	turnLog("[Auth] Credential cache for group %d force-expired (lived %v)", groupID, lived)
+	return lived
 }
 
-// refreshGroupCreds is the throttled, error-driven re-fetch entry point used by
-// workers. The first worker in a slot to hit an auth/quota error force-expires
-// the slot; siblings that fail within credRefreshThrottle become no-ops and
-// reuse the credential the first worker's next getCredsCached fetches. Throttle
-// state lives behind refreshMu so the decision is independent of the creds lock.
-func refreshGroupCreds(groupID int) {
+// refreshGroupCreds is the error-driven re-fetch entry point used by workers:
+// the TURN server has rejected an allocation made with user (stale/401/486),
+// so the group's slot is force-expired and the next getCredsCached goes to VK —
+// if user is what the slot holds.
+//
+// It used to expire whatever the slot held. The rejections of one credential do
+// not arrive together: a worker's attempt can end many seconds after its
+// siblings' (a fallback Allocate queued behind a silent relay, a session that
+// outlived the rotation), and the slot's lock is held across the whole fetch —
+// a VK round trip, or a captcha ladder of minutes — so a rejection of the OLD
+// credential would wait that out here and then expire the NEW one it had just
+// produced: another trip to VK, right after a captcha, for a credential nobody
+// had refused. The throttle below only covered the first credRefreshThrottle of
+// it. Now a rejection of a username the slot no longer holds changes nothing,
+// not even the throttle's clock. The username is all that tells one credential
+// from the next; VK's carry a timestamp and have not been seen to repeat, and if
+// one did, this would act on it as it always used to.
+//
+// The throttle stays for what it is still needed for: a fresh credential that is
+// refused at once as well (a quota that is simply full) is rotated at most once
+// per credRefreshThrottle, however many workers report it.
+func refreshGroupCreds(groupID int, user string) {
 	cache := getStreamCache(groupID * streamsPerCredValue())
+
+	// The comparison and the expiry under one hold of the lock: checked apart,
+	// a fetch could land between them.
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	if cache.creds.Username != user {
+		turnLog("[Auth] Group %d: the rejected credential %s is already replaced — nothing to refresh", groupID, credsTag(user))
+		return
+	}
 
 	cache.refreshMu.Lock()
 	if !cache.lastRefresh.IsZero() && time.Since(cache.lastRefresh) < credRefreshThrottle {
@@ -155,7 +177,8 @@ func refreshGroupCreds(groupID int) {
 	cache.lastRefresh = time.Now()
 	cache.refreshMu.Unlock()
 
-	invalidateGroupCreds(groupID)
+	lived := expireCredsLocked(cache)
+	turnLog("[Auth] Credential cache for group %d force-expired (lived %v)", groupID, lived)
 }
 
 // credsReplaced reports whether user is no longer the group's credential: its
@@ -164,8 +187,9 @@ func refreshGroupCreds(groupID int) {
 // A slot whose lock is taken reads as replaced without waiting for it. The lock
 // is held across a whole fetch — a VK round trip, or a captcha ladder that can
 // run for minutes — and a fetch only runs for a slot that is being replaced.
-// The other holder is a sibling's cache hit, for microseconds; losing that race
-// costs one fast retry on the same credential, whose 486 then reads correctly.
+// The other holders are a sibling's cache hit and refreshGroupCreds, for
+// microseconds; losing that race costs one fast retry on the same credential,
+// whose 486 then reads correctly.
 func credsReplaced(groupID int, user string) bool {
 	cache := getStreamCache(groupID * streamsPerCredValue())
 	if !cache.mutex.TryRLock() {

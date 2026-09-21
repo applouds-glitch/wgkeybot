@@ -11,8 +11,9 @@
         <LinearLayout
             android:id="@+id/wgk_split_btn"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:background="@drawable/wgk_row_pill_bg"
+            android:layout_height="wrap_content"
+            android:minHeight="@dimen/wgk_footer_height"
+            android:background="?attr/selectableItemBackground"
             android:clickable="true"
             android:defaultFocusHighlightEnabled="false"
             android:focusable="true"
@@ -35,9 +36,9 @@
                 android:layout_marginStart="12dp"
                 android:layout_weight="1"
                 android:ellipsize="end"
-                android:maxLines="1"
+                android:maxLines="2"
                 android:text="@string/wgk_action_split_tunneling"
-                android:textAppearance="?attr/textAppearanceLabelLarge"
+                android:textAppearance="@style/TextAppearance.WGKeyBot.SettingTitle"
                 android:textColor="@color/wgk_on_surface_variant" />
 
             <TextView
@@ -46,8 +47,16 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="12dp"
                 android:text="@string/wgk_split_off_value"
-                android:textAppearance="?attr/textAppearanceLabelLarge"
+                android:textAppearance="@style/TextAppearance.WGKeyBot.InstrumentValue"
                 android:textColor="@color/wgk_on_surface_variant" />
+
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:layout_marginStart="8dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_chevron_right"
+                app:tint="@color/wgk_on_surface_variant" />
         </LinearLayout>
 
     </LinearLayout>

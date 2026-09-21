@@ -3,6 +3,10 @@
   ~ SPDX-License-Identifier: Apache-2.0
   -->
 <resources>
+    <dimen name="wgk_card_stroke_width">1dp</dimen>
+    <dimen name="wgk_connect_elevation">2dp</dimen>
+    <dimen name="wgk_footer_corner">22dp</dimen>
+    <dimen name="wgk_footer_height">56dp</dimen>
     <dimen name="fab_margin">16dp</dimen>
     <dimen name="bottom_sheet_item_height">56dp</dimen>
     <dimen name="normal_margin">8dp</dimen>
@@ -11,28 +15,15 @@
     <dimen name="tunnel_list_placeholder_margin">16dp</dimen>
     <dimen name="wgk_snackbar_icon_padding">8dp</dimen>
 
-    <!-- Connect screen metrics. This file is the *compact* set: it is what short
-         screens get (16:9 phones, landscape, and any device whose display-size or
-         font setting shrinks the available height). The roomy set lives in
-         values-h680dp / values-h760dp — Android picks the largest bucket that
-         still fits, so tall phones keep the original design untouched.
-
-         The screen is a fixed stack: the status card and footer rows do not
-         shrink, so the only thing that can give when the viewport gets short is
-         the connect ring and the gaps around it. Each bucket is cut so its own
-         stack fits its smallest device, against a viewport of screenHeightDp
-         minus the 56dp action bar: compact ~596dp (needs 652dp of screen
-         height), medium ~636dp (692), full ~684dp (740). Below ~650dp even the
-         compact stack scrolls — which is why the profile card is pinned outside
-         the scroll view in tunnel_list_fragment.xml rather than riding it.
-
-         Ring geometry, keep proportional: mid ≈ 0.88·outer, inner ≈ 0.76·outer,
-         arc = inner + 2 (the arc centreline must land on the inner ring's
-         stroke), button ≈ 0.67·outer, icon ≈ 0.24·outer. -->
-    <dimen name="wgk_connect_ring_outer">176dp</dimen>
-    <dimen name="wgk_connect_ring_mid">154dp</dimen>
-    <dimen name="wgk_connect_ring_inner">134dp</dimen>
-    <dimen name="wgk_connect_arc">136dp</dimen>
+    <!-- v1.6.0 geometry in both themes: 156dp button, 192/224/260dp rings
+         and a separate 200dp busy arc in the full height bucket. Compact and
+         medium screens scale those proportions with the button. The scroll
+         container keeps the lower actions reachable when the stack is taller
+         than the viewport; the profile card stays pinned above it. -->
+    <dimen name="wgk_connect_ring_outer">196dp</dimen>
+    <dimen name="wgk_connect_ring_mid">170dp</dimen>
+    <dimen name="wgk_connect_ring_inner">146dp</dimen>
+    <dimen name="wgk_connect_arc">152dp</dimen>
     <dimen name="wgk_connect_btn">118dp</dimen>
     <dimen name="wgk_connect_icon">42dp</dimen>
 
@@ -43,12 +34,8 @@
          scroll content's top padding, since the weighted spacer that normally
          holds them apart collapses to zero as soon as the stack overflows. -->
     <dimen name="wgk_connect_gap_min">8dp</dimen>
-    <!-- Action slot under the connect button: the band that carries either the
-         action hint or the sharing chip. Not bucketed by height like the ring —
-         it is sized by the chip inside it, which does not scale with the screen.
-         Its 28dp plus an 8dp top margin replaced the hint's own 21dp line plus a
-         12dp margin, so the fixed block under the button grew by 3dp. -->
-    <dimen name="wgk_action_slot_height">28dp</dimen>
+    <!-- Fixed legend below the power control; sharing has its own panel. -->
+    <dimen name="wgk_action_slot_height">24dp</dimen>
     <!-- One line box of the status card's subtitle, in sp so it tracks the user's
          font setting instead of clipping at large sizes. The subtitle autosizes
          down to fit a long state on a narrow card; without this floor the card —

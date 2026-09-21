@@ -75,6 +75,9 @@ func (c *clientStreamControl) receive(b []byte) bool {
 func (s *stream) enqueueControl(b []byte) bool {
 	p := packetPool.Get().([]byte)[:len(b)]
 	copy(p, b)
+	if s.enqueuePriority(p) {
+		return true
+	}
 	select {
 	case s.in <- p:
 		return true

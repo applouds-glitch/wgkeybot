@@ -25,6 +25,15 @@ func dropCredSlot(t *testing.T, group int) {
 	t.Cleanup(drop)
 }
 
+// invalidateGroupCreds force-expires a group's slot whatever it holds — what
+// refreshGroupCreds does once it has decided to.
+func invalidateGroupCreds(groupID int) {
+	cache := getStreamCache(groupID * streamsPerCredValue())
+	cache.mutex.Lock()
+	expireCredsLocked(cache)
+	cache.mutex.Unlock()
+}
+
 func fixedCreds(user string) fetchFunc {
 	return func(context.Context, string) (string, string, []string, int, error) {
 		return user, "pass", []string{"192.0.2.1:3478"}, 0, nil

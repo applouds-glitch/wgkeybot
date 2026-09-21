@@ -6,16 +6,19 @@ package com.wireguard.android.model
 
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.databinding.Observable
 import androidx.databinding.ObservableList
 import com.wireguard.android.Application
+import com.wireguard.android.backend.TurnBackend
 import com.wireguard.android.BR
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.fragment.TunnelFailure
 import com.wireguard.android.fragment.TunnelState
+import com.wireguard.android.fragment.TunnelStatePolicy
 import com.wireguard.android.fragment.TunnelUiState
 import com.wireguard.android.util.ScreenStateMonitor
 import com.wireguard.android.util.applicationScope
@@ -48,6 +51,7 @@ class TunnelStateTracker(private val context: Context) {
     private var trackedTunnel: ObservableTunnel? = null
     private var pollingJob: Job? = null
     private var firstHandshakeMs = 0L
+    private var firstHandshakeElapsedMs = 0L
     private var pollingStartedMs = 0L
     private var lastEmittedState: TunnelState = TunnelState.Disconnected
 
@@ -184,19 +188,30 @@ class TunnelStateTracker(private val context: Context) {
                     val rx = stats.totalRx()
                     val tx = stats.totalTx()
                     val now = System.currentTimeMillis()
-                    val newState = when {
-                        lastHandshakeMs == 0L -> {
-                            if (now - pollingStartedMs > INITIAL_HANDSHAKE_TIMEOUT_MS) TunnelState.Failed
-                            else TunnelState.Connecting
-                        }
-                        (now - lastHandshakeMs) / 1000 > HANDSHAKE_STALE_SECONDS -> TunnelState.Reconnecting
-                        firstHandshakeMs == 0L || (now - firstHandshakeMs) / 1000 < HANDSHAKE_DISPLAY_SECONDS -> {
-                            if (firstHandshakeMs == 0L) firstHandshakeMs = now
-                            TunnelState.Handshake
-                        }
-                        else -> TunnelState.Connected
+                    val turn = Application.getTurnProxyManager()
+                    val newState = TunnelStatePolicy.derive(
+                        nowMs = now,
+                        pollingStartedMs = pollingStartedMs,
+                        lastHandshakeMs = lastHandshakeMs,
+                        firstHandshakeSeenMs = firstHandshakeMs,
+                        hasNetwork = turn.hasPhysicalNetwork,
+                        // Only for the tunnel the proxy is running for; -1 otherwise,
+                        // and from the proxy itself when it is not running.
+                        readyStreams = if (turn.activeTunnel == tunnel.name) TurnBackend.wgTurnReadyStreams() else -1,
+                    )
+                    if (lastHandshakeMs != 0L && firstHandshakeMs == 0L) {
+                        firstHandshakeMs = now
+                        firstHandshakeElapsedMs = SystemClock.elapsedRealtime()
                     }
-                    emit(_uiState.value.copy(state = newState, rxBytes = rx, txBytes = tx, failure = null))
+                    // Publish the origin, not a ticking counter: elapsed time alone
+                    // must not wake every state subscriber or require a stats poll.
+                    emit(_uiState.value.copy(
+                        state = newState,
+                        sessionStartedAtElapsedMs = firstHandshakeElapsedMs,
+                        rxBytes = rx,
+                        txBytes = tx,
+                        failure = null,
+                    ))
                 } catch (_: Exception) {
                     // Backend transient error — keep polling.
                 }
@@ -208,6 +223,7 @@ class TunnelStateTracker(private val context: Context) {
     private fun stopPolling() {
         pollingJob?.cancel(); pollingJob = null
         firstHandshakeMs = 0L
+        firstHandshakeElapsedMs = 0L
         pollingStartedMs = 0L
     }
 
@@ -215,7 +231,11 @@ class TunnelStateTracker(private val context: Context) {
         val prev = lastEmittedState
         _uiState.value = next
         lastEmittedState = next.state
-        if (next.state == TunnelState.Connected && prev != TunnelState.Connected) {
+        // The haptic marks a connect, not every recovery: with the transport's own
+        // state on the screen, a Wi-Fi blip now passes through Reconnecting and
+        // back, and the phone must not buzz for each.
+        if (next.state == TunnelState.Connected &&
+            (prev == TunnelState.Connecting || prev == TunnelState.Handshake)) {
             vibrateOnce()
         }
     }
@@ -242,10 +262,5 @@ class TunnelStateTracker(private val context: Context) {
 
     companion object {
         private const val POLL_INTERVAL_MS = 2_000L
-        private const val HANDSHAKE_DISPLAY_SECONDS = 5L
-        // WireGuard REJECT_AFTER_TIME — peer is considered unreachable past this.
-        private const val HANDSHAKE_STALE_SECONDS = 180L
-        // Grace period for the first handshake after polling starts.
-        private const val INITIAL_HANDSHAKE_TIMEOUT_MS = 30_000L
     }
 }

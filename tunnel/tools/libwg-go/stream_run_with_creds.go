@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/turn/v5"
@@ -27,8 +29,9 @@ var errDataPlaneHandshake = errors.New("data-plane handshake failed")
 type sessionVerdict int
 
 const (
-	// verdictNone: the session says nothing — we tore it down ourselves, or it
-	// ended cleanly without lasting long enough to prove anything.
+	// verdictNone: the session says nothing — we tore it down ourselves, it ended
+	// cleanly without lasting long enough to prove anything, or its relay went
+	// silent on it before it had (see sessionOutcome).
 	verdictNone sessionVerdict = iota
 	verdictSuccess
 	verdictFailure
@@ -58,7 +61,33 @@ func (v sessionVerdict) String() string {
 // traffic. Otherwise a session that ran for a while proves the server works, and
 // a short one that ended in an error counts against it. Teardowns are excluded —
 // cancelled means cancelled by us, not by the server.
+//
+// "Ran" is counted up to the last packet the relay delivered, not to the end of
+// the session's existence. The dead-stream detector ends
+// a session only after deadStreamTimeout of silence, which is longer than
+// healthySessionDuration: a relay that completed the handshake and never
+// delivered another packet was booked as a success every time — each round of
+// it wiped the strikes the relay had, and lifted a stand-down. The silence at
+// the end (counted from the last packet that really arrived, freezes included)
+// is taken off before the length is judged.
+//
+// What is left of such a session, if it is short, is no verdict at all rather
+// than a failure. One stream going deaf does not say whose fault it was — its
+// allocation, its path, the server behind the relay or the relay — and telling
+// them apart takes a witness: over UDP every stream shares the one relay, so
+// three deaf ones would stand it down under those still running. Both ways of
+// picking the witness were tried and dropped on 2026-09-21: any neighbour heard
+// lately lets streams that reconnect in turn vouch for one another on the
+// strength of their handshakes alone, and only a neighbour with traffic since
+// its handshake leaves a healthy relay without witnesses for half a minute
+// after every reconnect. A relay that is really gone still earns its strikes
+// where the evidence is its own: on the redial, at the Allocate or the handshake.
 func sessionOutcome(cancelled, blackholed bool, dur time.Duration, err error) sessionVerdict {
+	var dead *deadStreamError
+	deaf := errors.As(err, &dead)
+	if deaf {
+		dur -= dead.silent
+	}
 	switch {
 	case cancelled:
 		return verdictNone
@@ -68,6 +97,8 @@ func sessionOutcome(cancelled, blackholed bool, dur time.Duration, err error) se
 		return verdictSuccess
 	case errors.Is(err, errDataPlaneHandshake):
 		return verdictHandshakeFailure
+	case deaf:
+		return verdictNone
 	case err != nil:
 		return verdictFailure
 	default:
@@ -96,7 +127,14 @@ type winner struct {
 // credential rotation are managed by the calling WorkerGroup.
 func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []string, cfg WorkerGroupConfig) error {
 	s.ready.Store(false)
-	defer s.ready.Store(false)
+	// Not ready first, so the dispatcher stops adding; then what it had added for
+	// the session that just ended goes (see drainOutbound).
+	defer func() {
+		s.ready.Store(false)
+		if n := s.drainOutbound(); n > 0 {
+			turnLog("[STREAM %d] dropped %d packet(s) still queued for the session that ended", s.id, n)
+		}
+	}()
 
 	// raceCtx is cancelled the moment a winner is chosen (or ctx dies) so the
 	// losing failover candidates stop dialing / abort their semaphore wait
@@ -106,7 +144,7 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 
 	var once sync.Once
 	winCh := make(chan winner, 1)
-	errCh := make(chan error, len(addrs))
+	errCh := make(chan relayAttemptError, len(addrs))
 	var wg sync.WaitGroup
 
 	// allocating carries the first relay's Allocate slot to the loop below at the
@@ -115,6 +153,10 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 	// Over TCP the relay can be silent a step earlier, on the connect, and gets a
 	// head start for that too.
 	connecting := make(chan struct{}, 1)
+	// Only for the log line when the head start runs out: whether the first
+	// relay had taken the TCP connection by then. Not a phase of the clock — see
+	// headStartExpired.
+	var headConnected atomic.Bool
 
 	launch := func(addr string) {
 		wg.Add(1)
@@ -124,10 +166,11 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			if addr == addrs[0] {
 				opts.allocating = func(slot *allocSlot) { allocating <- slot }
 				opts.connecting = func() { connecting <- struct{}{} }
+				opts.connected = headConnected.Store
 			}
 			client, raw, relay, rtt, perm, err := dialAndAllocate(raceCtx, s, user, pass, addr, cfg, opts)
 			if err != nil {
-				errCh <- err
+				errCh <- relayAttemptError{addr: addr, err: err, at: time.Now()}
 				return
 			}
 			claimed := false
@@ -182,8 +225,7 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 		headStart = headStartTimer.C
 	}
 
-	var lastErr error
-	errCount := 0
+	var failed []relayAttemptError
 	for {
 		select {
 		case w := <-winCh:
@@ -205,18 +247,13 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			// this relay's queue start its own clock. The Allocate itself runs
 			// on — see relayHeadStart. A TCP connect that is still hanging holds
 			// no slot yet; it runs on as well, and is closed if it loses.
-			if headSlot != nil {
-				turnLog("[STREAM %d] %s has not answered Allocate for %v — racing %v (group %d)",
-					s.id, addrs[0], relayHeadStart, addrs[1:], cfg.GroupID)
-				headSlot.release()
-			} else {
-				turnLog("[STREAM %d] %s has not accepted the TCP connection for %v — racing %v (group %d)",
-					s.id, addrs[0], relayHeadStart, addrs[1:], cfg.GroupID)
-			}
+			turnLog("[STREAM %d] %s — racing %v (group %d)",
+				s.id, headStartExpired(addrs[0], headSlot != nil, headConnected.Load()), addrs[1:], cfg.GroupID)
+			headSlot.release()
 			fanOut()
-		case err := <-errCh:
-			lastErr = err
-			errCount++
+		case attempt := <-errCh:
+			failed = append(failed, attempt)
+			err := attempt.err
 			if !fannedOut {
 				// The assigned server failed: try the failover candidates. Say
 				// why before moving on — a failover that succeeds swallows this
@@ -226,8 +263,13 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 				turnLog("[STREAM %d] %s failed (%v) — fanning out to %v (group %d)",
 					s.id, addrs[0], err, addrs[1:], cfg.GroupID)
 				fanOut()
-			} else if errCount == launchedCount {
-				return fmt.Errorf("TURN allocate: all %d servers failed: %w", len(addrs), lastErr)
+			} else if len(failed) == launchedCount {
+				raced := newRaceError(failed)
+				if spoke := raced.spokesman(); raced.overrulesLast() {
+					turnLog("[STREAM %d] all %d servers failed; acting on what %s answered (%v), not on the last to fail, %s (%v) (group %d)",
+						s.id, len(failed), spoke.addr, spoke.err, failed[len(failed)-1].addr, failed[len(failed)-1].err, cfg.GroupID)
+				}
+				return raced
 			}
 		case <-ctx.Done():
 			cancelRace()
@@ -237,6 +279,125 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			return ctx.Err()
 		}
 	}
+}
+
+// relayAttemptError is one relay's failure within an attempt.
+type relayAttemptError struct {
+	addr string
+	err  error
+	at   time.Time // when the relay's answer, or the end of its silence, came in
+}
+
+// raceError is an attempt every relay of which failed.
+//
+// It used to be the last failure to arrive, wrapped — and what arrives last is
+// usually what says least. A relay answering 486 does so in one round trip; a
+// dark one next to it takes pion's ~7.8s to time out, and its timeout then stood
+// for the whole attempt: no credential rotation, no quota backoff, the worker
+// back on the same full credential after a plain reconnect delay, for as long
+// as the second relay stayed dark. So the attempt speaks through the first
+// answer to come in that calls for new credentials (classifyCredError), if
+// there is one, and through the last failure as before otherwise. Between two
+// such answers the order still decides — a 401 ahead of a 486 is a 401 — but
+// both rotate the credential, which is what matters. Only that error is in the chain and in the text — the others'
+// text carries addresses and ports that must not reach the substring fallback
+// of classifyCredError (see isTransportError) — but each relay's own answer is
+// kept for whoever needs to know which one said what (quotaAnsweredBy).
+type raceError struct {
+	attempts []relayAttemptError // in the order they failed
+	speaks   int
+}
+
+func newRaceError(attempts []relayAttemptError) *raceError {
+	e := &raceError{attempts: attempts, speaks: len(attempts) - 1}
+	for i, a := range attempts {
+		if classifyCredError(a.err) {
+			e.speaks = i
+			break
+		}
+	}
+	return e
+}
+
+func (e *raceError) spokesman() relayAttemptError { return e.attempts[e.speaks] }
+
+// overrulesLast reports whether the answer that speaks changes what the attempt
+// would have been read as: it is not the last failure, and the last failure
+// does not call for new credentials itself. Two relays both answering 486 —
+// every reconnect onto orphaned quota, ten workers at a time (device, 21.09) —
+// read the same either way and are not worth a line each.
+func (e *raceError) overrulesLast() bool {
+	last := len(e.attempts) - 1
+	return e.speaks != last && !classifyCredError(e.attempts[last].err)
+}
+
+func (e *raceError) Error() string {
+	return fmt.Sprintf("TURN allocate: all %d servers failed: %v", len(e.attempts), e.spokesman().err)
+}
+
+func (e *raceError) Unwrap() error { return e.spokesman().err }
+
+// quotaAnswer is one relay's 486 and when it came in; a zero time means the
+// error did not say.
+type quotaAnswer struct {
+	addr string
+	at   time.Time
+}
+
+// quotaAnsweredBy narrows addrs to the relays that answered err's attempt with
+// 486. An error that does not say which relay said what leaves addrs as it is.
+func quotaAnsweredBy(err error, addrs []string) []quotaAnswer {
+	var out []quotaAnswer
+	var raced *raceError
+	if !errors.As(err, &raced) {
+		for _, addr := range addrs {
+			out = append(out, quotaAnswer{addr: addr})
+		}
+		return out
+	}
+	for _, a := range raced.attempts {
+		if isQuotaError(a.err) && slices.Contains(addrs, a.addr) {
+			out = append(out, quotaAnswer{addr: a.addr, at: a.at})
+		}
+	}
+	return out
+}
+
+// quotaBesideSilence reports whether err is an attempt in which a 486 speaks
+// while another relay's Allocate ended without a TURN answer — a transport
+// failure or a timeout, whatever it had answered before that. It names the two.
+//
+// That attempt asks for new credentials, and new credentials mean a trip to VK,
+// which may cost the user a captcha. The relay that did not answer might well
+// have on the very same credential: its quota is its own (486 is per credential
+// per relay), and the usual reason for the 486 next to it is our own orphans on
+// the first relay right after a network drop — exactly when a dial to the second
+// is most likely to be lost to the same flaky path. It gets one more try before
+// this worker gives the credential up (quotaGraceApplies). A relay that stays
+// dark costs that one attempt; it used to cost every attempt until the orphans
+// expired, ten minutes.
+func quotaBesideSilence(err error) (quota, silent string, ok bool) {
+	var raced *raceError
+	if !errors.As(err, &raced) || !isQuotaError(raced) {
+		return "", "", false
+	}
+	for _, a := range raced.attempts {
+		if _, answered := turnErrorCode(a.err); !answered {
+			return raced.spokesman().addr, a.addr, true
+		}
+	}
+	return "", "", false
+}
+
+// quotaGraceApplies decides the one more try: once per credential per worker
+// (used is the credential that has had it), and not on a credential a sibling
+// has already replaced — there the 486 takes its usual fast path to the new
+// one, which is in the cache or being fetched already.
+func quotaGraceApplies(err error, user, used string, replaced bool) (quota, silent string, ok bool) {
+	if user == used || replaced {
+		return "", "", false
+	}
+	return quotaBesideSilence(err)
 }
 
 // relayHeadStart is how long the attempt's first relay has to answer Allocate
@@ -264,6 +425,35 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 // loser path below releases that allocation properly.
 const relayHeadStart = 1200 * time.Millisecond
 
+// headStartExpired says what the first relay had not done when its head start
+// ran out.
+//
+// Over TCP the clock that starts with the connect keeps running while the dial
+// queues for one of the relay's Allocate slots, and is restarted only when the
+// Allocate goes out. That is deliberate, though the line used to call it a
+// connection the relay "has not accepted": the slots are per relay, and what
+// holds them for long is Allocates hanging on that very relay — a first relay's
+// gives its slot up when its own head start runs out, a raced one keeps it for
+// pion's whole ~7.8s. Busy slots do not prove the relay dark, but a dial still
+// without one after relayHeadStart has nothing better to do than try the others
+// too; stopping the clock at the end of the connect would leave it queueing
+// there with no limit but the context. Over UDP the dial sends nothing before
+// its slot, and the clock starts with the Allocate.
+//
+// connected is read without a snapshot of the select it sits next to: a slot
+// granted in the same instant the timer fires can still be reported as a wait.
+// It words a log line and decides nothing.
+func headStartExpired(relay string, allocating, connected bool) string {
+	switch {
+	case allocating:
+		return fmt.Sprintf("%s has not answered Allocate for %v", relay, relayHeadStart)
+	case connected:
+		return fmt.Sprintf("%s took the TCP connection, but this dial is still queued for an Allocate slot on it %v after the connect began", relay, relayHeadStart)
+	default:
+		return fmt.Sprintf("%s has not accepted the TCP connection for %v", relay, relayHeadStart)
+	}
+}
+
 // dialOpts is what only runWithCreds needs from a dial; the zero value is a
 // plain dial.
 type dialOpts struct {
@@ -278,6 +468,8 @@ type dialOpts struct {
 	// connecting is called just before a TCP connect to the relay starts. Over
 	// UDP there is no such moment: the "dial" sends nothing.
 	connecting func()
+	// connected is called with true once that connect has succeeded.
+	connected func(bool)
 }
 
 // dialAndAllocate dials one TURN server and performs the Allocate handshake,
@@ -347,6 +539,9 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		}
 		raw = c
 		turnConn = turn.NewSTUNConn(c)
+		if opts.connected != nil {
+			opts.connected(true)
+		}
 	}
 	responses := &allocateResponseConn{PacketConn: turnConn, remote: raw.RemoteAddr().String()}
 
@@ -467,6 +662,12 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	defer w.client.Close()
 	defer w.relay.Close()
 
+	// Whatever reached the queues while the stream was reconnecting, before any
+	// transport starts its writer — runNoDTLS starts it ahead of the relay proof.
+	if n := s.drainOutbound(); n > 0 {
+		turnLog("[STREAM %d] dropped %d packet(s) queued while the stream was reconnecting", s.id, n)
+	}
+
 	// Over TCP the socket is watched for as long as the session runs
 	// (relay_tcp_watch.go). Deferred last, so it is let go before anything above
 	// closes it.
@@ -519,7 +720,7 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	s.serverAddr = w.addr
 	// Whether this session's flow has a fate of its own, and who else is on the
 	// relay to vouch for it if its handshake fails (relay_heard_by_others.go).
-	s.overTCP = relayFlow(w.raw) != nil
+	s.overTCP.Store(relayFlow(w.raw) != nil)
 	defer trackLiveSession(w.addr, s)()
 
 	// Stamped before the transport runs, so a server that goes on to prove its
@@ -565,7 +766,7 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// And whatever ended with the phone's own network: every session on it dies
 	// at that moment, on every relay alike, and a handshake that was under way
 	// times out for the same reason (local_network_failure.go).
-	if verdict == verdictHandshakeFailure && s.overTCP && relayHeardByOthers(w.addr, s, time.Now()) {
+	if verdict == verdictHandshakeFailure && s.overTCP.Load() && relayHeardByOthers(w.addr, s, time.Now()) {
 		turnLog("[STREAM %d] %s handshake: %s — a flow's failure, not the relay's: other streams are hearing it",
 			s.id, w.addr, relay.describe(time.Now()))
 		verdict = verdictNone

@@ -43,21 +43,45 @@ const (
 	relayTransportTCP
 )
 
-// relayTransportChoice is read by every dial, not once per proxy start: a
+// relayTransportChoice is read for every attempt, not once per proxy start: a
 // session that moves from Wi-Fi to a network that needs TCP redials at once
 // (network_switch.go), and that dial has to go out over TCP already — waiting
 // for the handshake watchdog to rebuild the transport would cost minutes, on a
-// network reported to penalise failed attempts with minutes of its own.
+// network reported to penalise failed attempts with minutes of its own. It is
+// read once per attempt, as the attempt is registered (beginAttempt), and the
+// attempt's dials all follow that reading; it changes only under
+// networkSwitch's lock (noteNetworkState), together with the network.
 var relayTransportChoice atomic.Int32
 
-func setRelayTransport(choice int32) {
+func normaliseRelayTransport(choice int32) int32 {
 	switch choice {
 	case relayTransportUDP, relayTransportTCP:
+		return choice
 	default:
-		choice = relayTransportAsConfigured
+		return relayTransportAsConfigured
 	}
-	if old := relayTransportChoice.Swap(choice); old != choice {
-		turnLog("[NETWORK] relay transport: %s", relayTransportName(choice))
+}
+
+// setRelayTransport changes the transport over the network as it stands (see
+// noteNetworkState). wgSetNetwork reports the two together; this is the
+// transport alone.
+func setRelayTransport(choice int32) {
+	networkSwitch.Lock()
+	handle := networkSwitch.current
+	networkSwitch.Unlock()
+	noteNetworkState(handle, choice)
+}
+
+// transportOverTCP is what a transport choice means for a group whose config
+// says useUDP.
+func transportOverTCP(choice int32, useUDP bool) bool {
+	switch choice {
+	case relayTransportUDP:
+		return false
+	case relayTransportTCP:
+		return true
+	default:
+		return !useUDP
 	}
 }
 
@@ -72,16 +96,14 @@ func relayTransportName(choice int32) string {
 	}
 }
 
-// relayOverTCP reports whether the next dial reaches the relay over TCP.
+// relayOverTCP reports whether cfg's dials reach the relay over TCP: what the
+// attempt it belongs to was registered with, if it is pinned to one, and the
+// choice in force now otherwise.
 func relayOverTCP(cfg WorkerGroupConfig) bool {
-	switch relayTransportChoice.Load() {
-	case relayTransportUDP:
-		return false
-	case relayTransportTCP:
-		return true
-	default:
-		return !cfg.UseUDP
+	if cfg.transportPinned {
+		return cfg.pinnedTCP
 	}
+	return transportOverTCP(relayTransportChoice.Load(), cfg.UseUDP)
 }
 
 // relayTCPConnectTimeout bounds the TCP connect to a relay. The dialer's 30s was

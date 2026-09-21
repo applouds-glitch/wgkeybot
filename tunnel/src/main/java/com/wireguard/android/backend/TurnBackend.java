@@ -390,6 +390,13 @@ public final class TurnBackend {
     public static native void wgTurnDropCredentials();
 
     /**
+     * How many TURN streams are carrying the tunnel right now, or -1 when no
+     * proxy is running. For the screen: a drop and the reconnect after it are
+     * known here at once, while WireGuard's handshake takes minutes to go stale.
+     */
+    public static native int wgTurnReadyStreams();
+
+    /**
      * Starts the internet-sharing proxy on the access point interface.
      *
      * {@code tunnelAddrs} is the tunnel's own Interface.Address list (comma

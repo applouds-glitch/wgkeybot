@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="wgk_main_sharing_title">Раздача</string>
+    <string name="wgk_main_sharing_requires_vpn">Нужен VPN</string>
+    <string name="wgk_config_metadata">%1$s\nВерсия %2$s</string>
+    <string name="wgk_close_action">Закрыть</string>
+    <string name="wgk_sharing_stopping_detail">Выключаем раздачу…</string>
+    <string name="wgk_phase_description">%1$s: %2$s</string>
+    <string name="wgk_phase_waiting">ожидание</string>
+    <string name="wgk_phase_active">выполняется</string>
+    <string name="wgk_phase_ready">готово</string>
     <plurals name="delete_error">
         <item quantity="one">Не удалось удалить %d туннель: %s</item>
         <item quantity="few">Не удалось удалить %d туннеля: %s</item>
@@ -224,13 +233,18 @@
     <string name="toggle_error">Ошибка переключения туннеля WG Turn: %s</string>
     <string name="widget_label">Переключатель WGKeyBot</string>
     <string name="widget_description">Включить или выключить последний туннель WGKeyBot.</string>
-    <string name="widget_no_tunnel">Нет туннеля</string>
+    <string name="widget_no_tunnel">Нет ключа</string>
+    <string name="widget_action_open">Открыть WGKeyBot</string>
+    <string name="widget_action_cancel">Отменить</string>
+    <string name="widget_action_retry">Повторить</string>
+    <string name="widget_accessibility">WGKeyBot. %1$s. %2$s</string>
     <string name="widget_status_on">Подключено</string>
     <string name="widget_status_off">Отключено</string>
     <string name="widget_status_connecting">Подключение…</string>
     <string name="widget_status_disconnecting">Отключение…</string>
     <string name="widget_status_handshake">Обмен ключами…</string>
     <string name="widget_status_reconnecting">Переподключение…</string>
+    <string name="widget_status_waiting_network">Ожидание сети…</string>
     <string name="widget_status_failed">Ошибка подключения</string>
     <string name="tools_installer_already">wg и wg-quick уже установлены</string>
     <string name="tools_installer_failure">Не удалось установить инструменты командной строки (нет root?)</string>
@@ -366,6 +380,8 @@
     <string name="wgk_profile_loaded_on">Загружено %1$s</string>
     <string name="wgk_profile_never_loaded">—</string>
     <string name="wgk_profile_refresh_cd">Обновить конфиг</string>
+    <string name="wgk_auto_refresh_label">Автообновление</string>
+    <string name="wgk_auto_refresh_desc">Обновлять конфигурацию раз в 12 часов</string>
     <string name="wgk_auto_refresh_cd">Авто-обновление конфига</string>
     <string name="wgk_auto_refresh_enabled_cd">Автообновление конфигурации включено. Нажмите, чтобы выключить</string>
     <string name="wgk_auto_refresh_disabled_cd">Автообновление конфигурации выключено. Нажмите, чтобы включить</string>
@@ -380,48 +396,46 @@
     <string name="wgk_error_format">Ошибка: %s</string>
     <string name="wgk_auth_error_format">Ошибка авторизации: %s</string>
     <string name="wgk_no_access_token">Нет токена доступа. Переоткройте ссылку из бота.</string>
-    <string name="wgk_deeplink_missing_token">Deeplink: отсутствует параметр token</string>
+    <string name="wgk_deeplink_missing_token">В ссылке нет токена или данных подключения. Скопируйте полную ссылку из бота.</string>
     <string name="wgk_expired_title">Подписка истекла</string>
     <string name="wgk_expired_subtitle">Обратитесь в бот для продления подписки</string>
-    <string name="wgk_headline_disconnected">Нажмите, чтобы подключиться</string>
-    <string name="wgk_headline_connecting">Нажмите, чтобы отменить</string>
-    <string name="wgk_headline_handshake">Нажмите, чтобы отменить</string>
-    <string name="wgk_headline_connected">Нажмите, чтобы отключиться</string>
-    <string name="wgk_headline_reconnecting">Нажмите, чтобы остановить</string>
-    <string name="wgk_headline_failed">Нажмите, чтобы повторить</string>
+    <string name="wgk_headline_disconnected">Нажмите для подключения</string>
+    <string name="wgk_headline_connecting">Поднимаем туннель</string>
+    <string name="wgk_headline_handshake">Идёт handshake</string>
+    <string name="wgk_headline_connected">Туннель активен</string>
+    <string name="wgk_headline_reconnecting">Соединение потеряно</string>
+    <string name="wgk_headline_waiting_network">Нет сети</string>
+    <string name="wgk_headline_failed">Не удалось подключиться</string>
     <string name="wgk_status_label">СТАТУС</string>
-    <string name="wgk_status_disconnected">VPN выключен</string>
+    <string name="wgk_status_uptime_label">UPTIME</string>
+    <string name="wgk_status_received_label">RX ↓</string>
+    <string name="wgk_status_sent_label">TX ↑</string>
+    <string name="wgk_status_disconnected">Отключено</string>
     <string name="wgk_status_connecting">Подключение…</string>
-    <string name="wgk_status_handshake">Связываемся с сервером…</string>
-    <string name="wgk_status_connected">Защищено</string>
-    <string name="wgk_status_reconnecting">Восстанавливаем соединение…</string>
-    <string name="wgk_status_failed">Не удалось подключиться</string>
+    <string name="wgk_status_handshake">Handshake…</string>
+    <string name="wgk_status_connected">Подключено</string>
+    <string name="wgk_status_reconnecting">Переподключение…</string>
+    <string name="wgk_status_waiting_network">Ожидание сети…</string>
+    <string name="wgk_status_failed">Ошибка</string>
     <string name="wgk_status_sub_disconnected">Готов к подключению</string>
-    <string name="wgk_status_sub_connecting">Запускаем защищённое соединение</string>
-    <string name="wgk_status_sub_handshake">Проверяем связь с сервером</string>
-    <string name="wgk_status_sub_connected">Ваш трафик защищён</string>
-    <string name="wgk_status_sub_connected_time">В сети %1$s</string>
+    <string name="wgk_status_sub_connecting">Поднимаем wg-интерфейс</string>
+    <string name="wgk_status_sub_handshake">Обмен ключами</string>
+    <string name="wgk_status_sub_connected">Соединение установлено</string>
     <string name="wgk_status_sub_reconnecting">Сервер не отвечает, повторная попытка</string>
+    <string name="wgk_status_sub_waiting_network">Нет подключения к сети. Подключимся сами, как только оно вернётся</string>
     <string name="wgk_status_sub_failed">Сервер недоступен, проверьте сеть</string>
 
     <!-- Terminal failures the app can name. Each has to fit the status card's
          single subtitle line, so they stay short and end in the one action that
          helps. -->
-    <string name="wgk_status_sub_failed_call_gone">Ссылка на звонок мертва, обновите конфиг</string>
-    <string name="wgk_status_sub_failed_call_auth">Звонок требует входа, обновите конфиг</string>
+    <string name="wgk_status_sub_failed_call_gone">Ссылка на звонок недоступна. Обновите конфигурацию.</string>
+    <string name="wgk_status_sub_failed_call_auth">Звонок требует входа. Обновите конфигурацию.</string>
     <string name="wgk_status_sub_failed_captcha">Капча не пройдена, попробуйте позже</string>
-    <string name="wgk_status_sub_failed_creds">Нет данных, попробуйте позже</string>
+    <string name="wgk_status_sub_failed_creds">Не удалось получить данные подключения. Попробуйте позже.</string>
 
-    <!-- Chip under the connect button while internet sharing is up. -->
-    <string name="wgk_tether_chip">Раздача · %1$d</string>
-    <string name="wgk_tether_chip_cd">Раздача интернета включена, устройств: %1$d. Открывает настройки раздачи.</string>
-    <string name="wgk_stage_tunnel">Запуск</string>
-    <string name="wgk_stage_handshake">Соединение</string>
-    <string name="wgk_stage_routing">Готово</string>
-    <string name="wgk_rxtx_label">ТРАФИК</string>
-    <string name="wgk_rxtx_value">%1$.1f↓ / %2$.1f↑</string>
-    <string name="wgk_rxtx_unit_mb">МБ</string>
-    <string name="wgk_rxtx_unit_gb">ГБ</string>
+    <string name="wgk_stage_tunnel">Tunnel up</string>
+    <string name="wgk_stage_handshake">Handshake</string>
+    <string name="wgk_stage_routing">Routing</string>
     <string name="wgk_wireguard_label">WIREGUARD</string>
     <string name="wgk_state_idle">IDLE</string>
     <string name="wgk_state_connecting">CONNECTING</string>
@@ -500,7 +514,6 @@
     <string name="wgk_theme_dark_value">Тёмная</string>
     <string name="wgk_tether_title">Раздача интернета</string>
     <string name="wgk_tether_switch_label">Раздавать через туннель</string>
-    <string name="wgk_tether_off_value">Выкл</string>
     <string name="wgk_tether_starting_value">Запуск…</string>
     <string name="wgk_tether_details_title">Данные сети и QR-код</string>
     <string name="wgk_tether_needs_tunnel">Сначала подключитесь: раздача работает только через туннель.</string>
@@ -511,11 +524,11 @@
     <string name="wgk_tether_copy_cd">Копировать</string>
     <string name="wgk_tether_copied">Скопировано</string>
     <string name="wgk_tether_qr_cd">QR-код для подключения к сети</string>
-    <string name="wgk_tether_qr_hint">Наведите камеру другого устройства на код, чтобы подключиться к сети.</string>
+    <string name="wgk_tether_qr_hint">Наведите камеру другого устройства на код, чтобы подключиться к Wi-Fi. Затем настройте прокси по инструкции ниже.</string>
     <string name="wgk_tether_counters">Устройств: %1$d · соединений: %2$d · отдано %3$s · принято %4$s</string>
     <string name="wgk_tether_notification_channel">Раздача интернета</string>
     <string name="wgk_tether_stop_action">Остановить</string>
-    <string name="wgk_tether_proxy_required">Пропишите прокси на клиенте. Без него у устройства не будет интернета вовсе. Именно это и гарантирует, что мимо туннеля ничего не уйдёт.</string>
+    <string name="wgk_tether_proxy_required"><b>Обязательно укажите прокси</b> на подключаемом устройстве. Без него интернет не работает.</string>
     <string name="wgk_tether_howto">Android и iOS: настройки сети Wi-Fi → Прокси → Вручную (или Авто с адресом автонастройки).\nWindows и macOS: системные настройки прокси, HTTP и HTTPS.\nБраузеры и терминалы принимают этот же адрес как SOCKS5-прокси.\nИгры и Telegram обычно игнорируют системный прокси. Впишите этот же адрес как SOCKS5 в настройках самого приложения, иначе они останутся без сети.</string>
     <string name="wgk_tether_error_tunnel_down">Туннель отключился, раздача остановлена.</string>
     <string name="wgk_tether_error_location">Включите геолокацию в настройках системы: без неё Android не поднимает точку доступа, даже когда разрешение выдано.</string>
@@ -559,12 +572,6 @@
     <string name="wgk_routing_note">Загрузка идёт через туннель. Файлы .dat перекачиваются, только когда профиль указывает на новую версию; смена адреса профиля сбрасывает скачанные файлы.</string>
     <string name="wgk_tether_auto_off_notice">Раздача выключена</string>
     <string name="wgk_tether_error_auto_off">2 часа раздачей никто не пользовался, поэтому она выключилась сама.</string>
-    <plurals name="wgk_tether_clients">
-        <item quantity="one">%d устройство</item>
-        <item quantity="few">%d устройства</item>
-        <item quantity="many">%d устройств</item>
-        <item quantity="other">%d устройства</item>
-    </plurals>
 
     <!-- APK self-update -->
     <string name="wgk_update_title">Обновление приложения</string>
@@ -592,4 +599,16 @@
     <string name="wgk_update_store_unavailable">Не удалось открыть Google Play.</string>
     <string name="wgk_connection_import_error">Не удалось импортировать подключение. Получите новую ссылку в боте и попробуйте снова.</string>
     <string name="wgk_connection_link_ready">Ссылка подключения вставлена</string>
+    <string name="wgk_import_invalid_data">Офлайн-ссылка повреждена или скопирована не полностью. Скопируйте полную ссылку из бота.</string>
+    <string name="wgk_import_unsupported_version">Версия формата ссылки не поддерживается. Обновите приложение.</string>
+    <string name="wgk_import_invalid_config">Ссылка содержит некорректный конфиг WireGuard. Получите новую ссылку в боте.</string>
+    <string name="wgk_import_unauthorized">Сервер отклонил авторизацию. Возможно, токен истёк или уже использован. Получите новую ссылку в боте.</string>
+    <string name="wgk_import_upgrade_required">Сервер требует новую версию приложения. Обновите приложение и повторите попытку.</string>
+    <string name="wgk_import_timeout">Сервер не ответил вовремя. Проверьте подключение и повторите попытку.</string>
+    <string name="wgk_import_dns_error">Не удалось определить адрес сервера. Проверьте интернет и настройки DNS.</string>
+    <string name="wgk_import_tls_error">Не удалось установить защищённое соединение с сервером. Проверьте дату на устройстве и настройки сети.</string>
+    <string name="wgk_import_network_error">Не удалось загрузить конфиг подключения. Проверьте интернет и повторите попытку.</string>
+    <string name="wgk_import_http_error">При импорте подключения сервер вернул HTTP %1$d. Повторите попытку позже.</string>
+    <string name="wgk_import_invalid_response">Сервер вернул некорректный ответ. Повторите попытку позже.</string>
+    <string name="wgk_import_storage_error">Не удалось прочитать или сохранить конфиг подключения. Проверьте свободное место на устройстве.</string>
 </resources>

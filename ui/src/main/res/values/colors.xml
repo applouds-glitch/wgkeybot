@@ -3,105 +3,136 @@
   ~ SPDX-License-Identifier: Apache-2.0
   -->
 <resources>
-    <color name="seed">#1a73e8</color>
-    <color name="md_theme_light_primary">#1768C5</color>
+    <color name="seed">#2F5DA8</color>
+    <color name="md_theme_light_primary">#2F5DA8</color>
     <color name="md_theme_light_onPrimary">#FFFFFF</color>
-    <color name="md_theme_light_primaryContainer">#D8E7FA</color>
-    <color name="md_theme_light_onPrimaryContainer">#0A3058</color>
-    <color name="md_theme_light_secondary">#536477</color>
+    <color name="md_theme_light_primaryContainer">#DEE8FA</color>
+    <color name="md_theme_light_onPrimaryContainer">#18345E</color>
+    <color name="md_theme_light_secondary">#586170</color>
     <color name="md_theme_light_onSecondary">#FFFFFF</color>
-    <color name="md_theme_light_secondaryContainer">#DCE5F0</color>
-    <color name="md_theme_light_onSecondaryContainer">#172033</color>
-    <color name="md_theme_light_tertiary">#5D617A</color>
+    <color name="md_theme_light_secondaryContainer">#E5E8EE</color>
+    <color name="md_theme_light_onSecondaryContainer">#202733</color>
+    <color name="md_theme_light_tertiary">#645B70</color>
     <color name="md_theme_light_onTertiary">#FFFFFF</color>
-    <color name="md_theme_light_tertiaryContainer">#E2E5F6</color>
-    <color name="md_theme_light_onTertiaryContainer">#282B42</color>
+    <color name="md_theme_light_tertiaryContainer">#EBDFF3</color>
+    <color name="md_theme_light_onTertiaryContainer">#332B3F</color>
     <color name="md_theme_light_error">#BA1A1A</color>
     <color name="md_theme_light_errorContainer">#FFDAD6</color>
     <color name="md_theme_light_onError">#FFFFFF</color>
     <color name="md_theme_light_onErrorContainer">#410002</color>
-    <color name="md_theme_light_background">#E8EDF4</color>
-    <color name="md_theme_light_onBackground">#172033</color>
-    <color name="md_theme_light_surface">#F7F9FC</color>
-    <color name="md_theme_light_onSurface">#172033</color>
-    <color name="md_theme_light_surfaceVariant">#DCE5F0</color>
-    <color name="md_theme_light_onSurfaceVariant">#526071</color>
-    <color name="md_theme_light_outline">#7D8998</color>
+    <color name="md_theme_light_background">#F1F2ED</color>
+    <color name="md_theme_light_onBackground">#282C28</color>
+    <color name="md_theme_light_surface">#F1F2ED</color>
+    <!-- Neutral Material surfaces keep large areas quiet; primary is reserved
+         for actions and selection. Cards use surfaceContainerLowest. -->
+    <color name="md_theme_light_surfaceBright">#FCFCFD</color>
+    <color name="md_theme_light_surfaceDim">#DADCE0</color>
+    <color name="md_theme_light_surfaceContainerLowest">#FAFBF7</color>
+    <color name="md_theme_light_surfaceContainerLow">#EBEDE7</color>
+    <color name="md_theme_light_surfaceContainer">#E6E9E2</color>
+    <color name="md_theme_light_surfaceContainerHigh">#E0E4DC</color>
+    <color name="md_theme_light_surfaceContainerHighest">#DADFD5</color>
+    <color name="md_theme_light_onSurface">#282C28</color>
+    <color name="md_theme_light_surfaceVariant">#DADFD5</color>
+    <color name="md_theme_light_onSurfaceVariant">#565F56</color>
+    <color name="md_theme_light_outline">#727D71</color>
     <color name="md_theme_light_inverseOnSurface">#F2F0F4</color>
     <color name="md_theme_light_inverseSurface">#303033</color>
     <color name="md_theme_light_inversePrimary">#A8C8F0</color>
     <color name="md_theme_light_shadow">#000000</color>
-    <color name="md_theme_light_surfaceTint">#1768C5</color>
-    <color name="md_theme_light_outlineVariant">#B7C2D0</color>
+    <color name="md_theme_light_surfaceTint">#2F5DA8</color>
+    <color name="md_theme_light_outlineVariant">#C5CCC0</color>
     <color name="md_theme_light_scrim">#000000</color>
-    <color name="md_theme_dark_primary">#ADC7FF</color>
-    <color name="md_theme_dark_onPrimary">#002E68</color>
-    <color name="md_theme_dark_primaryContainer">#004493</color>
-    <color name="md_theme_dark_onPrimaryContainer">#D8E2FF</color>
-    <color name="md_theme_dark_secondary">#BFC6DC</color>
-    <color name="md_theme_dark_onSecondary">#283041</color>
-    <color name="md_theme_dark_secondaryContainer">#3F4759</color>
-    <color name="md_theme_dark_onSecondaryContainer">#DBE2F9</color>
-    <color name="md_theme_dark_tertiary">#DEBCDF</color>
-    <color name="md_theme_dark_onTertiary">#402843</color>
-    <color name="md_theme_dark_tertiaryContainer">#583E5B</color>
-    <color name="md_theme_dark_onTertiaryContainer">#FBD7FC</color>
+    <color name="md_theme_dark_primary">#A4C9FE</color>
+    <color name="md_theme_dark_onPrimary">#0A305A</color>
+    <color name="md_theme_dark_primaryContainer">#253D60</color>
+    <color name="md_theme_dark_onPrimaryContainer">#D8E6FF</color>
+    <color name="md_theme_dark_secondary">#BBC5D5</color>
+    <color name="md_theme_dark_onSecondary">#25303F</color>
+    <color name="md_theme_dark_secondaryContainer">#343F50</color>
+    <color name="md_theme_dark_onSecondaryContainer">#DCE4F1</color>
+    <color name="md_theme_dark_tertiary">#C9BEDA</color>
+    <color name="md_theme_dark_onTertiary">#322B40</color>
+    <color name="md_theme_dark_tertiaryContainer">#494055</color>
+    <color name="md_theme_dark_onTertiaryContainer">#EADFF6</color>
     <color name="md_theme_dark_error">#FFB4AB</color>
     <color name="md_theme_dark_errorContainer">#93000A</color>
     <color name="md_theme_dark_onError">#690005</color>
     <color name="md_theme_dark_onErrorContainer">#FFDAD6</color>
-    <color name="md_theme_dark_background">#1B1B1F</color>
-    <color name="md_theme_dark_onBackground">#E3E2E6</color>
-    <color name="md_theme_dark_surface">#1B1B1F</color>
-    <color name="md_theme_dark_onSurface">#E3E2E6</color>
-    <color name="md_theme_dark_surfaceVariant">#44474F</color>
-    <color name="md_theme_dark_onSurfaceVariant">#C4C6D0</color>
-    <color name="md_theme_dark_outline">#8E9099</color>
-    <color name="md_theme_dark_inverseOnSurface">#1B1B1F</color>
-    <color name="md_theme_dark_inverseSurface">#E3E2E6</color>
-    <color name="md_theme_dark_inversePrimary">#005BC0</color>
+    <color name="md_theme_dark_background">#0D0F12</color>
+    <color name="md_theme_dark_onBackground">#E3E6ED</color>
+    <color name="md_theme_dark_surface">#111317</color>
+    <!-- Tonal depth for dark cards, sheets and dialogs without decorative strokes. -->
+    <color name="md_theme_dark_surfaceDim">@color/md_theme_dark_surface</color>
+    <color name="md_theme_dark_surfaceBright">#353A44</color>
+    <color name="md_theme_dark_surfaceContainerLowest">#090B0E</color>
+    <color name="md_theme_dark_surfaceContainerLow">#15181D</color>
+    <color name="md_theme_dark_surfaceContainer">#1A1D23</color>
+    <color name="md_theme_dark_surfaceContainerHigh">#242830</color>
+    <color name="md_theme_dark_surfaceContainerHighest">#2F343D</color>
+    <color name="md_theme_dark_onSurface">#E3E6ED</color>
+    <color name="md_theme_dark_surfaceVariant">#343A44</color>
+    <color name="md_theme_dark_onSurfaceVariant">#AFB7C4</color>
+    <color name="md_theme_dark_outline">#7A8493</color>
+    <color name="md_theme_dark_inverseOnSurface">#2C3038</color>
+    <color name="md_theme_dark_inverseSurface">#E3E6ED</color>
+    <color name="md_theme_dark_inversePrimary">#2F5DA8</color>
     <color name="md_theme_dark_shadow">#000000</color>
-    <color name="md_theme_dark_surfaceTint">#ADC7FF</color>
-    <color name="md_theme_dark_outlineVariant">#44474F</color>
+    <color name="md_theme_dark_surfaceTint">#A4C9FE</color>
+    <color name="md_theme_dark_outlineVariant">#3A414D</color>
     <color name="md_theme_dark_scrim">#000000</color>
 
     <!-- TV splash background: always dark so there is no white flash on startup -->
     <color name="wgk_tv_bg_splash">#FF0D0F12</color>
 
     <!-- WGKeyBot Connect screen — light palette -->
-    <color name="wgk_primary">#FF1768C5</color>
-    <color name="wgk_on_primary">#FFFFFFFF</color>
+    <color name="wgk_primary">@color/md_theme_light_primary</color>
+    <color name="wgk_on_primary">@color/md_theme_light_onPrimary</color>
     <color name="wgk_success">#FF237A57</color>
     <color name="wgk_on_success">#FFFFFFFF</color>
-    <color name="wgk_background">#FFE8EDF4</color>
-    <color name="wgk_surface">#FFFBFCFE</color>
-    <color name="wgk_on_surface">#FF172033</color>
-    <color name="wgk_on_surface_variant">#FF526071</color>
-    <!-- Surfaces float above a tinted field, so separation from the background
-         grows with elevation: low → container → high. The "high" tone must stay
-         lighter than wgk_background, otherwise the highest surface reads as the
-         heaviest one (it used to be #DCE5F0 — darker than the field itself). -->
-    <color name="wgk_surface_container_low">#FFF1F5F9</color>
-    <color name="wgk_surface_container">#FFF7F9FC</color>
-    <color name="wgk_surface_container_high">#FFFFFFFF</color>
-    <color name="wgk_outline">#FF8390A1</color>
-    <color name="wgk_outline_variant">#FFB7C2D0</color>
-    <color name="wgk_primary_12">#1F1768C5</color>
-    <color name="wgk_primary_30">#4D1768C5</color>
-    <color name="wgk_warning">#FFA85A00</color>
-    <color name="wgk_error">#FFB3261E</color>
+    <color name="wgk_background">@color/md_theme_light_background</color>
+    <color name="wgk_surface">@color/md_theme_light_surface</color>
+    <color name="wgk_on_surface">@color/md_theme_light_onSurface</color>
+    <color name="wgk_on_surface_variant">@color/md_theme_light_onSurfaceVariant</color>
+    <!-- Custom views share the same roles as the Material components. -->
+    <color name="wgk_surface_container_low">@color/md_theme_light_surfaceContainerLow</color>
+    <color name="wgk_surface_container">@color/md_theme_light_surfaceContainer</color>
+    <color name="wgk_surface_container_high">@color/md_theme_light_surfaceContainerHigh</color>
+    <color name="wgk_outline">@color/md_theme_light_outline</color>
+    <color name="wgk_outline_variant">@color/md_theme_light_outlineVariant</color>
+    <color name="wgk_primary_12">#1F2F5DA8</color>
+    <color name="wgk_primary_30">#4D2F5DA8</color>
+    <color name="wgk_warning">#8A4F00</color>
+    <color name="wgk_error">@color/md_theme_light_error</color>
 
-    <!-- The app bar sits on the same plane as the cards, one clear step above the
-         tinted field. Anything closer to wgk_background reads as a banding
-         artifact rather than a deliberate bar. Dark value in values-night. -->
-    <color name="wgk_top_bar">#FFF7F9FC</color>
+    <!-- The resting app bar and system bars share the screen surface. -->
+    <color name="wgk_top_bar">@color/wgk_background</color>
 
-    <!-- Build stamp next to the wordmark. Deliberately a hair off the bar it
-         sits on (~1.5:1, checked on device): it is there for a support
-         screenshot, not for daily reading, so it must not compete with the
-         wordmark. Dark value in values-night. -->
+    <!-- Faint build stamp beside the wordmark; dark value lives in values-night. -->
     <color name="wgk_version_stamp">#FFC7D0DC</color>
 
-    <!-- Home-screen widget background. Slightly translucent so it blends with the launcher. -->
-    <color name="widget_bg">#E62A3142</color>
+    <color name="wgk_card_surface">@color/md_theme_light_surfaceContainerLowest</color>
+    <!-- Card outlines from v1.6.0, independent of input and button borders. -->
+    <color name="wgk_card_outline">#FFC4C6D0</color>
+    <color name="wgk_footer_surface">@color/wgk_card_surface</color>
+    <color name="wgk_info_surface">@color/wgk_card_surface</color>
+    <color name="wgk_connect_idle_container">#E1E5DC</color>
+    <color name="wgk_connect_idle_content">#474E46</color>
+    <color name="wgk_connect_busy_content">@color/wgk_on_primary</color>
+    <color name="wgk_on_surface_muted">@color/wgk_on_surface_variant</color>
+    <color name="wgk_stage_idle_label">@color/wgk_on_surface_muted</color>
+    <color name="wgk_text_field_surface">@android:color/transparent</color>
+
+    <!-- Decorative separation is softer than input and focus outlines. -->
+    <color name="wgk_divider">#E1E5DB</color>
+    <color name="wgk_icon_tile">@android:color/transparent</color>
+    <color name="wgk_leading_icon">@color/wgk_on_surface_variant</color>
+    <!-- Neutral v1.6.0 stroke hue, softened progressively for the light field.
+         These alphas multiply the shared 42/28/18% inner-to-outer view opacity. -->
+    <color name="wgk_halo_inner">#B3C4CBC0</color>
+    <color name="wgk_halo_mid">#80C4CBC0</color>
+    <color name="wgk_halo_outer">#4DC4CBC0</color>
+
+    <!-- Opaque widget surfaces retain contrast on any launcher wallpaper. -->
+    <color name="widget_bg">@color/wgk_surface</color>
 </resources>

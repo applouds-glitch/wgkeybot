@@ -3,5 +3,5 @@
     android:shape="rectangle">
     <!-- 12dp: shared by every element nested inside a 16dp card. -->
     <corners android:radius="12dp" />
-    <solid android:color="@color/wgk_primary_12" />
+    <solid android:color="@color/wgk_icon_tile" />
 </shape>

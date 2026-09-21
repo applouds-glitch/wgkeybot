@@ -16,7 +16,13 @@ object ConnectionLink {
     const val MAX_LINK_LENGTH = 32_768
     const val MAX_PAYLOAD_BYTES = 65_536
 
-    class InvalidLinkException : Exception("Invalid connection link")
+    enum class Failure {
+        EMPTY, INVALID_FORMAT, MISSING_TOKEN, INVALID_DATA, UNSUPPORTED_VERSION,
+        INVALID_CONFIG, INVALID_SERVER_CONFIG,
+    }
+
+    // Keep parser details out of the exception: they can contain private keys.
+    class InvalidLinkException(val reason: Failure = Failure.INVALID_FORMAT) : Exception("Invalid connection link")
 
     sealed interface Input {
         class Token(val value: String) : Input
@@ -38,6 +44,7 @@ object ConnectionLink {
     fun parse(raw: String): Input {
         try {
             require(raw.length <= MAX_LINK_LENGTH)
+            if (TokenFormat.normalize(raw).isEmpty()) throw InvalidLinkException(Failure.EMPTY)
             val text = extractInput(raw) ?: throw InvalidLinkException()
             if (!text.startsWith("wgkeybot://")) return Input.Token(text)
             val uri = URI(text)
@@ -54,12 +61,23 @@ object ConnectionLink {
             // Data is authoritative. Never downgrade a malformed offline link to
             // an API request, even when it also carries a valid legacy token.
             if ("data" in params) {
-                params["token"]?.let { require(TokenFormat.isValid(it)) }
-                return decode(params.getValue("data"))
+                try {
+                    params["token"]?.let { require(TokenFormat.isValid(it)) }
+                    return decode(params.getValue("data"))
+                } catch (e: InvalidLinkException) {
+                    if (e.reason != Failure.INVALID_FORMAT) throw e
+                    throw InvalidLinkException(Failure.INVALID_DATA)
+                } catch (_: Exception) {
+                    throw InvalidLinkException(Failure.INVALID_DATA)
+                }
             }
-            val token = params["token"]?.let(TokenFormat::extract)
+            val rawToken = params["token"]?.takeIf { it.isNotBlank() }
+                ?: throw InvalidLinkException(Failure.MISSING_TOKEN)
+            val token = TokenFormat.extract(rawToken)
                 ?: throw InvalidLinkException()
             return Input.Token(token)
+        } catch (e: InvalidLinkException) {
+            throw e
         } catch (_: Exception) {
             // Parser/config errors must never echo a payload or WireGuard key.
             throw InvalidLinkException()
@@ -98,16 +116,20 @@ object ConnectionLink {
         val tokener = JSONTokener(jsonText)
         val json = tokener.nextValue() as? JSONObject ?: throw InvalidLinkException()
         require(tokener.nextClean() == '\u0000')
-        require(json.opt("version") == 1)
+        val version = json.opt("version")
+        if (version is Int && version != 1) throw InvalidLinkException(Failure.UNSUPPORTED_VERSION)
+        require(version == 1)
         val accessToken = json.opt("access_token") as? String ?: throw InvalidLinkException()
         val expires = json.opt("subscription_expires_at") as? String ?: throw InvalidLinkException()
-        val config = json.opt("config") as? String ?: throw InvalidLinkException()
+        val config = json.opt("config") as? String ?: throw InvalidLinkException(Failure.INVALID_CONFIG)
         require(TokenFormat.isValid(accessToken))
         require(expires.matches(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z")))
         val expiry = Instant.parse(expires)
         require(expiry.toString() == expires) // rejects normalized leap seconds / 24:00
-        require(config.isNotBlank() && '\u0000' !in config)
-        require(config.contains("[Interface]") && config.contains("[Peer]"))
+        if (config.isBlank() || '\u0000' in config ||
+            !config.contains("[Interface]") || !config.contains("[Peer]")) {
+            throw InvalidLinkException(Failure.INVALID_CONFIG)
+        }
         return Input.Embedded(accessToken, expires, config)
     }
 

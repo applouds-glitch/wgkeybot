@@ -77,6 +77,13 @@ func runWorkersAgainst(t *testing.T, group int, n int, addrs []string) *raceHarn
 // runWorkersAgainstPeer is runWorkersAgainst with a peer of the test's own.
 func runWorkersAgainstPeer(t *testing.T, group int, n int, addrs []string, peer *net.UDPAddr) *raceHarness {
 	t.Helper()
+	return runWorkersOfType(t, group, n, addrs, peer, "wireguard")
+}
+
+// runWorkersOfType is runWorkersAgainstPeer over the transport of the test's
+// choice; the peer has to speak it.
+func runWorkersOfType(t *testing.T, group int, n int, addrs []string, peer *net.UDPAddr, peerType string) *raceHarness {
+	t.Helper()
 	resetAllocationBook(t)
 	resetNetworkSwitch(t)
 	resetNetworkAvailabilityForTest()
@@ -100,7 +107,7 @@ func runWorkersAgainstPeer(t *testing.T, group int, n int, addrs []string, peer 
 		h.done.Add(1)
 		go func() {
 			defer h.done.Done()
-			runWorker(ctx, WorkerGroupConfig{GroupID: group, Link: "test", UseUDP: true, PeerType: "wireguard", PeerAddr: peer}, s, 0)
+			runWorker(ctx, WorkerGroupConfig{GroupID: group, Link: "test", UseUDP: true, PeerType: peerType, PeerAddr: peer}, s, 0)
 		}()
 	}
 	t.Cleanup(func() {

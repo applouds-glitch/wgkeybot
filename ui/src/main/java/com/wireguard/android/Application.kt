@@ -4,6 +4,7 @@
  */
 package com.wireguard.android
 
+import android.content.res.Configuration
 import android.os.Build
 import android.os.StrictMode
 import android.os.StrictMode.ThreadPolicy
@@ -15,7 +16,6 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStoreFile
-import com.google.android.material.color.DynamicColors
 import com.wireguard.android.backend.Backend
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.TurnBackend
@@ -30,6 +30,7 @@ import com.wireguard.android.tether.TetherManager
 import com.wireguard.android.turn.TurnProxyManager
 import com.wireguard.android.turn.TurnSettingsStore
 import com.wireguard.android.widget.WidgetStateObserver
+import com.wireguard.android.widget.TunnelToggleAppWidgetProvider
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.PersistentLog
 import com.wireguard.android.util.UserKnobs
@@ -105,7 +106,8 @@ class Application : android.app.Application() {
             val nm = getSystemService(android.app.NotificationManager::class.java)
             nm?.createNotificationChannel(channel)
         }
-        DynamicColors.applyToActivitiesIfAvailable(this)
+        // Both themes share their palette with custom views. A wallpaper overlay
+        // would recolor only the Material widgets and break that consistency.
         preferencesDataStore = PreferenceDataStoreFactory.create { applicationContext.preferencesDataStoreFile("settings") }
         val isTvDevice = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) ==
                 android.content.res.Configuration.UI_MODE_TYPE_TELEVISION
@@ -217,6 +219,13 @@ class Application : android.app.Application() {
             StrictMode.setVmPolicy(VmPolicy.Builder().detectAll().penaltyLog().build())
             StrictMode.setThreadPolicy(ThreadPolicy.Builder().detectAll().penaltyLog().build())
         }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // RemoteViews caches resolved colors and text; refresh when the launcher
+        // changes theme, language or font size even if the VPN state is unchanged.
+        TunnelToggleAppWidgetProvider.refreshAll(this)
     }
 
     override fun onTerminate() {

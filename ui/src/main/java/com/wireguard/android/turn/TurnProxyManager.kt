@@ -72,6 +72,12 @@ class TurnProxyManager(private val context: Context) {
     // Network tracking
     private val networkMonitor = PhysicalNetworkMonitor(context)
 
+    // Ahead of init: the collector launched there uses it, on another thread.
+    private val networkPublisher = SerializedPublisher(
+        readCurrent = { networkMonitor.currentPath?.network },
+        publish = ::pushNetwork,
+    )
+
     init {
         networkMonitor.start()
 
@@ -101,13 +107,17 @@ class TurnProxyManager(private val context: Context) {
         // Pushed unconditionally; the comparison belongs to native, which is the
         // only writer of that state. A "already pushed this one" cache here would
         // never let a correction through, because a StateFlow does not re-emit an
-        // unchanged path. The push is one JNI call per actual path change, and
+        // unchanged path. The push is a JNI call per path change at most (a
+        // StateFlow conflates, and a push that waited its turn publishes the
+        // path current by then — the emission after it may push it again), and
         // native only takes a global ref — the Network goes over as the object we
         // already hold, so nothing has to look it up. The resolvers travel with it
         // for the same reason: a handover that moved the binding but not the DNS
         // list left every lookup starting at the dead network's servers.
         scope.launch {
-            networkMonitor.rawPath.collect { path -> pushNetwork(path?.network) }
+            // The emission is only the cue: what gets pushed is the path that is
+            // current once this push has its turn (see SerializedPublisher).
+            networkMonitor.rawPath.collect { networkPublisher.publishCurrent() }
         }
     }
 
@@ -118,6 +128,8 @@ class TurnProxyManager(private val context: Context) {
      * at home and an operator that drops relayed UDP — and because native reads it
      * on every dial: a session that moves onto such a network redials at once, and
      * that dial must already go out over TCP.
+     *
+     * Only ever called through [networkPublisher], one push at a time.
      */
     private fun pushNetwork(network: Network?) {
         val type = getNetworkTypeString(network)
@@ -141,13 +153,16 @@ class TurnProxyManager(private val context: Context) {
     }
 
     /**
-     * The relay transport was changed in settings. Native compares the network
-     * itself and takes the transport as given, so pushing the same path again
-     * changes that and nothing else: sessions that are up stay as they are, and
-     * every dial from here on uses the new transport.
+     * The relay transport was changed in settings. Native takes the network and
+     * the transport together and compares both, so pushing the same path again
+     * changes the transport alone — and that takes effect at once: sessions and
+     * pending dials on the other transport are recycled onto the new one, and a
+     * worker sitting out a reconnect delay is woken (noteNetworkState in
+     * network_switch.go). A change of setting that leaves the transport in effect
+     * as it was moves nobody.
      */
     fun onRelayTransportChanged() {
-        scope.launch { pushNetwork(networkMonitor.currentPath?.network) }
+        scope.launch { networkPublisher.publishCurrent() }
     }
 
     /** What [rebuildTransport] did. */

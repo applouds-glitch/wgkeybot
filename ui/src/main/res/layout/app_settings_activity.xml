@@ -25,7 +25,8 @@
             android:minHeight="?attr/actionBarSize"
             app:navigationIcon="@drawable/ic_arrow_back"
             app:title="@string/wgk_settings_title"
-            app:titleTextColor="@color/wgk_on_surface" />
+            app:titleTextColor="@color/wgk_on_surface"
+            app:titleTextAppearance="@style/TextAppearance.WGKeyBot.ScreenTitle" />
 
         <androidx.core.widget.NestedScrollView
             android:id="@+id/wgk_settings_scroll"
@@ -57,9 +58,47 @@
                     app:layout_constraintTop_toTopOf="parent"
                     app:layout_constraintWidth_max="@dimen/wgk_settings_content_max">
 
-                    <!-- Sharing leads the column: it is the one thing here that is
-                         switched on and off from day to day, while everything under
-                         it is set once. It needs API 26 for startLocalOnlyHotspot;
+                    <!-- The installed version, and the check for a newer one made
+                         by hand. First: when something is wrong with the build in
+                         hand, this is what one comes here for, and it should not
+                         take a scroll past everything else to find. Absent
+                         altogether in a build that has no releases to ask about
+                         (no repository configured, or the Play build, which is
+                         updated by the store and may not update itself) — so the
+                         gap to the next section is this one's bottom margin and
+                         goes with it, as with sharing below. -->
+                    <LinearLayout
+                        android:id="@+id/wgk_update_section"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="@dimen/wgk_settings_section_gap"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="8dp"
+                            android:paddingStart="4dp"
+                            android:paddingEnd="4dp"
+                            android:text="@string/wgk_settings_section_app"
+                            android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+
+                        <com.google.android.material.card.MaterialCardView
+                            style="@style/Widget.WGKeyBot.InstrumentCard"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content">
+
+                            <include
+                                android:id="@+id/wgk_update_row"
+                                layout="@layout/view_wgk_settings_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+                        </com.google.android.material.card.MaterialCardView>
+                    </LinearLayout>
+
+                    <!-- Sharing comes ahead of the settings proper: it is the one thing
+                         here that is switched on and off from day to day, while
+                         everything under it is set once. It needs API 26 for startLocalOnlyHotspot;
                          below that there is no way to raise an access point at all,
                          so the whole section — header, card and status line — is
                          absent rather than shown disabled. The gap to the next
@@ -81,10 +120,9 @@
                             android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
 
                         <com.google.android.material.card.MaterialCardView
-                            style="@style/Widget.WGKeyBot.Card"
+                            style="@style/Widget.WGKeyBot.InstrumentCard"
                             android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            app:cardCornerRadius="16dp">
+                            android:layout_height="wrap_content">
 
                             <LinearLayout
                                 android:layout_width="match_parent"
@@ -101,7 +139,8 @@
                                     android:layout_width="match_parent"
                                     android:layout_height="1dp"
                                     android:layout_marginStart="16dp"
-                                    android:background="@color/wgk_outline_variant" />
+                                    android:layout_marginEnd="16dp"
+                                    android:background="@color/wgk_divider" />
 
                                 <!-- A preference and not session state, so it is
                                      always here — above the details row rather
@@ -118,7 +157,8 @@
                                     android:layout_width="match_parent"
                                     android:layout_height="1dp"
                                     android:layout_marginStart="16dp"
-                                    android:background="@color/wgk_outline_variant" />
+                                    android:layout_marginEnd="16dp"
+                                    android:background="@color/wgk_divider" />
 
                                 <!-- Split routing for tethered clients: also a
                                      preference, applied at the next start. -->
@@ -132,7 +172,8 @@
                                     android:layout_width="match_parent"
                                     android:layout_height="1dp"
                                     android:layout_marginStart="16dp"
-                                    android:background="@color/wgk_outline_variant" />
+                                    android:layout_marginEnd="16dp"
+                                    android:background="@color/wgk_divider" />
 
                                 <!-- Where the rules come from and when they were
                                      fetched; opens the routing settings screen. -->
@@ -150,7 +191,8 @@
                                     android:layout_width="match_parent"
                                     android:layout_height="1dp"
                                     android:layout_marginStart="16dp"
-                                    android:background="@color/wgk_outline_variant"
+                                    android:layout_marginEnd="16dp"
+                                    android:background="@color/wgk_divider"
                                     android:visibility="gone" />
 
                                 <include
@@ -186,10 +228,9 @@
                         android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
 
                     <com.google.android.material.card.MaterialCardView
-                        style="@style/Widget.WGKeyBot.Card"
+                        style="@style/Widget.WGKeyBot.InstrumentCard"
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        app:cardCornerRadius="16dp">
+                        android:layout_height="wrap_content">
 
                         <LinearLayout
                             android:layout_width="match_parent"
@@ -206,7 +247,8 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="1dp"
                                 android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
+                                android:layout_marginEnd="16dp"
+                                android:background="@color/wgk_divider" />
 
                             <include
                                 android:id="@+id/wgk_choice_reserve"
@@ -231,10 +273,9 @@
                         android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
 
                     <com.google.android.material.card.MaterialCardView
-                        style="@style/Widget.WGKeyBot.Card"
+                        style="@style/Widget.WGKeyBot.InstrumentCard"
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        app:cardCornerRadius="16dp">
+                        android:layout_height="wrap_content">
 
                         <LinearLayout
                             android:layout_width="match_parent"
@@ -251,7 +292,8 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="1dp"
                                 android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
+                                android:layout_marginEnd="16dp"
+                                android:background="@color/wgk_divider" />
 
                             <include
                                 android:id="@+id/wgk_transport_udp"
@@ -263,7 +305,8 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="1dp"
                                 android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
+                                android:layout_marginEnd="16dp"
+                                android:background="@color/wgk_divider" />
 
                             <include
                                 android:id="@+id/wgk_transport_tcp"
@@ -271,6 +314,27 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content" />
                         </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
+                        android:layout_marginBottom="8dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:text="@string/wgk_profile_name"
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/Widget.WGKeyBot.InstrumentCard"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+                        <include
+                            android:id="@+id/wgk_auto_refresh_row"
+                            layout="@layout/view_wgk_settings_switch_row"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content" />
                     </com.google.android.material.card.MaterialCardView>
 
                     <!-- Appearance. This was an unlabelled icon in the connect
@@ -290,10 +354,9 @@
                         android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
 
                     <com.google.android.material.card.MaterialCardView
-                        style="@style/Widget.WGKeyBot.Card"
+                        style="@style/Widget.WGKeyBot.InstrumentCard"
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        app:cardCornerRadius="16dp">
+                        android:layout_height="wrap_content">
 
                         <LinearLayout
                             android:layout_width="match_parent"
@@ -310,7 +373,8 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="1dp"
                                 android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
+                                android:layout_marginEnd="16dp"
+                                android:background="@color/wgk_divider" />
 
                             <include
                                 android:id="@+id/wgk_theme_light"
@@ -322,7 +386,8 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="1dp"
                                 android:layout_marginStart="16dp"
-                                android:background="@color/wgk_outline_variant" />
+                                android:layout_marginEnd="16dp"
+                                android:background="@color/wgk_divider" />
 
                             <include
                                 android:id="@+id/wgk_theme_dark"
@@ -331,41 +396,6 @@
                                 android:layout_height="wrap_content" />
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
-
-                    <!-- The installed version, and the check for a newer one made
-                         by hand. Last, because it is the least visited; absent
-                         altogether in a build that has no releases to ask about
-                         (no repository configured, or the Play build, which is
-                         updated by the store and may not update itself). -->
-                    <LinearLayout
-                        android:id="@+id/wgk_update_section"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginBottom="8dp"
-                            android:paddingStart="4dp"
-                            android:paddingEnd="4dp"
-                            android:text="@string/wgk_settings_section_app"
-                            android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
-
-                        <com.google.android.material.card.MaterialCardView
-                            style="@style/Widget.WGKeyBot.Card"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            app:cardCornerRadius="16dp">
-
-                            <include
-                                android:id="@+id/wgk_update_row"
-                                layout="@layout/view_wgk_settings_row"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content" />
-                        </com.google.android.material.card.MaterialCardView>
-                    </LinearLayout>
 
                 </LinearLayout>
             </androidx.constraintlayout.widget.ConstraintLayout>
