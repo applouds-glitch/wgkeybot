@@ -165,10 +165,12 @@ func TestWaitForAConnectSlotIsNotTheRelaysSilence(t *testing.T) {
 	overTCP(t)
 	pinRelayConnectGap(t, relayHeadStart+400*time.Millisecond)
 
-	h := runWorkersAgainst(t, 125, 2, []string{a.addr, b.addr})
-	waitFor(t, "both streams on the first relay", 6*time.Second, func() bool { return h.ready() == 2 })
+	// Two workers prefer each relay. Each relay's second worker waits longer
+	// than the head start, but that queueing must not cause a failover race.
+	h := runWorkersAgainst(t, 125, 4, []string{a.addr, b.addr})
+	waitFor(t, "two streams on each relay", 6*time.Second, func() bool { return h.ready() == 4 })
 
-	if n := b.ln.accepted.Load(); n != 0 {
-		t.Fatalf("the second relay was dialed %d time(s): the wait for a slot was counted as the first one's silence", n)
+	if na, nb := a.ln.accepted.Load(), b.ln.accepted.Load(); na != 2 || nb != 2 {
+		t.Fatalf("accepted %d/%d connections, want 2/2 without extra failover dials", na, nb)
 	}
 }

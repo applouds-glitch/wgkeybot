@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-// Per-session election of the one TURN server the tunnel runs on.
+// Per-session election of the preferred TURN server for UDP streams.
+// TCP uses assignTCPServers instead, sharing the health/demotion state below.
 //
 // Before the election existed, assignServers spread the streams across every
 // server VK returned, and the penalty in turn_server_health.go was the only way

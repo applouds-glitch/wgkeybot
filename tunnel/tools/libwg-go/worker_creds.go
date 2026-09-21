@@ -43,7 +43,7 @@ func fetchCreds(ctx context.Context, link string, groupID int) (user, pass strin
 	return
 }
 
-// assignServers returns the TURN servers this stream should try, best first.
+// assignServers returns the TURN servers a UDP stream should try, best first.
 //
 // The list is sorted into a canonical order so the same physical server gets the
 // same index in every group, regardless of the order VK returned the urls in for
@@ -96,6 +96,36 @@ func assignServers(addrs []string) []string {
 		}
 	}
 	return live
+}
+
+// assignTCPServers gives each stream a stable preferred relay, spreading ten
+// streams 5/5 when two relays are available. Health still takes precedence:
+// failed relays are excluded and an outage retains the existing recovery order.
+// Reconnecting workers rebalance naturally; healthy sessions are never moved.
+func assignTCPServers(addrs []string, streamID int, now time.Time) []string {
+	sorted := append([]string(nil), addrs...)
+	sort.Strings(sorted)
+	sorted = slices.Compact(sorted)
+	if len(sorted) < 2 {
+		return sorted
+	}
+	live := make([]string, 0, len(sorted))
+	for _, addr := range sorted {
+		if !serverDemoted(addr) && !serverPenalized(addr, now) {
+			live = append(live, addr)
+		}
+	}
+	if len(live) == 0 {
+		return outageOrder(sorted)
+	}
+	return rotateServers(live, streamID%len(live))
+}
+
+func streamAttemptOrder(user string, addrs []string, streamID int, cfg WorkerGroupConfig, now time.Time) []string {
+	if !relayOverTCP(cfg) {
+		return attemptOrder(user, addrs, now)
+	}
+	return orderAroundOrphans(user, assignTCPServers(addrs, streamID, now), now)
 }
 
 // rotateServers returns list rotated so idx comes first, leaving the rest in

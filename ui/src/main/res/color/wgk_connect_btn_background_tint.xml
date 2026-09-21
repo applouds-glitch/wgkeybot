@@ -5,5 +5,5 @@
     <!-- Connecting / Handshake -->
     <item android:state_activated="true" android:color="@color/wgk_primary" />
     <!-- Disconnected -->
-    <item android:color="@color/wgk_surface_container_high" />
+    <item android:color="@color/wgk_connect_idle_container" />
 </selector>

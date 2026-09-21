@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <!-- The switch itself communicates ON/OFF; detail appears only when useful. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="8dp"
+        android:visibility="gone">
+        <ImageView
+            android:layout_width="18dp"
+            android:layout_height="18dp"
+            android:layout_marginEnd="12dp"
+            android:contentDescription="@null"
+            android:src="@drawable/ic_wifi_tethering"
+            app:tint="@color/wgk_on_surface_variant" />
+        <LinearLayout
+            android:id="@+id/wgk_sharing_details"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="vertical">
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/wgk_main_sharing_title"
+                android:textAppearance="@style/TextAppearance.WGKeyBot.SettingTitle"
+                android:textColor="@color/wgk_on_surface_variant" />
+            <TextView
+                android:id="@+id/wgk_sharing_subtitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:textAppearance="@style/TextAppearance.WGKeyBot.SupportingText"
+                android:visibility="gone" />
+        </LinearLayout>
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/wgk_sharing_qr"
+            style="@style/Widget.WGKeyBot.ProfileAction"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:contentDescription="@string/wgk_tether_details_title"
+            android:visibility="invisible"
+            app:icon="@drawable/ic_action_scan_qr_code"
+            app:iconGravity="textTop"
+            app:iconPadding="0dp"
+            app:iconSize="20dp" />
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/wgk_sharing_toggle"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:contentDescription="@string/wgk_tether_switch_label"
+            android:enabled="false"
+            android:saveEnabled="false" />
+    </LinearLayout>
+</layout>

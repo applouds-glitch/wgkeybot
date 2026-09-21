@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -284,5 +285,86 @@ func TestRelayTCPConnectionSplitsItsFirstWrite(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("the relay never read anything")
+	}
+}
+
+// What keeps a relay's Allocate slots taken for long is Allocates hanging on it
+// (a raced one keeps its slot for pion's whole ~7.8s). Over TCP the dial has
+// connected by then, and the clock that started with the connect has to go on
+// running through the wait for a slot — stopping it at the end of the connect
+// would leave the stream queueing there with no limit but its context, next to
+// a relay that answers.
+func TestTCPDialQueuedForAnAllocateSlotIsRacedAfterTheHeadStart(t *testing.T) {
+	first, second := twoTCPRelayListeners(t)
+	busy := startTCPTestRelay(t, first)
+	live := startTCPTestRelay(t, second)
+	overTCP(t)
+
+	var held []*allocSlot
+	for i := 0; i < cap(allocSlotsFor(busy.addr)); i++ {
+		slot := acquireAllocSlot(context.Background(), busy.addr)
+		if slot == nil {
+			t.Fatal("could not take the relay's Allocate slots")
+		}
+		held = append(held, slot)
+	}
+	t.Cleanup(func() {
+		for _, slot := range held {
+			slot.release()
+		}
+	})
+
+	started := time.Now()
+	h := runWorkersAgainst(t, 115, 1, []string{busy.addr, live.addr})
+	waitFor(t, "a stream on the relay with free slots", relayHeadStart+3*time.Second, func() bool { return h.ready() == 1 })
+	if took := time.Since(started); took < relayHeadStart {
+		t.Fatalf("up after %v: the second relay was dialed before the head start ran out", took)
+	}
+	if got := h.streams[0].serverAddr; got != live.addr {
+		t.Fatalf("session runs on %s, want %s", got, live.addr)
+	}
+	if n := busy.ln.accepted.Load(); n != 1 {
+		t.Fatalf("the busy relay took %d TCP connection(s), want the one that then queued for a slot", n)
+	}
+}
+
+// The line has to say which of the three it was: the relay that "has not
+// accepted the TCP connection" had, in the field logs, often accepted it.
+func TestHeadStartExpiredSaysWhatTheRelayHadNotDone(t *testing.T) {
+	const relay = "relay-a:19302"
+	for _, tc := range []struct {
+		allocating, connected bool
+		want                  string
+	}{
+		{true, true, "has not answered Allocate"},
+		{true, false, "has not answered Allocate"}, // UDP: no connect at all
+		{false, true, "still queued for an Allocate slot"},
+		{false, false, "has not accepted the TCP connection"},
+	} {
+		if got := headStartExpired(relay, tc.allocating, tc.connected); !strings.Contains(got, tc.want) || !strings.HasPrefix(got, relay) {
+			t.Errorf("allocating=%v connected=%v: %q, want %q", tc.allocating, tc.connected, got, tc.want)
+		}
+	}
+}
+
+// What the line is told: the dial reports its connect, over TCP only.
+func TestDialReportsItsTCPConnect(t *testing.T) {
+	relay := startTCPTestRelay(t, listenTCPRelay(t))
+	overTCP(t)
+	resetRelayConnectPacing()
+
+	var connected atomic.Bool
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, raw, relayConn, _, _, err := dialAndAllocate(ctx, &stream{}, t.Name(), "pass", relay.addr,
+		WorkerGroupConfig{UseUDP: true}, dialOpts{connected: connected.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayConn.Close()
+	client.Close()
+	raw.Close()
+	if !connected.Load() {
+		t.Fatal("a dial that connected over TCP never said so")
 	}
 }

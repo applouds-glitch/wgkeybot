@@ -18,7 +18,7 @@
         android:orientation="horizontal"
         android:paddingStart="16dp"
         android:paddingTop="12dp"
-        android:paddingEnd="12dp"
+        android:paddingEnd="16dp"
         android:paddingBottom="12dp">
 
         <LinearLayout
@@ -31,7 +31,7 @@
                 android:id="@+id/wgk_choice_title"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:textAppearance="?attr/textAppearanceTitleSmall"
+                android:textAppearance="@style/TextAppearance.WGKeyBot.SettingTitle"
                 android:textColor="@color/wgk_on_surface" />
 
             <!-- Wraps freely: this line is the only place the difference between

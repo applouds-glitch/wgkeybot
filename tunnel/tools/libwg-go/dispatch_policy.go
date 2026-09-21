@@ -26,6 +26,10 @@ const (
 	// closed and the next packet starts its search on the next stream.
 	chunkMaxAge = time.Second
 
+	// TCP paths can have different RTTs. Larger batches reduce path changes
+	// for bulk traffic, while this bound prevents an idle batch holding a path.
+	tcpChunkMaxAge = 15 * time.Millisecond
+
 	// staleWatchInterval bounds how often the dispatcher re-scans every stream
 	// for stale transitions. Transitions are logged, not the scans, so this only
 	// caps the atomic loads per packet under load; at idle every packet scans.
@@ -40,6 +44,7 @@ type chunkRotor struct {
 	cur        int
 	inChunk    int
 	chunkStart time.Time
+	smallNext  int // independent rotation for priority packets over TCP
 }
 
 func newChunkRotor(n int) *chunkRotor {
@@ -48,7 +53,11 @@ func newChunkRotor(n int) *chunkRotor {
 
 // start returns the stream index to dispatch from, closing an idle chunk first.
 func (r *chunkRotor) start(now time.Time) int {
-	if r.inChunk > 0 && now.Sub(r.chunkStart) >= chunkMaxAge {
+	return r.startWithin(now, chunkMaxAge)
+}
+
+func (r *chunkRotor) startWithin(now time.Time, maxAge time.Duration) int {
+	if r.inChunk > 0 && now.Sub(r.chunkStart) >= maxAge {
 		r.advance()
 	}
 	return r.cur
@@ -56,12 +65,53 @@ func (r *chunkRotor) start(now time.Time) int {
 
 // sent records a packet placed on the current chunk.
 func (r *chunkRotor) sent(now time.Time) {
+	r.sentWithin(now, chunkSize)
+}
+
+func (r *chunkRotor) sentWithin(now time.Time, limit int) {
 	if r.inChunk == 0 {
 		r.chunkStart = now
 	}
 	r.inChunk++
-	if r.inChunk >= chunkSize {
+	if r.inChunk >= limit {
 		r.advance()
+	}
+}
+
+// Small packets take their own rotation without breaking bulk affinity. Size
+// is only a priority heuristic: WireGuard has already encrypted TCP headers.
+func (r *chunkRotor) startPacket(now time.Time, size int, overTCP bool) int {
+	if overTCP {
+		if size <= tcpPriorityPacketSize {
+			return r.smallNext
+		}
+		return r.startWithin(now, tcpChunkMaxAge)
+	}
+	return r.start(now)
+}
+
+func (r *chunkRotor) sentPacket(now time.Time, size int, overTCP bool) {
+	if overTCP {
+		if size <= tcpPriorityPacketSize {
+			r.smallNext = (r.smallNext + 1) % r.n
+			return
+		}
+		r.sentWithin(now, tcpChunkSize(size))
+		return
+	}
+	r.sent(now)
+}
+
+func tcpChunkSize(size int) int {
+	switch {
+	case size > 1100:
+		return 64
+	case size >= 701:
+		return 24
+	case size >= 301:
+		return 8
+	default:
+		return 3
 	}
 }
 
@@ -77,9 +127,7 @@ func (r *chunkRotor) advance() {
 // like an uplink outage until then. The per-stream lines tell one dead
 // allocation from the rest: it stales one stream while its siblings keep
 // hearing echoes. The "every stream" line says only that all of them went
-// quiet, not where: all streams share one relay (assignServers), so a dead
-// uplink and a relay whose path went dark look the same from here — field log
-// 18.09 had that line while the other relay was answering Allocates in 200ms.
+// quiet, not where: a shared path may fail even when TCP uses two relays.
 type staleWatch struct {
 	stale    []bool
 	allStale bool
@@ -132,7 +180,7 @@ func (w *staleWatch) observe(streams []*stream, now time.Time) []string {
 	if allStale != w.allStale {
 		w.allStale = allStale
 		if allStale {
-			lines = append(lines, fmt.Sprintf("[DISPATCH] every ready stream (%d) is silent — the uplink or the relay they share is dark; dispatching to all of them", ready))
+			lines = append(lines, fmt.Sprintf("[DISPATCH] every ready stream (%d) is silent — the uplink or relay paths are dark; dispatching to all of them", ready))
 		} else if ready > 0 {
 			lines = append(lines, fmt.Sprintf("[DISPATCH] relay echoes are back on %d of %d streams", ready-stale, ready))
 		}

@@ -3,6 +3,31 @@
   ~ SPDX-License-Identifier: Apache-2.0
   -->
 <resources>
+    <string name="wgk_main_sharing_title">Sharing</string>
+    <string name="wgk_main_sharing_requires_vpn">VPN required</string>
+    <string name="wgk_config_metadata">%1$s\nVersion %2$s</string>
+    <string name="wgk_close_action">Close</string>
+    <string name="wgk_tether_qr_section" translatable="false">WIFI / QR</string>
+    <string name="wgk_tether_network_section" translatable="false">NETWORK</string>
+    <string name="wgk_tether_session_section" translatable="false">SESSION</string>
+    <string name="wgk_tether_setup_section" translatable="false">CLIENT SETUP</string>
+    <string name="wgk_tether_connections_label" translatable="false">CONNECTIONS</string>
+    <string name="wgk_tether_devices_label" translatable="false">CLIENTS · 5 MIN</string>
+    <string name="wgk_tether_rx_label" translatable="false">RX</string>
+    <string name="wgk_tether_tx_label" translatable="false">TX</string>
+    <!-- Main instrument panel: technical legends stay consistent across locales. -->
+    <string name="wgk_sharing_panel_label" translatable="false">INTERNET SHARING</string>
+    <string name="wgk_sharing_off" translatable="false">OFF</string>
+    <string name="wgk_sharing_on" translatable="false">ON</string>
+    <string name="wgk_sharing_starting" translatable="false">STARTING</string>
+    <string name="wgk_sharing_stopping" translatable="false">STOPPING</string>
+    <string name="wgk_sharing_error" translatable="false">ERROR</string>
+    <string name="wgk_sharing_connections" translatable="false">CONNECTIONS %1$02d</string>
+    <string name="wgk_sharing_stopping_detail">Stopping sharing…</string>
+    <string name="wgk_phase_description">%1$s: %2$s</string>
+    <string name="wgk_phase_waiting">waiting</string>
+    <string name="wgk_phase_active">in progress</string>
+    <string name="wgk_phase_ready">ready</string>
     <plurals name="delete_error">
         <item quantity="one">Unable to delete %d tunnel: %s</item>
         <item quantity="other">Unable to delete %d tunnels: %s</item>
@@ -69,13 +94,18 @@
     <string name="app_name" translatable="false">WGKeyBot</string>
     <string name="widget_label">WGKeyBot Toggle</string>
     <string name="widget_description">Toggle the last used WGKeyBot tunnel.</string>
-    <string name="widget_no_tunnel">No tunnel</string>
+    <string name="widget_no_tunnel">No key</string>
+    <string name="widget_action_open">Open WGKeyBot</string>
+    <string name="widget_action_cancel">Cancel</string>
+    <string name="widget_action_retry">Try again</string>
+    <string name="widget_accessibility">WGKeyBot. %1$s. %2$s</string>
     <string name="widget_status_on">Connected</string>
     <string name="widget_status_off">Disconnected</string>
     <string name="widget_status_connecting">Connecting…</string>
     <string name="widget_status_disconnecting">Disconnecting…</string>
     <string name="widget_status_handshake">Handshake…</string>
     <string name="widget_status_reconnecting">Reconnecting…</string>
+    <string name="widget_status_waiting_network">Waiting for network…</string>
     <string name="widget_status_failed">Connection failed</string>
     <string name="bad_config_context">%1$s\'s %2$s</string>
     <string name="bad_config_context_top_level">%s</string>
@@ -330,7 +360,6 @@
     <string name="wgk_theme_dark_value">Dark</string>
     <string name="wgk_tether_title">Internet sharing</string>
     <string name="wgk_tether_switch_label">Share through the tunnel</string>
-    <string name="wgk_tether_off_value">Off</string>
     <string name="wgk_tether_starting_value">Starting…</string>
     <string name="wgk_tether_details_title">Network details and QR code</string>
     <string name="wgk_tether_needs_tunnel">Connect first: sharing works only through the tunnel.</string>
@@ -341,11 +370,11 @@
     <string name="wgk_tether_copy_cd">Copy</string>
     <string name="wgk_tether_copied">Copied</string>
     <string name="wgk_tether_qr_cd">QR code for joining the network</string>
-    <string name="wgk_tether_qr_hint">Point the other device\'s camera at the code to join the network.</string>
+    <string name="wgk_tether_qr_hint">Scan this code with the other device to join Wi-Fi. Then set up the proxy using the instructions below.</string>
     <string name="wgk_tether_counters">Devices: %1$d · connections: %2$d · sent %3$s · received %4$s</string>
     <string name="wgk_tether_notification_channel">Internet sharing</string>
     <string name="wgk_tether_stop_action">Stop</string>
-    <string name="wgk_tether_proxy_required">Set the proxy on the client. Without it the device has no internet at all. That is what guarantees nothing slips past the tunnel.</string>
+    <string name="wgk_tether_proxy_required"><b>You must set a proxy</b> on the connecting device. Without it, internet access will not work.</string>
     <string name="wgk_tether_howto">Android and iOS: Wi-Fi network settings → Proxy → Manual (or Auto with the config URL).\nWindows and macOS: system proxy settings, HTTP and HTTPS.\nBrowsers and terminals also accept the address as a SOCKS5 proxy.\nGames and Telegram usually ignore the system proxy. Set the same address as a SOCKS5 proxy in the app\'s own settings, or they stay offline.</string>
     <string name="wgk_tether_error_tunnel_down">The tunnel went down, so sharing stopped.</string>
     <string name="wgk_tether_error_location">Turn on location in system settings: without it Android refuses to raise the access point, even with the permission granted.</string>
@@ -389,10 +418,6 @@
     <string name="wgk_routing_note">Downloads go through the tunnel. The .dat files are fetched again only when the profile points at a new version; changing the profile address discards the cached files.</string>
     <string name="wgk_tether_auto_off_notice">Sharing switched off</string>
     <string name="wgk_tether_error_auto_off">Nothing used sharing for 2 hours, so it switched itself off.</string>
-    <plurals name="wgk_tether_clients">
-        <item quantity="one">%d device</item>
-        <item quantity="other">%d devices</item>
-    </plurals>
 
     <!-- WGKeyBot Connect screen -->
     <string name="wgk_state_idle">IDLE</string>
@@ -401,11 +426,12 @@
     <string name="wgk_state_tunnel_up">TUNNEL UP · %1$s</string>
 
     <string name="wgk_headline_disconnected">Tap to connect</string>
-    <string name="wgk_headline_connecting">Tap to cancel</string>
-    <string name="wgk_headline_handshake">Tap to cancel</string>
-    <string name="wgk_headline_connected">Tap to disconnect</string>
-    <string name="wgk_headline_reconnecting">Tap to stop</string>
-    <string name="wgk_headline_failed">Tap to try again</string>
+    <string name="wgk_headline_connecting">Bringing tunnel up</string>
+    <string name="wgk_headline_handshake">Handshake in progress</string>
+    <string name="wgk_headline_connected">Tunnel active</string>
+    <string name="wgk_headline_reconnecting">Connection lost</string>
+    <string name="wgk_headline_waiting_network">No network</string>
+    <string name="wgk_headline_failed">Failed to connect</string>
 
     <string name="wgk_profile_name">Configuration</string>
     <string name="wgk_profile_loaded_at">Loaded at %1$s</string>
@@ -415,19 +441,24 @@
     <string name="wgk_menu_cd">Menu</string>
 
     <string name="wgk_status_label">STATUS</string>
-    <string name="wgk_status_disconnected">VPN is off</string>
+    <string name="wgk_status_uptime_label">UPTIME</string>
+    <string name="wgk_status_received_label">RX ↓</string>
+    <string name="wgk_status_sent_label">TX ↑</string>
+    <string name="wgk_status_metric_empty" translatable="false">—</string>
+    <string name="wgk_status_disconnected">Disconnected</string>
     <string name="wgk_status_connecting">Connecting…</string>
-    <string name="wgk_status_handshake">Contacting server…</string>
-    <string name="wgk_status_connected">Protected</string>
-    <string name="wgk_status_reconnecting">Restoring connection…</string>
-    <string name="wgk_status_failed">Couldn’t connect</string>
+    <string name="wgk_status_handshake">Handshake…</string>
+    <string name="wgk_status_connected">Connected</string>
+    <string name="wgk_status_reconnecting">Reconnecting…</string>
+    <string name="wgk_status_waiting_network">Waiting for network…</string>
+    <string name="wgk_status_failed">Error</string>
 
     <string name="wgk_status_sub_disconnected">Ready to connect</string>
-    <string name="wgk_status_sub_connecting">Starting the secure connection</string>
-    <string name="wgk_status_sub_handshake">Checking the server connection</string>
-    <string name="wgk_status_sub_connected">Your traffic is protected</string>
-    <string name="wgk_status_sub_connected_time">Online for %1$s</string>
+    <string name="wgk_status_sub_connecting">Bringing up wg interface</string>
+    <string name="wgk_status_sub_handshake">Exchanging keys</string>
+    <string name="wgk_status_sub_connected">Connection established</string>
     <string name="wgk_status_sub_reconnecting">Server not responding, retrying</string>
+    <string name="wgk_status_sub_waiting_network">No network connection. We will reconnect as soon as it is back</string>
     <string name="wgk_status_sub_failed">Server unreachable, check your network</string>
 
     <!-- Terminal failures the app can name. Each has to fit the status card's
@@ -438,19 +469,11 @@
     <string name="wgk_status_sub_failed_captcha">Captcha could not be solved, try later</string>
     <string name="wgk_status_sub_failed_creds">Could not get credentials, try later</string>
 
-    <!-- Chip under the connect button while internet sharing is up. -->
-    <string name="wgk_tether_chip">Sharing · %1$d</string>
-    <string name="wgk_tether_chip_cd">Internet sharing is on, %1$d connected. Opens sharing settings.</string>
-
-    <string name="wgk_rxtx_label">TRAFFIC</string>
     <string name="wgk_wireguard_label">WIREGUARD</string>
-    <string name="wgk_rxtx_value">%1$.1f↓ / %2$.1f↑</string>
-    <string name="wgk_rxtx_unit_mb">MB</string>
-    <string name="wgk_rxtx_unit_gb">GB</string>
 
-    <string name="wgk_stage_tunnel">Starting</string>
-    <string name="wgk_stage_handshake">Connecting</string>
-    <string name="wgk_stage_routing">Ready</string>
+    <string name="wgk_stage_tunnel">Tunnel up</string>
+    <string name="wgk_stage_handshake">Handshake</string>
+    <string name="wgk_stage_routing">Routing</string>
 
     <string name="wgk_action_split_tunneling">Split tunneling</string>
     <string name="wgk_connection_mode_title">Connection mode</string>
@@ -481,6 +504,8 @@
     <string name="wgk_expired_title">Subscription expired</string>
     <string name="wgk_expired_subtitle">Contact the bot to renew your subscription</string>
     <string name="wgk_check_subscription_action">Check payment</string>
+    <string name="wgk_auto_refresh_label">Auto-refresh</string>
+    <string name="wgk_auto_refresh_desc">Refresh configuration every 12 hours</string>
     <string name="wgk_auto_refresh_cd">Config auto-refresh</string>
     <string name="wgk_auto_refresh_enabled_cd">Config auto-refresh is on. Tap to turn it off</string>
     <string name="wgk_auto_refresh_disabled_cd">Config auto-refresh is off. Tap to turn it on</string>
@@ -526,7 +551,7 @@
     <string name="wgk_update_later">Later</string>
     <string name="wgk_config_updated">Config updated</string>
     <string name="wgk_config_up_to_date">Config is up to date</string>
-    <string name="wgk_deeplink_missing_token">Deeplink: token parameter missing</string>
+    <string name="wgk_deeplink_missing_token">The link contains neither a token nor connection data. Copy the full link from the bot.</string>
     <string name="wgk_server_bad_config">Server returned an invalid config</string>
     <string name="wgk_auth_error_format">Authorization error: %s</string>
 
@@ -568,4 +593,16 @@
     <string name="wgk_update_store_unavailable">Google Play could not be opened.</string>
     <string name="wgk_connection_import_error">Could not import the connection. Get a new link from the bot and try again.</string>
     <string name="wgk_connection_link_ready">Connection link pasted</string>
+    <string name="wgk_import_invalid_data">The offline connection link is damaged or incomplete. Copy the full link from the bot.</string>
+    <string name="wgk_import_unsupported_version">This connection link uses an unsupported format version. Update the app.</string>
+    <string name="wgk_import_invalid_config">The link contains an invalid WireGuard config. Get a new link from the bot.</string>
+    <string name="wgk_import_unauthorized">The server rejected authorization. The token may have expired or already been used. Get a new link from the bot.</string>
+    <string name="wgk_import_upgrade_required">The server requires a newer app version. Update the app and try again.</string>
+    <string name="wgk_import_timeout">The server did not respond in time. Check your connection and try again.</string>
+    <string name="wgk_import_dns_error">Could not resolve the server address. Check your internet connection and DNS settings.</string>
+    <string name="wgk_import_tls_error">Could not establish a secure connection to the server. Check the device date and network settings.</string>
+    <string name="wgk_import_network_error">Could not download the connection config. Check your internet connection and try again.</string>
+    <string name="wgk_import_http_error">The server returned HTTP %1$d while importing the connection. Try again later.</string>
+    <string name="wgk_import_invalid_response">The server returned an invalid response. Try again later.</string>
+    <string name="wgk_import_storage_error">Could not read or save the connection config. Check free space on the device.</string>
 </resources>

@@ -37,6 +37,7 @@ import com.wireguard.android.fragment.TunnelListFragment
 import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.turn.ConnectionMode
 import com.wireguard.android.util.ConnectionImport
+import com.wireguard.android.util.ConnectionImportErrors
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.ThemeMode
 import kotlinx.coroutines.CancellationException
@@ -98,7 +99,8 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.main_activity, menu)
-        val barColor = if (isEffectivelyDark()) android.graphics.Color.WHITE else android.graphics.Color.BLACK
+        val barColor = if (isEffectivelyDark()) ContextCompat.getColor(this, R.color.wgk_on_surface)
+            else android.graphics.Color.BLACK
 
         // The reserve transport used to tint a value on the connect screen, and
         // that signal has to survive the move into the settings screen: a
@@ -200,7 +202,7 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
                 listFragment.applyConnection(prepared)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
-                Toast.makeText(this@MainActivity, R.string.wgk_connection_import_error, Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, ConnectionImportErrors.message(this@MainActivity, e), Toast.LENGTH_LONG).show()
             }
         }
     }

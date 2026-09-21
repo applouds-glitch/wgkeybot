@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/widget_background"
+    android:foreground="@drawable/widget_touch_feedback"
+    android:focusable="true"
     android:gravity="center"
     android:orientation="vertical"
     android:padding="6dp">
@@ -11,22 +14,28 @@
     <FrameLayout
         android:id="@+id/widget_button"
         android:layout_width="44dp"
-        android:layout_height="44dp">
+        android:layout_height="44dp"
+        android:importantForAccessibility="noHideDescendants">
 
+        <!-- RemoteViews inflates a framework ImageView, so app:tint is not applied. -->
         <ImageView
-            android:id="@+id/widget_power"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:contentDescription="@string/widget_no_tunnel"
-            android:src="@drawable/widget_power_off" />
+            android:id="@+id/widget_icon"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:layout_gravity="center"
+            android:contentDescription="@null"
+            android:src="@drawable/ic_tile"
+            android:tint="@color/wgk_primary"
+            tools:ignore="UseAppTint" />
 
         <ProgressBar
             android:id="@+id/widget_progress"
-            android:layout_width="26dp"
-            android:layout_height="26dp"
+            style="@android:style/Widget.Material.ProgressBar.Small"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
             android:layout_gravity="center"
             android:indeterminate="true"
-            android:indeterminateTint="#FFFFFFFF"
+            android:indeterminateTint="@color/wgk_primary"
             android:visibility="gone" />
     </FrameLayout>
 
@@ -34,11 +43,13 @@
         android:id="@+id/widget_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
+        android:layout_marginTop="6dp"
         android:ellipsize="end"
         android:gravity="center"
+        android:importantForAccessibility="no"
+        android:includeFontPadding="false"
         android:maxLines="1"
-        android:textColor="#FFFFFFFF"
+        android:text="@string/widget_status_off"
+        android:textColor="@color/wgk_on_surface_variant"
         android:textSize="11sp" />
-
 </LinearLayout>

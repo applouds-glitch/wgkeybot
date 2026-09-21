@@ -20,6 +20,8 @@ object ApiClient {
 
     class UpgradeRequiredException(val downloadUrl: String?) : Exception("Upgrade required")
 
+    class HttpException(val statusCode: Int) : IllegalStateException("HTTP $statusCode")
+
     // ── Response models ────────────────────────────────────────────────────────
 
     data class InitResponse(
@@ -98,9 +100,8 @@ object ApiClient {
                     JSONObject(body)
                 }
                 else -> {
-                    val body = connection.errorStream
-                        ?.let { BufferedReader(InputStreamReader(it)).readText() } ?: "HTTP $code"
-                    throw IllegalStateException("HTTP $code: $body")
+                    // Error bodies may echo the request token; expose only the status.
+                    throw HttpException(code)
                 }
             }
         } finally {

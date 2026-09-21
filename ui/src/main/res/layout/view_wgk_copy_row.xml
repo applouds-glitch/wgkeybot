@@ -1,48 +1,44 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
-
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center_vertical"
+        android:minHeight="64dp"
         android:orientation="horizontal"
-        android:paddingTop="6dp"
-        android:paddingBottom="6dp">
-
-        <TextView
-            android:id="@+id/wgk_copy_label"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="10dp">
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:textAppearance="?attr/textAppearanceBodyMedium"
-            android:textColor="@color/wgk_on_surface_variant" />
-
-        <TextView
-            android:id="@+id/wgk_copy_value"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:ellipsize="end"
-            android:fontFamily="monospace"
-            android:maxLines="1"
-            android:textAppearance="?attr/textAppearanceBodyMedium"
-            android:textColor="@color/wgk_on_surface" />
-
+            android:orientation="vertical">
+            <TextView
+                android:id="@+id/wgk_copy_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textAppearance="@style/TextAppearance.WGKeyBot.LabelMono" />
+            <TextView
+                android:id="@+id/wgk_copy_value"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:breakStrategy="simple"
+                android:hyphenationFrequency="none"
+                android:textAppearance="@style/TextAppearance.WGKeyBot.NetworkValue"
+                android:textIsSelectable="true" />
+        </LinearLayout>
         <com.google.android.material.button.MaterialButton
             android:id="@+id/wgk_copy_btn"
-            style="?attr/materialIconButtonStyle"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
+            style="@style/Widget.WGKeyBot.ProfileAction"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
             android:contentDescription="@string/wgk_tether_copy_cd"
-            android:insetBottom="0dp"
-            android:insetLeft="0dp"
-            android:insetRight="0dp"
-            android:insetTop="0dp"
             app:icon="@drawable/ic_content_paste"
             app:iconGravity="textTop"
             app:iconPadding="0dp"
-            app:iconSize="18dp"
-            app:iconTint="@color/wgk_primary" />
+            app:iconSize="18dp" />
     </LinearLayout>
 </layout>

@@ -118,6 +118,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			ctx:             gCtx,
 			id:              i,
 			in:              make(chan []byte, 512),
+			priority:        make(chan []byte, tcpPriorityQueueSize),
 			out:             lc,
 			sessionID:       cfg.SessionID,
 			cert:            cfg.Cert,
@@ -147,6 +148,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	// What the relay connections are doing, for the streams that run over TCP;
 	// asleep while none does (relay_tcp_watch.go).
 	go relaySockets.run(gCtx, allStreams)
+	withdrawStreams := publishStreams(allStreams)
 
 	var groupsWg sync.WaitGroup
 	// The cascade below sleeps between groups, so it is launched in its own
@@ -215,15 +217,14 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	done := make(chan struct{})
 	go func() {
 		groupsWg.Wait()
+		withdrawStreams()
 		feedbackCancel()
 		<-feedbackDone
 		close(done)
 	}()
 
-	// Chunked round-robin dispatcher: sends chunkSize consecutive packets through
-	// the same ready stream before rotating (or sooner once the chunk goes idle,
-	// see chunkRotor). This avoids per-packet path-quality accounting while
-	// preserving packet order within each chunk.
+	// UDP uses eight-packet chunks. TCP adapts bulk chunks to packet size and
+	// rotates small priority packets independently (see chunkRotor).
 	go func() {
 		rotor := newChunkRotor(totalStreams)
 		stale := newStaleWatch(totalStreams)
@@ -270,13 +271,14 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			for _, line := range stale.observe(allStreams, now) {
 				turnLog("%s", line)
 			}
-			sent, anyReady := dispatchPacket(allStreams, rotor.start(now), now, b[:nRead])
+			overTCP := relayOverTCP(WorkerGroupConfig{UseUDP: cfg.UseUDP})
+			sent, anyReady := dispatchPacket(allStreams, rotor.startPacket(now, nRead, overTCP), now, b[:nRead])
 			if !sent {
 				packetPool.Put(b[:cap(b)])
 				noteDispatchDrop(anyReady)
 				continue
 			}
-			rotor.sent(now)
+			rotor.sentPacket(now, nRead, overTCP)
 		}
 	}()
 
@@ -304,6 +306,20 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 func dispatchPacket(streams []*stream, start int, now time.Time, pkt []byte) (sent, anyReady bool) {
 	n := len(streams)
 	for pass := 0; pass < 2; pass++ {
+		// Prefer available priority queues across fresh TCP streams before
+		// falling back to their normal queues. Stale priority queues must not
+		// outrank a fresh stream's ordinary queue.
+		if len(pkt) <= tcpPriorityPacketSize {
+			for i := 0; i < n; i++ {
+				st := streams[(start+i)%n]
+				if !st.ready.Load() || (pass == 0 && st.dispatchStale(now)) {
+					continue
+				}
+				if st.enqueuePriority(pkt) {
+					return true, true
+				}
+			}
+		}
 		for i := 0; i < n; i++ {
 			st := streams[(start+i)%n]
 			if !st.ready.Load() {

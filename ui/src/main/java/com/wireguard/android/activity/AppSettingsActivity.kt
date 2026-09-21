@@ -98,6 +98,7 @@ class AppSettingsActivity : AppCompatActivity() {
 
         bindConnectionMode()
         bindRelayTransport()
+        bindAutoRefresh()
         bindTheme()
         bindUpdateCheck()
         if (bindTether()) {
@@ -238,6 +239,21 @@ class AppSettingsActivity : AppCompatActivity() {
         wgkChoiceRoot.updatePadding(top = pad, bottom = pad)
         wgkChoiceRadio.minHeight = 0
         wgkChoiceRadio.minimumHeight = 0
+    }
+
+    private fun bindAutoRefresh() {
+        val auth = AuthStore.getInstance(this)
+        binding.wgkAutoRefreshRow.apply {
+            wgkSwitchIcon.setImageResource(R.drawable.ic_auto_renew)
+            wgkSwitchLabel.setText(R.string.wgk_auto_refresh_label)
+            wgkSwitchValue.setText(R.string.wgk_auto_refresh_desc)
+            wgkSwitch.isChecked = auth.isAutoRefreshEnabled()
+            wgkSwitchRoot.setOnClickListener {
+                val enabled = !auth.isAutoRefreshEnabled()
+                auth.setAutoRefreshEnabled(enabled)
+                wgkSwitch.isChecked = enabled
+            }
+        }
     }
 
     // ── Appearance ─────────────────────────────────────────────────────────────
@@ -397,6 +413,7 @@ class AppSettingsActivity : AppCompatActivity() {
         binding.wgkTetherSwitchRow.apply {
             wgkSwitchIcon.setImageResource(R.drawable.ic_wifi_tethering)
             wgkSwitchLabel.setText(R.string.wgk_tether_switch_label)
+            wgkSwitchValue.setTextAppearance(R.style.TextAppearance_WGKeyBot_InstrumentValue)
             wgkSwitchRoot.setOnClickListener {
                 val enable = !wgkSwitch.isChecked
                 openSheetWhenActive = enable
@@ -559,15 +576,14 @@ class AppSettingsActivity : AppCompatActivity() {
         row.wgkSwitch.isChecked = active || state is TetherState.Starting
         // An access point that is already up stays switchable whatever the tunnel
         // is doing — otherwise there would be no way to turn it off.
-        val switchable = tunnelUp || active
+        val switchable = tunnelUp || active || state is TetherState.Starting
         row.wgkSwitchRoot.isEnabled = switchable
         row.wgkSwitch.isEnabled = switchable
         row.wgkSwitchRoot.alpha = if (switchable) 1f else DISABLED_ALPHA
         row.wgkSwitchValue.text = when (state) {
-            is TetherState.Active ->
-                resources.getQuantityString(R.plurals.wgk_tether_clients, state.clients, state.clients)
-            TetherState.Starting -> getString(R.string.wgk_tether_starting_value)
-            else -> getString(R.string.wgk_tether_off_value)
+            is TetherState.Active -> getString(R.string.wgk_sharing_connections, state.connections)
+            TetherState.Starting -> getString(R.string.wgk_sharing_starting)
+            else -> getString(R.string.wgk_sharing_off)
         }
 
         // The credentials only exist while an access point is up.

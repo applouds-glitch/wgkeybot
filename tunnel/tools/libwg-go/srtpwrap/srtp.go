@@ -36,6 +36,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/dtls/v3"
@@ -146,13 +147,15 @@ func Client(ctx context.Context, underlay net.PacketConn, remote net.Addr) (net.
 	// kill the demux goroutine and drop every post-handshake RTP packet.
 	// Demux lifetime is bound to wrappedConn.Close (via stopDemux below).
 	demuxCtx, demuxCancel := context.WithCancel(context.Background())
-	go runDemuxFromPacketConn(demuxCtx, underlay, dtlsCh, rtpCh)
+	fault := &demuxFault{}
+	go runDemuxFromPacketConn(demuxCtx, underlay, dtlsCh, rtpCh, fault)
 
 	adapter := &packetConnAdapter{
 		raw:    underlay,
 		ch:     dtlsCh,
 		addr:   remote,
 		closed: make(chan struct{}),
+		fault:  fault,
 	}
 
 	// pion/dtls v3.x Client()/Server() only set up the Conn — the
@@ -190,6 +193,7 @@ func Client(ctx context.Context, underlay net.PacketConn, remote net.Addr) (net.
 		demuxCancel()
 		return nil, fmt.Errorf("srtpwrap: post-handshake setup: %w", err)
 	}
+	wrap.fault = fault
 	return wrap, nil
 }
 
@@ -400,6 +404,7 @@ type packetConnAdapter struct {
 	addr      net.Addr
 	closed    chan struct{}
 	closeOnce sync.Once
+	fault     *demuxFault // client side: why the demux stopped feeding ch
 
 	mu    sync.Mutex
 	dlExp time.Time
@@ -412,7 +417,7 @@ func (a *packetConnAdapter) ReadFrom(b []byte) (int, net.Addr, error) {
 		select {
 		case pkt, ok := <-a.ch:
 			if !ok {
-				return 0, nil, net.ErrClosed
+				return 0, nil, a.fault.closedErr()
 			}
 			return copy(b, pkt), a.addr, nil
 		case <-a.closed:
@@ -532,6 +537,8 @@ type wrappedConn struct {
 	// stopDemux is set on the client side so Close() unwinds the
 	// background packet demux goroutine.
 	stopDemux func()
+	// fault is set on the client side: why the demux stopped feeding rxCh.
+	fault *demuxFault
 
 	// Per-side reusable scratch buffers. See iOS-side pkg/proxy/
 	// srtpwrap for the long explanation. Cuts ~4 allocs per packet
@@ -590,7 +597,7 @@ func (c *wrappedConn) Read(b []byte) (int, error) {
 		select {
 		case pkt, ok := <-c.rxCh:
 			if !ok {
-				return 0, net.ErrClosed
+				return 0, c.fault.closedErr()
 			}
 			// Reuse c.rxDecBuf — see iOS-side srtpwrap for rationale.
 			if cap(c.rxDecBuf) < len(pkt) {
@@ -780,7 +787,47 @@ func (c *wrappedConn) fireDeadline() {
 
 // ─── client-side demux from a single-peer PacketConn ──────────────────────
 
-func runDemuxFromPacketConn(ctx context.Context, raw net.PacketConn, dtlsCh, rtpCh chan<- []byte) {
+// demuxFault is why the client-side demux stopped, for the readers its closed
+// channels wake. The zero value (and nil) reads as a plain close.
+type demuxFault struct {
+	err atomic.Pointer[error]
+}
+
+func (f *demuxFault) set(err error) {
+	f.err.CompareAndSwap(nil, &err)
+}
+
+func (f *demuxFault) closedErr() error {
+	if f != nil {
+		if p := f.err.Load(); p != nil {
+			return fmt.Errorf("srtpwrap: underlay read: %w", *p)
+		}
+	}
+	return net.ErrClosed
+}
+
+// runDemuxFromPacketConn is the only reader of raw and the only sender on the
+// two channels, which it closes when it stops: whoever waits on them — the DTLS
+// handshake, wrappedConn.Read — then ends with the underlay instead of outliving
+// it.
+//
+// Any read error other than a timeout or an oversized datagram ends it. It used
+// to return only on net.ErrClosed and retry the rest at once, and a pion/turn
+// relay conn that has been closed reports an error of pion's own that is not
+// net.ErrClosed — on every call, without blocking. Closing the relay under a
+// running session (the blackhole watchdog, a TCP flow the kernel gave up, pion's
+// reader gone — see runSession) therefore spun this loop on a full core, a
+// million reads a second, while Read went on waiting for packets: the stream
+// stayed ready until its next write failed, or on an idle tunnel until the
+// dead-stream detector 90s later.
+//
+// The underlay in use is always such a relay conn, whose reads fail in exactly
+// those three ways. On any other PacketConn this ends the session on errors a
+// socket can outlive (a UDP socket's ECONNREFUSED for an earlier datagram, say):
+// the caller reconnects, which costs a session where the old loop cost a core.
+func runDemuxFromPacketConn(ctx context.Context, raw net.PacketConn, dtlsCh, rtpCh chan<- []byte, fault *demuxFault) {
+	defer close(rtpCh)
+	defer close(dtlsCh)
 	// See iOS pkg/proxy/srtpwrap/srtp.go for the long story. tl;dr: the
 	// previous 500ms-polling pattern was a CPU-wakeup-budget killer on
 	// iOS Network Extension. Block on ReadFrom and use AfterFunc to set
@@ -805,7 +852,12 @@ func runDemuxFromPacketConn(ctx context.Context, raw net.PacketConn, dtlsCh, rtp
 				_ = raw.SetReadDeadline(time.Time{})
 				continue
 			}
-			continue
+			// One datagram larger than buf: dropped, the conn is fine.
+			if errors.Is(err, io.ErrShortBuffer) {
+				continue
+			}
+			fault.set(err)
+			return
 		}
 		if n == 0 {
 			continue

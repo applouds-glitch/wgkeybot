@@ -17,6 +17,20 @@ import java.util.Locale
 import kotlin.time.Duration.Companion.seconds
 
 object QuantityFormatter {
+    /** Compact instrument readout with IEC symbols and a stable decimal separator. */
+    fun formatTechnicalBytes(bytes: Long): String {
+        val count = bytes.coerceAtLeast(0L)
+        if (count < 1024L) return "$count B"
+        val units = arrayOf("KiB", "MiB", "GiB", "TiB", "PiB", "EiB")
+        var value = count / 1024.0
+        var unit = 0
+        while (value >= 1024 && unit < units.lastIndex) {
+            value /= 1024
+            unit++
+        }
+        return String.format(Locale.ROOT, "%.1f %s", value, units[unit])
+    }
+
     fun formatBytes(bytes: Long): String {
         val context = Application.get().applicationContext
         return when {

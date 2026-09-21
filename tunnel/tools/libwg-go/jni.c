@@ -25,8 +25,8 @@ extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, const cha
 extern void wgTurnProxyStop();
 extern void wgTurnDropCredentials(void);
 extern void wgSetSystemDns(const char *dns_servers);
-extern void wgSetPhysicalNetwork(long long handle);
-extern void wgSetRelayTransport(int choice);
+extern void wgSetNetworkState(long long handle, int relay_transport);
+extern int wgTurnReadyStreams(void);
 extern int wgTetherStart(const char *bind_ip, int port, const char *dns_servers, const char *tunnel_addrs, const char *routing_dir, const char *direct_dns);
 extern void wgTetherStop(void);
 extern char *wgTetherStats(void);
@@ -590,19 +590,24 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetwo
 	wgSetSystemDns(dns_str ? dns_str : "");
 	free(dns_str);
 
-	// How this network's relays are reached (UDP, or TCP where UDP carries no
-	// session) belongs to the network as much as its DNS servers do, and for the
-	// same reason comes before the gate opens: the dials a returning or a new
-	// network triggers must already go out the right way.
-	wgSetRelayTransport((int)relay_transport);
-
 	// Last, so that workers woken by a returning path already resolve against its
 	// DNS servers. With no path at all this parks every worker at the network
 	// gate: until then the gate stayed open on transport proof earned over the
 	// network that had just vanished, and the workers kept dialing nothing. The
 	// handle, not just "is there one", because leaving a network also marks the
 	// relays our allocations on it can no longer release.
-	wgSetPhysicalNetwork(network != NULL ? (long long)handle : 0);
+	//
+	// How this network's relays are reached (UDP, or TCP where UDP carries no
+	// session) belongs to the network as much as its DNS servers do, and goes in
+	// the same call as the handle: the dials a returning or a new network sets off
+	// must already go out the right way, and a worker must not be able to start
+	// an attempt on one half of the new state (see wgSetNetworkState).
+	wgSetNetworkState(network != NULL ? (long long)handle : 0, (int)relay_transport);
+}
+
+JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnReadyStreams(JNIEnv *env, jclass c)
+{
+	return (jint)wgTurnReadyStreams();
 }
 
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnDropCredentials(JNIEnv *env, jclass c)

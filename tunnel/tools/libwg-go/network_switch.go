@@ -49,82 +49,163 @@ var networkSwitch = struct {
 	attempts map[uint64]*networkAttempt
 }{attempts: map[uint64]*networkAttempt{}}
 
-// networkAttempt is one worker attempt — dial, allocate and the session that
-// follows — tagged with the network it was started on.
+// networkAttempt is one worker attempt — dial, allocate, the session that
+// follows and the wait after it — tagged with the network it was started on and
+// the relay transport it runs over.
 type networkAttempt struct {
 	network int64
+	overTCP bool // the transport this attempt dials with, decided once, here
+	useUDP  bool // its group's #@wgt:UseUDP, for what "as configured" means to it
 	cancel  context.CancelFunc
-	moved   bool // recycled by a move to another network
+	moved   bool // recycled by a move to another network or transport
 }
 
-// beginNetworkAttempt returns the context for one worker attempt, tagged with
-// the network the dials bind to now, and the call that ends it. The end call
-// reports whether a move to another network is what ended the attempt.
-func beginNetworkAttempt(parent context.Context) (context.Context, func() (moved bool)) {
+// attemptHandle is a worker's hold on its registered attempt.
+type attemptHandle struct {
+	ctx     context.Context
+	overTCP bool
+	id      uint64
+	a       *networkAttempt
+}
+
+// beginAttempt registers one worker attempt, tagged with the network the dials
+// bind to now and the relay transport in force now. Both are read under the
+// lock that setNetworkState changes them under, and the attempt dials with the
+// transport decided here (WorkerGroupConfig.pinTransport) rather than reading it
+// again at the dial: a tag that said UDP on an attempt that then dialed TCP
+// would be recycled for running over the transport it is already leaving.
+func beginAttempt(parent context.Context, cfg WorkerGroupConfig) *attemptHandle {
 	ctx, cancel := context.WithCancel(parent)
 	networkSwitch.Lock()
 	id := networkSwitch.nextID
 	networkSwitch.nextID++
-	a := &networkAttempt{network: networkSwitch.current, cancel: cancel}
+	a := &networkAttempt{
+		network: networkSwitch.current,
+		overTCP: transportOverTCP(relayTransportChoice.Load(), cfg.UseUDP),
+		useUDP:  cfg.UseUDP,
+		cancel:  cancel,
+	}
 	networkSwitch.attempts[id] = a
 	networkSwitch.Unlock()
-
-	return ctx, func() bool {
-		networkSwitch.Lock()
-		delete(networkSwitch.attempts, id)
-		moved := a.moved
-		networkSwitch.Unlock()
-		cancel()
-		return moved
-	}
+	return &attemptHandle{ctx: ctx, overTCP: a.overTCP, id: id, a: a}
 }
 
-// noteNetworkSwitch records the network our dials now bind to (0 = none) and,
-// on a move to a different one, recycles every attempt started elsewhere and
-// resets what was learned over the old network.
+// moved reports whether the attempt has been recycled, without ending it.
+func (h *attemptHandle) moved() bool {
+	networkSwitch.Lock()
+	defer networkSwitch.Unlock()
+	return h.a.moved
+}
+
+// end unregisters the attempt and reports whether a move to another network or
+// transport is what ended it.
+func (h *attemptHandle) end() bool {
+	networkSwitch.Lock()
+	delete(networkSwitch.attempts, h.id)
+	moved := h.a.moved
+	networkSwitch.Unlock()
+	h.a.cancel()
+	return moved
+}
+
+// beginNetworkAttempt is beginAttempt for callers that need only the context.
+func beginNetworkAttempt(parent context.Context) (context.Context, func() (moved bool)) {
+	h := beginAttempt(parent, WorkerGroupConfig{UseUDP: true})
+	return h.ctx, h.end
+}
+
+// noteNetworkSwitch records the network the dials bind to now, keeping the
+// relay transport as it is.
 func noteNetworkSwitch(handle int64) {
+	noteNetworkState(handle, relayTransportChoice.Load())
+}
+
+// noteNetworkState records the network the dials bind to now and how its relays
+// are reached, and recycles every attempt that is somewhere else: started on
+// another network, or running over the other transport.
+//
+// The two arrive in one report (wgSetNetwork) and are taken in one step. Taken
+// apart — the transport first, then the network — a worker could register its
+// next attempt in between, on the new transport and the old network, only to be
+// recycled a second time a moment later.
+//
+// The transport half is what makes the setting take effect: until 2026-09-21 it
+// only changed what the next dial would read. Sessions that were up stayed on
+// the old transport, and a worker sitting out a reconnect delay slept on — up to
+// half a minute of nothing after choosing TCP on a network where UDP carries no
+// session, which is exactly where the choice is made. What is compared is the
+// transport in effect, not the setting: "as configured" to "UDP" over a config
+// that says UDP moves nobody. Relay health starts over with it: a relay demoted
+// for what it did over UDP has said nothing about TCP. The DNS cache, the
+// connect pacing and the marks on relays holding our allocations stay — the
+// network is the same. Credentials and everything guarding VK are not touched:
+// a quota does not come free because the client changed how it dials.
+//
+// Nothing is recycled for its transport while the network is away (A→0): Auto
+// reports "as configured" with no network to ask, and the sessions may well
+// survive the gap; the report that brings a network back compares them then.
+func noteNetworkState(handle int64, choice int32) {
+	choice = normaliseRelayTransport(choice)
+
 	networkSwitch.Lock()
 	if networkSwitch.current != 0 && networkSwitch.current != handle {
 		networkSwitch.leftAt = time.Now()
 	}
 	networkSwitch.current = handle
-	if handle == 0 {
-		networkSwitch.Unlock()
-		return
-	}
 	from := networkSwitch.last
-	networkSwitch.last = handle
-	if from == 0 || from == handle {
-		networkSwitch.Unlock()
-		return
+	away := handle == 0 && from != 0
+	if handle != 0 {
+		networkSwitch.last = handle
 	}
+	networkMoved := handle != 0 && from != 0 && from != handle
+	choiceChanged := relayTransportChoice.Swap(choice) != choice
+
 	var recycled []*networkAttempt
-	for _, a := range networkSwitch.attempts {
-		if a.network != handle && !a.moved {
-			a.moved = true
-			recycled = append(recycled, a)
+	overTransport := 0
+	if !away {
+		for _, a := range networkSwitch.attempts {
+			switch {
+			case a.moved:
+			case networkMoved && a.network != handle:
+				a.moved = true
+				recycled = append(recycled, a)
+			case a.overTCP != transportOverTCP(choice, a.useUDP):
+				a.moved = true
+				recycled = append(recycled, a)
+				overTransport++
+			}
 		}
 	}
 	networkSwitch.Unlock()
 
-	resetServerHealth()
-	resetRelayConnectPacing()
-	ClearCache()
-	turnLog("[NETWORK] moved from network %d to %d: %d session(s) on the old one recycled; server health and DNS cache reset",
-		from, handle, len(recycled))
+	if choiceChanged {
+		turnLog("[NETWORK] relay transport: %s", relayTransportName(choice))
+	}
+	switch {
+	case networkMoved:
+		resetServerHealth()
+		resetRelayConnectPacing()
+		ClearCache()
+		turnLog("[NETWORK] moved from network %d to %d: %d attempt(s) begun elsewhere recycled (sessions, dials and reconnect delays); server health and DNS cache reset",
+			from, handle, len(recycled))
+	case overTransport > 0:
+		resetServerHealth()
+		turnLog("[NETWORK] relay transport is now %s: %d attempt(s) on the other one recycled (sessions, dials and reconnect delays); server health reset",
+			relayTransportName(choice), overTransport)
+	}
 	for _, a := range recycled {
 		a.cancel()
 	}
 }
 
-// setBoundNetwork is everything a bound-network report from wgSetNetwork does,
-// in order: the allocations left on a network we are leaving are marked first,
-// so that no retry heads for a relay they fill; then sessions on another
-// network are recycled; the network gate opens or closes last, so parked
+// setNetworkState is everything a report from wgSetNetwork does, in order: the
+// allocations left on a network we are leaving are marked first, so that no
+// retry heads for a relay they fill; then sessions on another network or the
+// other transport are recycled; the network gate opens or closes last, so parked
 // workers wake to all of the above already in place.
-func setBoundNetwork(handle int64, now time.Time) {
+func setNetworkState(handle int64, choice int32, now time.Time) {
 	noteBoundNetwork(handle, now)
-	noteNetworkSwitch(handle)
+	noteNetworkState(handle, choice)
 	if setPhysicalPath(handle != 0) {
 		if handle != 0 {
 			turnLog("[NETWORK] physical network is back — workers released")
@@ -132,4 +213,9 @@ func setBoundNetwork(handle int64, now time.Time) {
 			turnLog("[NETWORK] no physical network — workers parked until one returns")
 		}
 	}
+}
+
+// setBoundNetwork is setNetworkState with the relay transport left as it is.
+func setBoundNetwork(handle int64, now time.Time) {
+	setNetworkState(handle, relayTransportChoice.Load(), now)
 }

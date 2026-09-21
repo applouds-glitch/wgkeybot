@@ -326,8 +326,8 @@ func (w *relaySocketWatch) observe(streams []*stream, now time.Time) {
 		}
 	}
 	for _, st := range streams {
-		if n := len(st.in); n > w.window.queuePeak {
-			w.window.queuePeak, w.window.queueCap, w.window.queueStream = n, cap(st.in), st.id
+		if n := len(st.in) + len(st.priority); n > w.window.queuePeak {
+			w.window.queuePeak, w.window.queueCap, w.window.queueStream = n, cap(st.in)+cap(st.priority), st.id
 		}
 	}
 	if now.Sub(w.window.start) >= relaySocketLogInterval {

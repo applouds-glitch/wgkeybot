@@ -3,7 +3,7 @@
     <!-- Connected -->
     <item android:state_selected="true"  android:color="@color/wgk_on_success" />
     <!-- Connecting / Handshake -->
-    <item android:state_activated="true" android:color="@color/wgk_on_primary" />
+    <item android:state_activated="true" android:color="@color/wgk_connect_busy_content" />
     <!-- Disconnected -->
-    <item android:color="@color/wgk_on_surface_variant" />
+    <item android:color="@color/wgk_connect_idle_content" />
 </selector>

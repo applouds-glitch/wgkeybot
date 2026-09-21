@@ -133,9 +133,10 @@ func wgSetSystemDns(dnsC *C.char) {
 type stream struct {
 	ctx context.Context // set to the global tunnel context
 
-	id  int
-	in  chan []byte
-	out net.PacketConn
+	id       int
+	in       chan []byte
+	priority chan []byte // bounded small-packet queue, used on TCP sessions
+	out      net.PacketConn
 
 	peer   atomic.Pointer[net.Addr]
 	ready  atomic.Bool
@@ -150,8 +151,9 @@ type stream struct {
 	// handshake verdict to turn_server_health.go; it is rewritten on every
 	// attempt and read only by the single goroutine driving this stream.
 	serverAddr string
-	// overTCP says the attempt reaches its relay over TCP; set and read likewise.
-	overTCP bool
+	// overTCP is published before ready; the dispatcher also reads it when
+	// deciding whether this stream accepts priority packets.
+	overTCP atomic.Bool
 
 	// wrapKey is an optional 32-byte ChaCha20 key for WRAP obfuscation.
 	// When non-nil, raw UDP packets to/from the TURN relay are encrypted with
@@ -228,6 +230,17 @@ func (s *stream) dispatchStale(now time.Time) bool {
 
 const iPacketBuffMaxSize = 2048
 
+// deadStreamError ends a session whose relay has been silent for
+// deadStreamTimeout. It carries the length of the silence, which the health
+// accounting takes off the session's length (see sessionOutcome).
+type deadStreamError struct {
+	silent time.Duration
+}
+
+func (e *deadStreamError) Error() string {
+	return fmt.Sprintf("dead-stream: no RX for %v", e.silent.Round(time.Second))
+}
+
 // runKeepalive is the single per-stream NAT-hold and liveness loop shared by
 // all transports. Connections are established with a safety stagger, but every
 // ready stream sends its normal keepalive on the same 25s wall-clock grid so the
@@ -274,7 +287,9 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 
 		if rxAge >= deadStreamTimeout {
 			turnLog("[STREAM %d] dead-stream detector: no RX for %v — closing", s.id, rxAge.Round(time.Second))
-			reportErr(fmt.Errorf("dead-stream: no RX for %v", rxAge.Round(time.Second)))
+			// heardAge, not rxAge: a freeze reset restarts the detector's clock,
+			// not the silence the relay is answerable for.
+			reportErr(&deadStreamError{silent: activity.heardAge(now)})
 			return
 		}
 		// An RX that arrived after the timer was armed may make an old liveness
@@ -462,33 +477,33 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		if hasWrap {
 			txBuf = make([]byte, iPacketBuffMaxSize+wrapMaxOverhead)
 		}
+		reader := outboundReader{s: s}
 		for {
-			select {
-			case <-sCtx.Done():
+			b, ok := reader.next(sCtx)
+			if !ok {
 				return
-			case b := <-s.in:
-				var payload []byte
-				if hasWrap {
-					n, wrapErr := wrapPacketInto(txBuf, s.wrapKey, b, s.wrapTx)
-					if wrapErr != nil {
-						packetPool.Put(b[:cap(b)])
-						noDtlsTxDropCount.Add(1)
-						turnLog("[STREAM %d] WRAP TX error: %v", s.id, wrapErr)
-						reportErr(fmt.Errorf("WRAP TX: %w", wrapErr))
-						return
-					}
-					payload = txBuf[:n]
-				} else {
-					payload = b
-				}
-				_, err := relayConn.WriteTo(payload, peer)
-				packetPool.Put(b[:cap(b)])
-				if err != nil {
+			}
+			var payload []byte
+			if hasWrap {
+				n, wrapErr := wrapPacketInto(txBuf, s.wrapKey, b, s.wrapTx)
+				if wrapErr != nil {
+					packetPool.Put(b[:cap(b)])
 					noDtlsTxDropCount.Add(1)
-					turnLog("[STREAM %d] TX error: %v", s.id, err)
-					reportErr(fmt.Errorf("relay TX: %w", err))
+					turnLog("[STREAM %d] WRAP TX error: %v", s.id, wrapErr)
+					reportErr(fmt.Errorf("WRAP TX: %w", wrapErr))
 					return
 				}
+				payload = txBuf[:n]
+			} else {
+				payload = b
+			}
+			_, err := relayConn.WriteTo(payload, peer)
+			packetPool.Put(b[:cap(b)])
+			if err != nil {
+				noDtlsTxDropCount.Add(1)
+				turnLog("[STREAM %d] TX error: %v", s.id, err)
+				reportErr(fmt.Errorf("relay TX: %w", err))
+				return
 			}
 		}
 	}()
@@ -677,7 +692,7 @@ func (s *stream) probeRelay(relayConn net.PacketConn, peer net.Addr, sessionHS [
 // dataPlaneHandshakeTimeout — past the hangs that were seen to clear, and still
 // a third of the connect budget.
 func (s *stream) relayProofLimit() time.Duration {
-	if s.overTCP {
+	if s.overTCP.Load() {
 		return relayProofTimeoutTCP
 	}
 	return relayProofTimeout
@@ -917,18 +932,18 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	go func() {
 		defer wg.Done()
 		defer sCancel()
+		reader := outboundReader{s: s}
 		for {
-			select {
-			case <-sCtx.Done():
+			b, ok := reader.next(sCtx)
+			if !ok {
 				return
-			case b := <-s.in:
-				_, err := dtlsConn.Write(b)
-				packetPool.Put(b[:cap(b)])
-				if err != nil {
-					dtlsTxDropCount.Add(1)
-					reportErr(fmt.Errorf("DTLS write: %w", err))
-					return
-				}
+			}
+			_, err := dtlsConn.Write(b)
+			packetPool.Put(b[:cap(b)])
+			if err != nil {
+				dtlsTxDropCount.Add(1)
+				reportErr(fmt.Errorf("DTLS write: %w", err))
+				return
 			}
 		}
 	}()
@@ -1078,19 +1093,19 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	go func() {
 		defer wg.Done()
 		defer sCancel()
+		reader := outboundReader{s: s}
 		for {
-			select {
-			case <-sCtx.Done():
+			b, ok := reader.next(sCtx)
+			if !ok {
 				return
-			case b := <-s.in:
-				srtpConn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-				_, err := srtpConn.Write(b)
-				packetPool.Put(b[:cap(b)])
-				if err != nil {
-					dtlsTxDropCount.Add(1)
-					reportErr(fmt.Errorf("SRTP write: %w", err))
-					return
-				}
+			}
+			srtpConn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			_, err := srtpConn.Write(b)
+			packetPool.Put(b[:cap(b)])
+			if err != nil {
+				dtlsTxDropCount.Add(1)
+				reportErr(fmt.Errorf("SRTP write: %w", err))
+				return
 			}
 		}
 	}()
@@ -1170,23 +1185,25 @@ func wgTurnDropCredentials() {
 	invalidateAllCaches()
 }
 
-// wgSetPhysicalNetwork is the Go half of wgSetNetwork: the handle of the network
-// our sockets are now bound to, 0 when Android has no physical network at all.
-// Marks the allocations left behind, moves the sessions to a new network and
-// parks or wakes the workers — see setBoundNetwork.
+// wgTurnReadyStreams is how many TURN streams are carrying the tunnel right now,
+// or -1 when no proxy is running — see stream_census.go.
 //
-//export wgSetPhysicalNetwork
-func wgSetPhysicalNetwork(handle C.longlong) {
-	setBoundNetwork(int64(handle), time.Now())
+//export wgTurnReadyStreams
+func wgTurnReadyStreams() C.int {
+	return C.int(readyStreamCount())
 }
 
-// wgSetRelayTransport says how the relays are reached over the network that
-// wgSetNetwork is reporting — see relay_transport.go. Called ahead of
-// wgSetPhysicalNetwork, so the dials that report sets off already follow it.
+// wgSetNetworkState is the Go half of wgSetNetwork: the handle of the network
+// our sockets are now bound to (0 when Android has no physical network at all)
+// and how its relays are reached (relay_transport.go). Marks the allocations
+// left behind, moves the sessions to a new network or transport and parks or
+// wakes the workers — see setNetworkState. One call, not one per fact: taken
+// apart, a worker could start its next attempt between the two, on half of the
+// new state, and be recycled twice.
 //
-//export wgSetRelayTransport
-func wgSetRelayTransport(choice C.int) {
-	setRelayTransport(int32(choice))
+//export wgSetNetworkState
+func wgSetNetworkState(handle C.longlong, choice C.int) {
+	setNetworkState(int64(handle), int32(choice), time.Now())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

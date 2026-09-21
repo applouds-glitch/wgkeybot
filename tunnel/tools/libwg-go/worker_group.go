@@ -92,6 +92,19 @@ type WorkerGroupConfig struct {
 	PeerType string
 	TurnIP   string
 	TurnPort int
+
+	// Set for the length of one attempt (pinTransport): the transport it was
+	// registered with, so that its server order and every dial of its race read
+	// the same one, whatever the setting does meanwhile.
+	transportPinned bool
+	pinnedTCP       bool
+}
+
+// pinTransport returns cfg for one attempt, tied to the transport it was
+// registered with (see beginAttempt).
+func (cfg WorkerGroupConfig) pinTransport(overTCP bool) WorkerGroupConfig {
+	cfg.transportPinned, cfg.pinnedTCP = true, overTCP
+	return cfg
 }
 
 // WorkerGroup runs the streams for one VK link using an error-driven, per-worker
@@ -137,10 +150,10 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 // times in a row. Giving up is reported through reportWorkerGaveUp, which
 // escalates to a user-visible terminal failure once no worker is left.
 //
-// Every stream runs on the same TURN server — the elected one, or the first in
-// canonical order until the election has run (see assignServers). The other
-// servers are failover only: runWithCreds dials them just for this attempt, and
-// only after the assigned one errors. failStreak only
+// UDP streams prefer the elected TURN server (see assignServers). TCP streams
+// spread their preferred relays by stream ID (see assignTCPServers). Remaining
+// candidates are tried if the preferred relay fails or exceeds its head start.
+// failStreak only
 // counts consecutive connect failures to drive the retry backoff. A session
 // that stayed up for a while (or was closed cleanly by the server) resets the
 // streak for a fast retry.
@@ -153,7 +166,7 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		}
 	}
 
-	failStreak := 0
+	var st workerBackoff
 	credFailStreak := 0 // consecutive credential fetches that failed for any reason
 	for {
 		// Parked while there is no physical network at all (network_availability.go).
@@ -236,132 +249,210 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 		// Apply optional manual TurnIP/TurnPort override to the fetched list.
 		addrs = applyTurnOverride(addrs, cfg)
 
-		// Where this stream runs: the session's elected server once one is
-		// chosen, otherwise the first server in canonical order. The rest of the
-		// list follows only as failover for this attempt. Relays still holding
-		// allocations this credential lost with a network go last.
-		addrs = attemptOrder(user, addrs, time.Now())
-		attemptHead := addrs[0]
-
-		start := time.Now()
-		attemptCtx, endAttempt := beginNetworkAttempt(ctx)
-		runErr := s.runWithCreds(attemptCtx, user, pass, addrs, cfg)
-		moved := endAttempt()
-		sessionDur := time.Since(start)
-
-		if ctx.Err() != nil {
-			return
-		}
-		if moved {
-			// Recycled by a move to another network (see network_switch.go): not a
-			// failure of anything, so reconnect over the new one at once.
-			failStreak = 0
-			continue
-		}
-		if !isNetworkAvailable() {
-			// Skip per-worker retry delays while offline; the gate above resumes
-			// the moment a physical network is back.
-			continue
-		}
-
-		if runErr == nil {
-			// runWithCreds returned nil while the tunnel is still up: the TURN
-			// server closed this stream. Reconnect just this worker (racing the
-			// servers afresh) after a brief delay, with the backoff reset (avoids
-			// a hot loop if the server keeps closing immediately).
-			turnLog("[WORKER %d] Stream closed by server → reconnecting", s.id)
-			failStreak = 0
-			select {
-			case <-time.After(time.Duration(500+rand.Intn(500)) * time.Millisecond):
-			case <-ctx.Done():
-				return
-			}
-			continue
-		}
-
-		// A 486 right after our own release on one of these relays is VK not
-		// having processed that release yet, not a full credential: try the same
-		// one again shortly, without rotating it or cooling down, and without
-		// counting a failure (see releaseSettleWindow).
-		if relay, age, ok := settlingQuotaError(runErr, user, addrs, time.Now()); ok {
-			wait := releaseSettleRetry()
-			turnLog("[WORKER %d] 486 with our release on %s only %v old — VK has not freed it yet, same creds again in %v",
-				s.id, relay, age.Round(100*time.Millisecond), wait.Round(100*time.Millisecond))
-			select {
-			case <-time.After(wait):
-			case <-ctx.Done():
-				return
-			}
-			continue
-		}
-
-		// Auth/quota error → throttled, single-flight credential re-fetch so the
-		// next iteration picks up a fresh credential. Healthy siblings untouched.
-		// Every other error is transient from this worker's point of view: it
-		// reconnects (with backoff) rather than giving up, so a stream always
-		// recovers on its own — WireGuard and the sibling streams keep running
-		// while just this stream is recreated.
-		if classifyCredError(runErr) {
-			refreshGroupCreds(cfg.GroupID)
-		}
-
-		// A session that stayed up for a while was healthy; treat its drop as a
-		// fresh failure (reset the backoff) rather than as part of a failure
-		// streak.
-		if sessionDur > 60*time.Second {
-			failStreak = 0
-		} else {
-			failStreak++
-		}
-
-		// A failure on a server the next attempt will not even dial is not a
-		// repeat of the same failure: the election (or a stand-down) has just
-		// moved this stream to a different host, and that host deserves a first
-		// attempt, not the backoff the dead one earned. Without this a stream
-		// that failed twice on a dead relay waited 7-17s before trying the
-		// working one — most of TunnelManager's 25s connect budget, spent
-		// sleeping next to a server that was already known to work.
-		if attemptOrder(user, addrs, time.Now())[0] != attemptHead {
-			failStreak = 0
-		}
-
-		retryDelay := reconnectDelay(failStreak)
-		note := ""
-		// 486 (TURN allocation quota) after a mass teardown — say a host freeze
-		// past the relay idle timeout, or a second network drop within ten
-		// minutes, where the server-side allocations survive as ghosts still
-		// holding the credential's quota — needs a new credential.
-		//
-		// If this credential has already been replaced — this worker's
-		// refreshGroupCreds above force-expired the slot, or a sibling's did, or
-		// the new one is already in — the 486 says nothing about the next
-		// attempt, which runs on another identity. Retry at once: the first
-		// worker back fetches the new credential (the slot lock single-flights
-		// it), the rest take it from the cache. The rotation is lazy — nothing
-		// fetches until a worker comes back for it — so the long cooldown here
-		// only postponed the fetch: on the device on 2026-09-18 the new
-		// credential was requested 5.2s after the rotation, the last stream came
-		// back 15s after the network did.
-		//
-		// A 486 on the credential that is still current (the rotation was
-		// throttled: it is the one fetched moments ago) gets the long jittered
-		// cooldown, so a quota that stays full is not hammered in lockstep.
-		if isQuotaError(runErr) {
-			if credsReplaced(cfg.GroupID, user) {
-				failStreak = 0
-				retryDelay = reconnectDelay(failStreak)
-				note = " (on replaced creds)"
-			} else {
-				retryDelay = quotaCooldown()
-			}
-		}
-		turnErrorLog("[WORKER %d] Error (streak %d): %v → retry in %v%s", s.id, failStreak, runErr, retryDelay, note)
-		select {
-		case <-time.After(retryDelay):
-		case <-ctx.Done():
+		if s.attemptOnce(ctx, cfg, user, pass, addrs, &st) {
 			return
 		}
 	}
+}
+
+// workerWaits is called as a worker goes into the wait before its next attempt.
+// A seam for the tests, which have to know the worker is in that wait and not
+// still on its way there.
+var workerWaits = func(streamID int, delay time.Duration, wakeable bool) {}
+
+// workerBackoff is what one attempt leaves for the next.
+type workerBackoff struct {
+	failStreak int
+	// The credential that has had its one more try after a 486 beside a relay
+	// that never answered (see quotaBesideSilence).
+	quotaGraceUsed string
+}
+
+// attemptOnce runs one attempt of the worker's loop — the session, and the wait
+// before the next one — and reports whether the worker is to stop.
+//
+// The attempt stays registered (beginAttempt) until the wait is over, not
+// just while the session runs: a move to another network or to another relay
+// transport recycles it either way, and a worker sitting out a reconnect delay
+// is woken by that the same as one in a session — the delay belonged to a path
+// that is no longer the one in use.
+func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, pass string, addrs []string, st *workerBackoff) (stop bool) {
+	// TCP spreads preferred relays; UDP keeps the election. Health and
+	// orphaned allocations override either preference. Keep the full list
+	// for the later retry decision, including relays that recover meanwhile.
+	//
+	// Registered first: the order below and the dials after it have to follow
+	// the transport the attempt is tagged with.
+	attempt := beginAttempt(ctx, cfg)
+	defer attempt.end()
+	attemptCfg := cfg.pinTransport(attempt.overTCP)
+
+	ordered := streamAttemptOrder(user, addrs, s.id, attemptCfg, time.Now())
+	attemptHead := ordered[0]
+
+	// The session and its race get a context of their own, ended with them: a
+	// racer still hanging in an Allocate counts against its relay only while
+	// this is alive (dialOpts.session), and the attempt now outlives the session
+	// by the length of the wait below.
+	start := time.Now()
+	runCtx, endRun := context.WithCancel(attempt.ctx)
+	runErr := s.runWithCreds(runCtx, user, pass, ordered, attemptCfg)
+	endRun()
+	sessionDur := time.Since(start)
+
+	if ctx.Err() != nil {
+		return true
+	}
+	if attempt.moved() {
+		// Recycled by a move to another network or relay transport (see
+		// network_switch.go): not a failure of anything, so reconnect over the
+		// new one at once.
+		st.failStreak = 0
+		return false
+	}
+	if !isNetworkAvailable() {
+		// Skip per-worker retry delays while offline; the gate above resumes
+		// the moment a physical network is back.
+		return false
+	}
+
+	if runErr == nil {
+		// runWithCreds returned nil while the tunnel is still up: the TURN
+		// server closed this stream. Reconnect just this worker (racing the
+		// servers afresh) after a brief delay, with the backoff reset (avoids
+		// a hot loop if the server keeps closing immediately).
+		turnLog("[WORKER %d] Stream closed by server → reconnecting", s.id)
+		st.failStreak = 0
+		select {
+		case <-time.After(time.Duration(500+rand.Intn(500)) * time.Millisecond):
+		case <-ctx.Done():
+			return true
+		}
+		return false
+	}
+
+	// A 486 right after our own release on one of these relays is VK not
+	// having processed that release yet, not a full credential: try the same
+	// one again shortly, without rotating it or cooling down, and without
+	// counting a failure (see releaseSettleWindow).
+	if relay, age, ok := settlingQuotaError(runErr, user, ordered, time.Now()); ok {
+		wait := releaseSettleRetry()
+		turnLog("[WORKER %d] 486 with our release on %s only %v old — VK has not freed it yet, same creds again in %v",
+			s.id, relay, age.Round(100*time.Millisecond), wait.Round(100*time.Millisecond))
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return true
+		}
+		return false
+	}
+
+	// Auth/quota error → throttled, single-flight credential re-fetch so the
+	// next iteration picks up a fresh credential. Healthy siblings untouched.
+	// Every other error is transient from this worker's point of view: it
+	// reconnects (with backoff) rather than giving up, so a stream always
+	// recovers on its own — WireGuard and the sibling streams keep running
+	// while just this stream is recreated.
+	//
+	// One exception, once per credential: a 486 from one relay while another's
+	// Allocate ended without a TURN answer is tried again as it is before VK
+	// is asked for anything (quotaGraceApplies).
+	graced := false
+	if quota, silent, ok := quotaGraceApplies(runErr, user, st.quotaGraceUsed, credsReplaced(cfg.GroupID, user)); ok {
+		st.quotaGraceUsed = user
+		graced = true
+		turnLog("[WORKER %d] 486 from %s while %s gave no answer — one more try on the same creds before they are given up",
+			s.id, quota, silent)
+	}
+	if !graced && classifyCredError(runErr) {
+		refreshGroupCreds(cfg.GroupID, user)
+	}
+
+	// A session that stayed up for a while was healthy; treat its drop as a
+	// fresh failure (reset the backoff) rather than as part of a failure
+	// streak.
+	if sessionDur > 60*time.Second {
+		st.failStreak = 0
+	} else {
+		st.failStreak++
+	}
+
+	// A failure on a server the next attempt will not even dial is not a
+	// repeat of the same failure: the election (or a stand-down) has just
+	// moved this stream to a different host, and that host deserves a first
+	// attempt, not the backoff the dead one earned. Without this a stream
+	// that failed twice on a dead relay waited 7-17s before trying the
+	// working one — most of TunnelManager's 25s connect budget, spent
+	// sleeping next to a server that was already known to work.
+	retryCandidates := ordered // preserve the UDP election's retry policy
+	if relayOverTCP(cfg) {
+		retryCandidates = addrs
+	}
+	if streamAttemptOrder(user, retryCandidates, s.id, cfg, time.Now())[0] != attemptHead {
+		st.failStreak = 0
+	}
+
+	retryDelay := reconnectDelay(st.failStreak)
+	note := ""
+	// Whether a move to another network or relay transport ends the wait below:
+	// an ordinary reconnect delay was earned on a path that is then no longer
+	// the one in use.
+	wakeable := true
+	// 486 (TURN allocation quota) after a mass teardown — say a host freeze
+	// past the relay idle timeout, or a second network drop within ten
+	// minutes, where the server-side allocations survive as ghosts still
+	// holding the credential's quota — needs a new credential.
+	//
+	// If this credential has already been replaced — this worker's
+	// refreshGroupCreds above force-expired the slot, or a sibling's did, or
+	// the new one is already in — the 486 says nothing about the next
+	// attempt, which runs on another identity. Retry at once: the first
+	// worker back fetches the new credential (the slot lock single-flights
+	// it), the rest take it from the cache. The rotation is lazy — nothing
+	// fetches until a worker comes back for it — so the long cooldown here
+	// only postponed the fetch: on the device on 2026-09-18 the new
+	// credential was requested 5.2s after the rotation, the last stream came
+	// back 15s after the network did.
+	//
+	// A 486 on the credential that is still current (the rotation was
+	// throttled: it is the one fetched moments ago) gets the long jittered
+	// cooldown, so a quota that stays full is not hammered in lockstep.
+	if graced {
+		// At once, whatever the streak: this is the try the credential is owed.
+		retryDelay = reconnectDelay(0)
+		note = " (one more try on these creds)"
+	} else if isQuotaError(runErr) {
+		if credsReplaced(cfg.GroupID, user) {
+			st.failStreak = 0
+			retryDelay = reconnectDelay(st.failStreak)
+			note = " (on replaced creds)"
+		} else {
+			retryDelay = quotaCooldown()
+			// Not cut short by a change of transport: the quota is the
+			// credential's on the relay, however the relay is reached.
+			wakeable = false
+		}
+	}
+	turnErrorLog("[WORKER %d] Error (streak %d): %v → retry in %v%s", s.id, st.failStreak, runErr, retryDelay, note)
+	var recycled <-chan struct{}
+	if wakeable {
+		recycled = attempt.ctx.Done()
+	}
+	workerWaits(s.id, retryDelay, wakeable)
+	select {
+	case <-time.After(retryDelay):
+	case <-recycled:
+		if ctx.Err() != nil {
+			return true
+		}
+		turnLog("[WORKER %d] the network or the relay transport changed — reconnecting now instead of in %v", s.id, retryDelay)
+	case <-ctx.Done():
+		return true
+	}
+	if attempt.moved() {
+		st.failStreak = 0
+	}
+	return false
 }
 
 const (

@@ -1,26 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- WGKeyBot Connect screen — dark palette -->
-    <color name="wgk_primary">#FFA4C9FE</color>
-    <color name="wgk_on_primary">#FF002F66</color>
+    <color name="wgk_primary">@color/md_theme_dark_primary</color>
+    <color name="wgk_on_primary">@color/md_theme_dark_onPrimary</color>
     <color name="wgk_success">#FF88D8A3</color>
     <color name="wgk_on_success">#FF003917</color>
-    <color name="wgk_background">#FF0D0F12</color>
-    <color name="wgk_surface">#FF111317</color>
-    <color name="wgk_on_surface">#FFE3E2E6</color>
-    <color name="wgk_on_surface_variant">#FFB7B9C0</color>
-    <color name="wgk_surface_container_low">#FF15171B</color>
-    <color name="wgk_surface_container">#FF191B20</color>
-    <color name="wgk_surface_container_high">#FF222428</color>
-    <color name="wgk_outline">#FF44474E</color>
-    <color name="wgk_outline_variant">#FF2A2D31</color>
+    <color name="wgk_background">@color/md_theme_dark_background</color>
+    <color name="wgk_surface">@color/md_theme_dark_surface</color>
+    <color name="wgk_on_surface">@color/md_theme_dark_onSurface</color>
+    <color name="wgk_on_surface_variant">@color/md_theme_dark_onSurfaceVariant</color>
+    <color name="wgk_surface_container_low">@color/md_theme_dark_surfaceContainerLow</color>
+    <color name="wgk_surface_container">@color/md_theme_dark_surfaceContainer</color>
+    <color name="wgk_surface_container_high">@color/md_theme_dark_surfaceContainerHigh</color>
+    <color name="wgk_outline">@color/md_theme_dark_outline</color>
+    <color name="wgk_outline_variant">@color/md_theme_dark_outlineVariant</color>
     <color name="wgk_primary_12">#1FA4C9FE</color>
     <color name="wgk_primary_30">#4DA4C9FE</color>
     <color name="wgk_warning">#FFFFB870</color>
     <color name="wgk_error">#FFFFB4AB</color>
-    <color name="wgk_top_bar">#FF191B20</color>
+    <color name="wgk_top_bar">@color/wgk_background</color>
     <color name="wgk_version_stamp">#FF3B3E45</color>
 
-    <!-- Darker widget background for the system dark theme. -->
-    <color name="widget_bg">#E60A0C10</color>
+    <color name="wgk_card_surface">@color/wgk_surface_container</color>
+    <color name="wgk_card_outline">#FF2A2D31</color>
+    <color name="wgk_footer_surface">@color/wgk_card_surface</color>
+    <color name="wgk_info_surface">@color/wgk_card_surface</color>
+    <!-- v1.6.0 connect control; keep these independent of the new surface palette. -->
+    <color name="wgk_connect_idle_container">#222428</color>
+    <color name="wgk_connect_idle_content">#B7B9C0</color>
+    <color name="wgk_connect_busy_content">#002F66</color>
+    <color name="wgk_on_surface_muted">#95A0B0</color>
+    <color name="wgk_text_field_surface">@color/wgk_card_surface</color>
+    <color name="wgk_stage_idle_label">@color/wgk_on_surface_muted</color>
+
+    <color name="wgk_divider">#2C313A</color>
+    <color name="wgk_icon_tile">@android:color/transparent</color>
+    <color name="wgk_leading_icon">@color/wgk_on_surface_variant</color>
+    <!-- v1.6.0 rings: low-contrast strokes, fading out through the view alphas. -->
+    <color name="wgk_halo_inner">#2A2D31</color>
+    <color name="wgk_halo_mid">#2A2D31</color>
+    <color name="wgk_halo_outer">#2A2D31</color>
+
+    <color name="widget_bg">@color/wgk_surface_container</color>
 </resources>

@@ -16,6 +16,7 @@ import com.wireguard.android.R
 import com.wireguard.android.fragment.TunnelListFragment
 import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.util.ConnectionImport
+import com.wireguard.android.util.ConnectionImportErrors
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -75,7 +76,7 @@ class TvMainActivity : AppCompatActivity() {
                 listFragment.applyConnection(prepared)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
-                Toast.makeText(this@TvMainActivity, R.string.wgk_connection_import_error, Toast.LENGTH_LONG).show()
+                Toast.makeText(this@TvMainActivity, ConnectionImportErrors.message(this@TvMainActivity, e), Toast.LENGTH_LONG).show()
             }
         }
     }
