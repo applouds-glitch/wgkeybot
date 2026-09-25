@@ -173,6 +173,13 @@ type stream struct {
 	// dispatchStale); the transports own it and replace it per session.
 	activity atomic.Pointer[streamActivity]
 
+	// sendStalled says the TCP connection under this stream's session has stopped
+	// taking what we send: its head segment has timed out unanswered
+	// relayStallSkipTimeouts times in a row. The relay can still be heard — the
+	// field log of 22.09 showed the direction up dying alone — so dispatchStale
+	// never sees it. Kept by relaySockets (relay_tcp_watch.go); false over UDP.
+	sendStalled atomic.Bool
+
 	// control is the downlink-feedback (WGH1) state of the transport attempt
 	// running now; nil when feedback is off or between attempts. See
 	// downlink_feedback.go.
@@ -427,7 +434,6 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	}
 
 	hasWrap := s.wrapKey != nil
-	turnLog("[STREAM %d] NoDTLS mode (wrap=%v) — %s", s.id, hasWrap, peer)
 
 	// Closed by the RX goroutine on the first packet the relay hands back that
 	// survives the peer and WRAP checks. That packet is the whole proof this
@@ -448,7 +454,6 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		if hErr := s.sendSessionHSBurst(relayConn, peer, sessionHS, hasWrap); hErr != nil {
 			return fmt.Errorf("%w: %w", errDataPlaneHandshake, hErr)
 		}
-		turnLog("[STREAM %d] Session handshake burst sent", s.id)
 	}
 
 	// Cancelling sCtx (watchdog, error, parent stop) closes the relay conn so
@@ -873,7 +878,6 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		}
 	}()
 
-	turnLog("[STREAM %d] DTLS handshake...", s.id)
 	// The handshake FSM watches this context between flights, so the timeout
 	// cuts a blackholed relay off at dataPlaneHandshakeTimeout wherever it is
 	// in the retransmit schedule.
@@ -1035,7 +1039,6 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// relay on ctx cancel unblocks it so the session tears down cleanly.
 	context.AfterFunc(sCtx, func() { relayConn.Close() })
 
-	turnLog("[STREAM %d] SRTP handshake...", s.id)
 	hsCtx, hsCancel := context.WithTimeout(sCtx, dataPlaneHandshakeTimeout)
 	srtpConn, err := srtpwrap.Client(hsCtx, relayConn, peer)
 	hsCancel()
@@ -1336,8 +1339,10 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	}
 	setStreamsPerCred(perCred)
 
-	turnLog("[PROXY] Starting: listen=%s StreamNum=%d streamsPerGroup=%d links=%d actualTotal=%d mode=%s peerType=%s watchdog=%ds",
-		listenAddr, int(n), perCred, len(links), totalStreams, mode, peerType, watchdogTimeout)
+	// Peer and WRAP are said once here rather than on every stream session:
+	// they cannot change until the next start.
+	turnLog("[PROXY] Starting: listen=%s StreamNum=%d streamsPerGroup=%d links=%d actualTotal=%d mode=%s peerType=%s peer=%s wrap=%v watchdog=%ds",
+		listenAddr, int(n), perCred, len(links), totalStreams, mode, peerType, peerAddr, wrapKey != nil, watchdogTimeout)
 
 	// ── DNS resolution ────────────────────────────────────────────────────────
 	peer, err := resolvePeer(peerAddr)

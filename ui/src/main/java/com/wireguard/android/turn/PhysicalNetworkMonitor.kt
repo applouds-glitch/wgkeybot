@@ -99,7 +99,7 @@ class PhysicalNetworkMonitor(context: Context) {
      * "unknown" when neither can be read.
      *
      * Every TURN packet leaves through this interface wrapped several times over
-     * (see TurnConfigProcessor.TURN_MAX_MTU), so this is the number to compare with
+     * (see TurnConfigProcessor.TURN_DEFAULT_MTU), so this is the number to compare with
      * the tunnel MTU when big transfers stall while handshakes still pass.
      */
     fun mtuOf(network: Network?): String {

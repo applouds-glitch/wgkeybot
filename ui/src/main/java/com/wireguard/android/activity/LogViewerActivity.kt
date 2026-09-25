@@ -44,13 +44,14 @@ import com.wireguard.android.util.localeWrapped
 import com.wireguard.android.databinding.LogViewerActivityBinding
 import com.wireguard.android.util.DownloadsFileSaver
 import com.wireguard.android.util.ErrorMessages
+import com.wireguard.android.util.LogExport
+import com.wireguard.android.util.PersistentLog
 import com.wireguard.android.util.resolveAttribute
 import com.wireguard.crypto.KeyPair
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
-import java.io.ByteArrayOutputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStreamReader
@@ -172,23 +173,14 @@ class LogViewerActivity : AppCompatActivity() {
     private val downloadsFileSaver = DownloadsFileSaver(this)
 
     // The kept app log goes first: it is the part that still has the session's
-    // start in it. The device logcat follows as before — it has everything else
-    // (system events, other tags), but only for as long as the ROM let it live.
+    // start in it. The device logcat follows — system events and other tags,
+    // for only as long as the ROM let them live. Both are cut to their newest
+    // part (see PersistentLog.EXPORT_BYTES); the whole kept log stays on the device.
     private suspend fun rawLogBytes(): ByteArray = withContext(Dispatchers.IO) {
-        val out = ByteArrayOutputStream()
-        val kept = Application.getPersistentLog().snapshot()
-        if (kept.isNotEmpty()) {
-            out.write("===== app log kept on device (WireGuard/* and crashes) =====\n".toByteArray(Charsets.UTF_8))
-            out.write(kept)
-            out.write("===== device logcat (all tags, as far back as the device kept it) =====\n".toByteArray(Charsets.UTF_8))
-        }
-        val builder = StringBuilder()
-        for (i in 0 until rawLogLines.size()) {
-            builder.append(rawLogLines[i])
-            builder.append('\n')
-        }
-        out.write(builder.toString().toByteArray(Charsets.UTF_8))
-        out.toByteArray()
+        val kept = Application.getPersistentLog().tail(PersistentLog.EXPORT_BYTES)
+        val device = ArrayList<String>(rawLogLines.size())
+        for (i in 0 until rawLogLines.size()) device.add(rawLogLines[i])
+        LogExport.compose(kept, device)
     }
 
     private suspend fun saveLog() {

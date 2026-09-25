@@ -568,7 +568,10 @@ func newWrappedConn(underlay net.PacketConn, remote net.Addr, dconn *dtls.Conn,
 	if err != nil {
 		return nil, fmt.Errorf("srtpwrap: enc context: %w", err)
 	}
-	decCtx, err := srtp.CreateContext(cfg.Keys.RemoteMasterKey, cfg.Keys.RemoteMasterSalt, cfg.Profile)
+	// CreateContext disables replay protection by default. Match Pion's
+	// session receive window, allowing reordering while rejecting replays.
+	decCtx, err := srtp.CreateContext(cfg.Keys.RemoteMasterKey, cfg.Keys.RemoteMasterSalt, cfg.Profile,
+		srtp.SRTPReplayProtection(64))
 	if err != nil {
 		return nil, fmt.Errorf("srtpwrap: dec context: %w", err)
 	}

@@ -110,3 +110,46 @@ func TestCaptchaSessionExhaustedDoesNotTreatGenericGetContentErrorAsRateLimit(t 
 		t.Fatal("ERROR_LIMIT must be treated as an exhausted captcha session")
 	}
 }
+
+// Every page format VK has shipped the challenge in. The 2026-09-25 build
+// switched the solver's IIFE arguments to single quotes and appended the probe
+// list; the old pattern found nothing, and every auto solve fell back to the
+// WebView.
+func TestParseCaptchaBootstrapPowArgs(t *testing.T) {
+	const solverBody = `(function(a,b,c,d){window['captchaPowResult']='v2.'+f({'hash':h,'nonce':n,'error':c});}`
+	cases := []struct {
+		name  string
+		html  string
+		input string
+		diff  int
+		v2    bool
+	}{
+		{
+			name:  "double quotes",
+			html:  `<script>` + solverBody + `("71nXj0guqjgqJj9H", 2, "pow_timeout");</script>`,
+			input: "71nXj0guqjgqJj9H", diff: 2, v2: true,
+		},
+		{
+			name:  "single quotes with probe list",
+			html:  `<script>` + solverBody + `('OZBQTlTFu7O8xTKN',3,'pow_timeout',["sandbox_behavior","match_media","globals"]));` + "\n\n\n</script>",
+			input: "OZBQTlTFu7O8xTKN", diff: 3, v2: true,
+		},
+		{
+			name:  "legacy const",
+			html:  `<script>const powInput = "legacyChallenge"; const difficulty = 4;</script>`,
+			input: "legacyChallenge", diff: 4, v2: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseCaptchaBootstrapHTML(tc.html)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got.PowInput != tc.input || got.Difficulty != tc.diff || got.PowV2 != tc.v2 {
+				t.Fatalf("got input=%q difficulty=%d v2=%t, want %q %d %t",
+					got.PowInput, got.Difficulty, got.PowV2, tc.input, tc.diff, tc.v2)
+			}
+		})
+	}
+}

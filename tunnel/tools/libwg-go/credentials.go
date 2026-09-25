@@ -8,6 +8,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,8 +39,9 @@ type StreamCredentialsCache struct {
 const (
 	// credentialLifetime is the fallback TTL used when the VK API reports no
 	// lifetime of its own — which is what it always does in practice
-	// (api_ttl=0s in every "Credentials cached until" log line), so this is the
-	// TTL. It is deliberately generous: guessing low is the expensive mistake.
+	// (api_ttl=0s in every "Credentials … cached for" log line) — and the
+	// username carries no expiry stamp either (credentialExpiryFromUsername).
+	// It is deliberately generous: guessing low is the expensive mistake.
 	// A stream that dies after more than one TTL forces a full four-step VK
 	// re-auth even though the credential is demonstrably still good (logs show
 	// cache slots living 46m and 3h between fetches), and every extra VK
@@ -49,6 +52,13 @@ const (
 	// TTL and let the error path drive the re-fetch.
 	credentialLifetime = 60 * time.Minute
 	cacheSafetyMargin  = 60 * time.Second
+	// credentialExpiryBuffer is subtracted from the expiry VK stamps into the
+	// TURN username (see credentialExpiryFromUsername). pion refreshes every
+	// allocation at half its lifetime, so a credential that expires mid-session
+	// costs a 401 on that refresh, a stream restart and a VK trip; stop handing
+	// it out well before that. VK's usernames carry an expiry hours away, so the
+	// buffer costs nothing in practice.
+	credentialExpiryBuffer = 15 * time.Minute
 	// credRefreshThrottle is the minimum gap between error-driven credential
 	// re-fetches for one cache slot. The first worker in a slot that hits an
 	// auth/quota error force-expires the slot; siblings that fail within this
@@ -230,9 +240,9 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
+	// A hit is not logged: every stream of the group takes one on every
+	// reconnect, and the dial line names the credential it got.
 	if cache.creds.Link == link && time.Now().Before(cache.creds.ExpiresAt) {
-		ttl := time.Until(cache.creds.ExpiresAt).Round(time.Second)
-		turnLog("[STREAM %d] Cache hit (cache=%d, ttl=%v)", streamID, cacheID, ttl)
 		return cache.creds.Username, cache.creds.Password, cache.creds.ServerAddrs, nil
 	}
 
@@ -253,7 +263,8 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 		return "", "", nil, err
 	}
 
-	// Compute ExpiresAt from the real API lifetime; fall back to credentialLifetime.
+	// Compute ExpiresAt from the real API lifetime, else from the expiry VK
+	// stamps into the username; fall back to credentialLifetime.
 	expiry := time.Now().Add(credentialLifetime - cacheSafetyMargin)
 	if lifetimeSecs > int(cacheSafetyMargin.Seconds()) {
 		d := time.Duration(lifetimeSecs)*time.Second - cacheSafetyMargin
@@ -261,6 +272,8 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 			d = time.Duration(defaultCycleSecs) * time.Second
 		}
 		expiry = time.Now().Add(d)
+	} else if until, ok := credentialExpiryFromUsername(user); ok {
+		expiry = credentialCacheExpiry(until, time.Now())
 	}
 
 	cache.creds = TurnCredentials{
@@ -271,7 +284,47 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 		FetchedAt:   time.Now(),
 		Link:        link,
 	}
-	turnLog("[STREAM %d] Credentials cached until %v (cache=%d, api_ttl=%ds)",
-		streamID, cache.creds.ExpiresAt.Format("15:04:05"), cacheID, lifetimeSecs)
+	// A lifetime, not a wall-clock time: Go on Android formats in UTC, while
+	// logcat stamps the line in local time, so "until 04:55" on a line stamped
+	// 06:56 read as creds that had expired two hours ago.
+	turnLog("[STREAM %d] Credentials %s cached for %v (cache=%d, api_ttl=%ds)",
+		streamID, credsTag(user), time.Until(cache.creds.ExpiresAt).Round(time.Second), cacheID, lifetimeSecs)
 	return user, pass, addrs, nil
+}
+
+// credentialExpiryFromUsername reads the expiry VK's TURN REST service stamps
+// into the username: "<unix seconds>:<key id>" (draft-uberti-behave-turn-rest).
+// VK's JSON never reports a lifetime (api_ttl=0s in every log line), so this
+// stamp is the only statement VK makes about how long the credential lives —
+// typically hours, against the one-hour guess credentialLifetime falls back
+// to. Every hour shaved off a good credential is one more VK round trip, and
+// every VK round trip is captcha exposure. A username without the stamp, or
+// with an unparsable one, simply reports false and the fallback applies.
+func credentialExpiryFromUsername(username string) (time.Time, bool) {
+	stamp, _, found := strings.Cut(username, ":")
+	if !found || stamp == "" {
+		return time.Time{}, false
+	}
+	secs, err := strconv.ParseInt(stamp, 10, 64)
+	if err != nil || secs <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(secs, 0), true
+}
+
+// credentialCacheExpiry turns the stamped expiry into a cache deadline: the
+// stamp minus credentialExpiryBuffer, never beyond defaultCycleSecs, and never
+// before now. A stamp already inside the buffer is not a reason to refuse the
+// credential — the relay still takes it, and a 401 on the next attempt is the
+// cheap, bounded outcome the fallback TTL already accepts — so such a
+// credential is cached for the ordinary fallback lifetime instead.
+func credentialCacheExpiry(until, now time.Time) time.Time {
+	expiry := until.Add(-credentialExpiryBuffer)
+	if cap := now.Add(time.Duration(defaultCycleSecs) * time.Second); expiry.After(cap) {
+		expiry = cap
+	}
+	if !expiry.After(now) {
+		return now.Add(credentialLifetime - cacheSafetyMargin)
+	}
+	return expiry
 }

@@ -493,10 +493,12 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 	if overTCP && !awaitRelayConnectSlot(ctx, addr) {
 		return nil, nil, nil, 0, nil, ctx.Err()
 	}
+	// The credential's tag says which generation this dial runs on — the one
+	// fact the per-stream cache-hit line used to carry.
 	if overTCP {
-		turnLog("[STREAM %d] Dial TURN %s over TCP (group %d)", s.id, addr, cfg.GroupID)
+		turnLog("[STREAM %d] Dial TURN %s over TCP (group %d, creds %s)", s.id, addr, cfg.GroupID, credsTag(user))
 	} else {
-		turnLog("[STREAM %d] Dial TURN %s (group %d)", s.id, addr, cfg.GroupID)
+		turnLog("[STREAM %d] Dial TURN %s (group %d, creds %s)", s.id, addr, cfg.GroupID, credsTag(user))
 	}
 	dialStart := time.Now()
 	perm := newPermWatch(s.id)
@@ -672,12 +674,11 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// (relay_tcp_watch.go). Deferred last, so it is let go before anything above
 	// closes it.
 	if tc := relayTCPConn(w.raw); tc != nil {
-		relaySockets.register(s.id, w.addr, tc)
-		defer func() { relaySockets.unregister(s.id, tc, time.Now()) }()
+		relaySockets.register(s, w.addr, tc)
+		defer func() { relaySockets.unregister(tc, time.Now()) }()
 	}
 
-	turnLog("[STREAM %d] TURN %s rtt=%v (group %d)", s.id, w.addr, w.rtt, cfg.GroupID)
-	turnLog("[STREAM %d] Relay: %s", s.id, w.relay.LocalAddr())
+	turnLog("[STREAM %d] TURN %s rtt=%v (group %d), relayed address %s", s.id, w.addr, w.rtt, cfg.GroupID, w.relay.LocalAddr())
 
 	// Blackhole watchdog. When permWatch declares the allocation dead, close the
 	// relay: that is the one handle all three transports block on, so whichever

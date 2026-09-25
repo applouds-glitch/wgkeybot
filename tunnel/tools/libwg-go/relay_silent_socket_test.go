@@ -22,9 +22,10 @@ func TestSilentStreamOverTCPGetsItsSocketDescribed(t *testing.T) {
 		sndMSS: 1228, rcvMSS: 1228, pathMTU: 1460,
 	}
 	w.sample = func(*net.TCPConn) (relaySocketSample, bool) { return cur, true }
-	w.register(4, "193.203.43.23:19302", conn)
+	four := &stream{id: 4}
+	w.register(four, "193.203.43.23:19302", conn)
 
-	line := w.silentSocketLine(4)
+	line := w.silentSocketLine(four)
 	for _, want := range []string{
 		"[TCP] stream 4 (193.203.43.23:19302)", "last data from the relay 36.2s ago", "last ACK 900ms ago",
 		"nothing of ours unacknowledged", "300 KB received", "mss 1228 out / 1228 in", "path mtu 1460",
@@ -35,16 +36,16 @@ func TestSilentStreamOverTCPGetsItsSocketDescribed(t *testing.T) {
 	}
 
 	cur.backlog, cur.timeouts = 84*1024, 5
-	line = w.silentSocketLine(4)
+	line = w.silentSocketLine(four)
 	if !strings.Contains(line, "up to 84 KB of ours unacknowledged after 5 timeout(s) in a row") {
 		t.Fatalf("the outstanding data is not in %q", line)
 	}
 
-	if got := w.silentSocketLine(7); got != "" {
+	if got := w.silentSocketLine(&stream{id: 7}); got != "" {
 		t.Fatalf("a stream with no TCP socket got %q", got)
 	}
 	w.sample = func(*net.TCPConn) (relaySocketSample, bool) { return relaySocketSample{}, false }
-	if got := w.silentSocketLine(4); got != "" {
+	if got := w.silentSocketLine(four); got != "" {
 		t.Fatalf("an unreadable socket got %q", got)
 	}
 }
@@ -62,7 +63,7 @@ func TestStaleWatchAddsTheSocketLine(t *testing.T) {
 	quiet := dispatchStream(0, true, now, 8)
 	fresh := dispatchStream(1, true, now, 8)
 	streams := []*stream{quiet, fresh}
-	relaySockets.register(quiet.id, "relay:19302", &net.TCPConn{})
+	relaySockets.register(quiet, "relay:19302", &net.TCPConn{})
 	w := newStaleWatch(len(streams))
 
 	later := now.Add(dispatchStaleAfter + time.Second)

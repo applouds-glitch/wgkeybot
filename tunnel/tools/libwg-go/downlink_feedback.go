@@ -127,21 +127,26 @@ func (r *downlinkReporter) update(streams []*stream, now time.Time) {
 	}
 	r.seq++
 	sent := 0
-	for _, s := range streams {
-		c := s.control.Load()
-		if !s.ready.Load() || c == nil || !c.capable.Load() {
-			continue
-		}
-		// If all paths are stale, explicitly clear the preference via any
-		// remaining uplink. The server also expires lost reports on its own.
-		if mask != (feedbackMask{}) && (s.id < 0 || s.id > 255 || !mask.contains(byte(s.id))) {
-			continue
-		}
-		if s.enqueueControl(feedbackPacket(feedbackReport, c.nonce, r.seq, mask)) {
-			sent++
-		}
-		if sent == 2 {
-			break
+	// A report put on a stream whose socket has stopped sending (sendStalled)
+	// waits there behind everything else; such a stream carries one only when
+	// no other can.
+	for pass := 0; pass < 2 && sent == 0; pass++ {
+		for _, s := range streams {
+			c := s.control.Load()
+			if !s.ready.Load() || c == nil || !c.capable.Load() || (pass == 0 && s.sendStalled.Load()) {
+				continue
+			}
+			// If all paths are stale, explicitly clear the preference via any
+			// remaining uplink. The server also expires lost reports on its own.
+			if mask != (feedbackMask{}) && (s.id < 0 || s.id > 255 || !mask.contains(byte(s.id))) {
+				continue
+			}
+			if s.enqueueControl(feedbackPacket(feedbackReport, c.nonce, r.seq, mask)) {
+				sent++
+			}
+			if sent == 2 {
+				break
+			}
 		}
 	}
 	if sent == 0 {

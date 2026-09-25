@@ -461,10 +461,13 @@ var (
 	// Legacy page format: the challenge was inlined as `const powInput = "..."`.
 	reLegacyPowInput = regexp.MustCompile(`const\s+powInput\s*=\s*"([^"]+)"`)
 	// Current page format: the challenge is passed to an obfuscated inline PoW
-	// solver as IIFE arguments at the very end of the script:
+	// solver as IIFE arguments at the very end of the script. The obfuscator
+	// builds differ in quoting, and since 2026-09-25 a fourth argument lists the
+	// telemetry probes to run first:
 	// }("71nXj0guqjgqJj9H", 2, "pow_timeout");
+	// }('OZBQTlTFu7O8xTKN',2,'pow_timeout',["sandbox_behavior",…,"globals"]));
 	reInlineScript = regexp.MustCompile(`(?s)<script[^>]*>(.*?)</script>`)
-	rePowV2Args    = regexp.MustCompile(`\}\s*\(\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"[^"]*"\s*\){1,2}\s*;?\s*$`)
+	rePowV2Args    = regexp.MustCompile(`\}\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(\d+)\s*,\s*(?:"[^"]*"|'[^']*')\s*(?:,\s*\[[^\]]*\]\s*)?\)`)
 )
 
 func parseCaptchaBootstrapHTML(html string) (*captchaBootstrap, error) {
@@ -484,10 +487,12 @@ func parseCaptchaBootstrapHTML(html string) (*captchaBootstrap, error) {
 		if !strings.Contains(script, "captchaPowResult") {
 			continue
 		}
-		if args := rePowV2Args.FindStringSubmatch(script); len(args) >= 3 {
-			bootstrap.PowInput = args[1]
+		// The arguments close the script; take the last call that fits.
+		if all := rePowV2Args.FindAllStringSubmatch(script, -1); len(all) > 0 {
+			args := all[len(all)-1]
+			bootstrap.PowInput = args[1] + args[2] // whichever quoting matched
 			bootstrap.PowV2 = true
-			if parsed, err := strconv.Atoi(args[2]); err == nil && parsed > 0 {
+			if parsed, err := strconv.Atoi(args[3]); err == nil && parsed > 0 {
 				bootstrap.Difficulty = parsed
 			}
 		}
