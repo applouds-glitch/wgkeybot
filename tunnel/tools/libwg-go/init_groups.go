@@ -37,6 +37,15 @@ const (
 // since a saturated pool would otherwise flood the log at line rate.
 var dispatchDropCount atomic.Uint64
 
+// What the dispatcher did about streams whose sockets had stopped sending
+// (stream.sendStalled), for the TCP summary (relay_tcp_watch.go): packets it
+// took past such a stream to a sibling, and packets it had to put into one
+// because no other ready stream could take them.
+var (
+	dispatchSteeredCount     atomic.Uint64
+	dispatchIntoStalledCount atomic.Uint64
+)
+
 // anyReady separates the two causes: a saturated pool (every ready stream's
 // queue full) from a pool with nothing ready at all, which is the normal state
 // for the first moments after start.
@@ -206,7 +215,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 				defer groupsWg.Done()
 				WorkerGroup(gCtx, groupCfg, groupStreams)
 			}()
-			turnLog("[INIT] Group %d started (link=%.12s, streams %d-%d)", gi, link, start, end-1)
+			turnLog("[INIT] Group %d started (streams %d-%d)", gi, start, end-1)
 		}
 	}()
 
@@ -289,14 +298,25 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 // wrapping around, and reports whether it was accepted and whether any stream
 // was ready at all — the two dispatch-drop causes noteDispatchDrop tells apart.
 //
-// Two passes. The first skips streams whose relay has gone quiet
-// (dispatchStale): a stream stays ready until its dead-stream detector fires
-// 90s after the last echo, and the plain round-robin used to keep feeding it
-// every Nth chunk for that whole time — a steady 1/N loss that TCP inside the
-// tunnel reads as congestion. The second pass admits stale streams too, and
-// runs only when the first placed nothing: with every stream silent it is the
-// uplink that is down, not a relay, and placing nothing would only add a drop
-// of our own to whatever the network is already losing.
+// Up to three passes, each run only when the one before placed nothing.
+//
+// The first skips streams whose relay has gone quiet (dispatchStale): a stream
+// stays ready until its dead-stream detector fires 90s after the last echo,
+// and the plain round-robin used to keep feeding it every Nth chunk for that
+// whole time — a steady 1/N loss that TCP inside the tunnel reads as
+// congestion. The second pass admits stale streams: with every stream silent
+// it is the uplink that is down, not a relay, and placing nothing would only
+// add a drop of our own to whatever the network is already losing.
+//
+// Both skip a stream whose TCP socket has stopped moving what we send
+// (sendStalled). Silence does not catch that one: on the network the TCP path
+// exists for, the direction up dies on its own while the relay stays audible
+// (field log of 22.09: 45 flows dead in sixteen minutes, not one stream ever
+// judged silent), and each such flow was fed its 1/N until a reset or the
+// kernel's 30s limit ended it. Only the third pass, run when a stalled socket
+// was passed over and nothing else took the packet, admits one: there is
+// nowhere better, and the packet waits in a socket that may yet move rather
+// than being dropped here.
 //
 // Within a pass a full queue is not a drop either: the packet spills to the
 // next candidate, so one stream whose TX goroutine has stalled (a slow relay, a
@@ -305,18 +325,41 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 // accepts — and keeps the loss confined to a genuinely saturated pool.
 func dispatchPacket(streams []*stream, start int, now time.Time, pkt []byte) (sent, anyReady bool) {
 	n := len(streams)
-	for pass := 0; pass < 2; pass++ {
+	// skip is each pass's test. It notes a stalled socket passed over: a
+	// placement after one counts as steered, and without one the last pass
+	// would only repeat the second.
+	passedStalled := false
+	skip := func(st *stream, pass int) bool {
+		if pass < 2 && st.sendStalled.Load() {
+			passedStalled = true
+			return true
+		}
+		return pass == 0 && st.dispatchStale(now)
+	}
+	placed := func(st *stream, pass int) (bool, bool) {
+		switch {
+		case pass < 2 && passedStalled:
+			dispatchSteeredCount.Add(1)
+		case pass == 2 && st.sendStalled.Load():
+			dispatchIntoStalledCount.Add(1)
+		}
+		return true, true
+	}
+	for pass := 0; pass < 3; pass++ {
+		if pass == 2 && !passedStalled {
+			break
+		}
 		// Prefer available priority queues across fresh TCP streams before
 		// falling back to their normal queues. Stale priority queues must not
 		// outrank a fresh stream's ordinary queue.
 		if len(pkt) <= tcpPriorityPacketSize {
 			for i := 0; i < n; i++ {
 				st := streams[(start+i)%n]
-				if !st.ready.Load() || (pass == 0 && st.dispatchStale(now)) {
+				if !st.ready.Load() || skip(st, pass) {
 					continue
 				}
 				if st.enqueuePriority(pkt) {
-					return true, true
+					return placed(st, pass)
 				}
 			}
 		}
@@ -326,12 +369,12 @@ func dispatchPacket(streams []*stream, start int, now time.Time, pkt []byte) (se
 				continue
 			}
 			anyReady = true
-			if pass == 0 && st.dispatchStale(now) {
+			if skip(st, pass) {
 				continue
 			}
 			select {
 			case st.in <- pkt:
-				return true, true
+				return placed(st, pass)
 			default:
 			}
 		}

@@ -164,7 +164,7 @@ func vkCallsAttempt(ctx context.Context, link string, client tlsclient.HttpClien
 	doRequest := func(step, url string) (map[string]interface{}, error) {
 		req, err := fhttp.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(nil))
 		if err != nil {
-			return nil, fmt.Errorf("%s: create request: %w", step, err)
+			return nil, fmt.Errorf("%s: create request: %w", step, withoutRequestURL(err))
 		}
 		req.Header.Set("User-Agent", profile.UserAgent)
 		req.Header.Set("Accept", "*/*")
@@ -172,7 +172,7 @@ func vkCallsAttempt(ctx context.Context, link string, client tlsclient.HttpClien
 
 		httpResp, err := client.Do(req)
 		if err != nil {
-			return nil, transientVKCallsf("%s: request failed: %w", step, err)
+			return nil, transientVKCallsf("%s: request failed: %w", step, withoutRequestURL(err))
 		}
 		defer func() { _ = httpResp.Body.Close() }()
 
@@ -291,6 +291,17 @@ func vkCallsAttempt(ctx context.Context, link string, client tlsclient.HttpClien
 	return user, pass, addrs, lifetime, nil
 }
 
+// withoutRequestURL drops the URL a url.Error prints with its cause: every VK
+// Calls request carries the join link (and the tokens minted so far) in its
+// query string, and the error ends up in the log.
+func withoutRequestURL(err error) error {
+	var urlErr *neturl.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err
+	}
+	return err
+}
+
 // parseVKCallsTurnServer extracts username/credential, resolves every TURN URL
 // through our DNS cache and reads the lifetime/ttl — mirroring the legacy chain.
 func parseVKCallsTurnServer(ctx context.Context, resp map[string]interface{}) (string, string, []string, int, error) {
@@ -376,10 +387,13 @@ func vkCallsOKError(step string, resp map[string]interface{}) error {
 		return nil
 	}
 	msg, _ := resp["error_msg"].(string)
-	// The preceding step just minted this token. A missing token at join can
-	// be a transient VK/OK handoff failure, not a request for a captcha.
+	// The preceding step just minted this token, yet OK can call it missing
+	// (not_found) or expired (outdated) at join: a transient VK/OK handoff
+	// failure, not a request for a captcha. On 25.09 a phone got "outdated"
+	// 85 ms after step 3, and the same link went through on every later try.
 	// Retry the entire anonymous flow within its existing three-attempt budget.
-	if int(code) == 100 && strings.Contains(msg, "error.webrtc.auth.anonym_token.not_found") {
+	if int(code) == 100 && (strings.Contains(msg, "error.webrtc.auth.anonym_token.not_found") ||
+		strings.Contains(msg, "error.webrtc.auth.anonym_token.outdated")) {
 		return transientVKCallsf("%s: OK CDN error_code=%d: %s", step, int(code), msg)
 	}
 	return fmt.Errorf("%s: OK CDN error_code=%d: %s", step, int(code), msg)

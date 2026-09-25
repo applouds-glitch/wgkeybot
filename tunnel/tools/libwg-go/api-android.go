@@ -34,7 +34,11 @@ type AndroidLogger struct {
 }
 
 func (l AndroidLogger) Printf(format string, args ...interface{}) {
-	s := C.CString(fmt.Sprintf(format, args...))
+	l.write(fmt.Sprintf(format, args...))
+}
+
+func (l AndroidLogger) write(msg string) {
+	s := C.CString(msg)
 	defer C.free(unsafe.Pointer(s))
 	C.__android_log_write(l.level, l.tag, s)
 }
@@ -74,10 +78,11 @@ func init() {
 //export wgTurnOn
 func wgTurnOn(interfaceName string, tunFd int32, settings string) int32 {
 	tag := C.CString("WireGuard/GoBackend/" + interfaceName)
-	logger := &device.Logger{
-		Verbosef: AndroidLogger{level: C.ANDROID_LOG_DEBUG, tag: tag}.Printf,
-		Errorf:   AndroidLogger{level: C.ANDROID_LOG_ERROR, tag: tag}.Printf,
-	}
+	thinned := newWGLogThinner(
+		AndroidLogger{level: C.ANDROID_LOG_DEBUG, tag: tag}.write,
+		AndroidLogger{level: C.ANDROID_LOG_ERROR, tag: tag}.write,
+	)
+	logger := &device.Logger{Verbosef: thinned.Verbosef, Errorf: thinned.Errorf}
 
 	tun, name, err := tun.CreateUnmonitoredTUNFromFD(int(tunFd))
 	if err != nil {

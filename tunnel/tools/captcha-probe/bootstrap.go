@@ -29,7 +29,9 @@ type captchaBootstrap struct {
 var (
 	reLegacyPowInput = regexp.MustCompile(`const\s+powInput\s*=\s*"([^"]+)"`)
 	reInlineScript   = regexp.MustCompile(`(?s)<script[^>]*>(.*?)</script>`)
-	rePowV2Args      = regexp.MustCompile(`\}\s*\(\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"[^"]*"\s*\){1,2}\s*;?\s*$`)
+	// Either quoting, and since 2026-09-25 a trailing telemetry probe list:
+	// }('OZBQTlTFu7O8xTKN',2,'pow_timeout',["sandbox_behavior",…,"globals"]));
+	rePowV2Args = regexp.MustCompile(`\}\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(\d+)\s*,\s*(?:"[^"]*"|'[^']*')\s*(?:,\s*\[[^\]]*\]\s*)?\)`)
 )
 
 func parseCaptchaBootstrapHTML(html string) (*captchaBootstrap, error) {
@@ -40,10 +42,11 @@ func parseCaptchaBootstrapHTML(html string) (*captchaBootstrap, error) {
 		if !strings.Contains(script, "captchaPowResult") {
 			continue
 		}
-		if args := rePowV2Args.FindStringSubmatch(script); len(args) >= 3 {
-			bootstrap.PowInput = args[1]
+		if all := rePowV2Args.FindAllStringSubmatch(script, -1); len(all) > 0 {
+			args := all[len(all)-1]
+			bootstrap.PowInput = args[1] + args[2] // whichever quoting matched
 			bootstrap.PowV2 = true
-			if parsed, err := strconv.Atoi(args[2]); err == nil && parsed > 0 {
+			if parsed, err := strconv.Atoi(args[3]); err == nil && parsed > 0 {
 				bootstrap.Difficulty = parsed
 			}
 		}

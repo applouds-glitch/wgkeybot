@@ -191,9 +191,12 @@ class CaptchaActivity : AppCompatActivity() {
          * dialog. Called from a native thread, so it must not block.
          */
         fun cancelPending() {
-            Log.d(TAG, "Captcha cancelled by native stop")
-            pendingResult?.complete("")
-            val activity = liveActivity?.get() ?: return
+            // Every proxy stop calls this, with or without a dialog: only a
+            // cancel that found one is worth a line.
+            val unblocked = pendingResult?.complete("") == true
+            val activity = liveActivity?.get()
+            if (unblocked || activity != null) Log.d(TAG, "Captcha cancelled by native stop")
+            activity ?: return
             activity.runOnUiThread {
                 if (!activity.isFinishing && !activity.isDestroyed) activity.finish()
             }

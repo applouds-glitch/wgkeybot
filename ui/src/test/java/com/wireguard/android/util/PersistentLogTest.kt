@@ -95,6 +95,70 @@ class PersistentLogTest {
     }
 
     @Test
+    fun `tail of a log that fits is all of it`() {
+        val file = RotatingLogFile(tmp.root, 1000)
+        listOf(wg, turn).forEach(file::append)
+        val tail = file.tail(4096)
+        assertEquals("$wg\n$turn\n", String(tail.bytes))
+        assertTrue(tail.isWhole)
+    }
+
+    @Test
+    fun `tail starts on a whole line and reaches across the rotation`() {
+        val max = 1000L
+        val file = RotatingLogFile(tmp.root, max)
+        val lines = (1..40).map { "line %03d %s".format(it, "x".repeat(40)) } // 50 bytes each
+        lines.forEach(file::append)
+        assertTrue(File(tmp.root, RotatingLogFile.NAME + ".1").exists())
+        val all = String(file.snapshot())
+
+        // A budget that ends inside a line: that line is left out, not cut.
+        val tail = file.tail(475)
+        assertEquals(lines.takeLast(9).joinToString("") { "$it\n" }, String(tail.bytes))
+        assertEquals(all.length.toLong(), tail.total)
+        assertFalse(tail.isWhole)
+
+        // A budget that ends exactly on a line boundary keeps that line.
+        assertEquals(lines.takeLast(10).joinToString("") { "$it\n" }, String(file.tail(500).bytes))
+
+        // Reaching into the previous generation: contiguous, newest last.
+        val deep = String(file.tail(1300).bytes).trimEnd('\n').split('\n')
+        assertEquals(lines.takeLast(26), deep)
+    }
+
+    @Test
+    fun `export puts the kept tail first and drops our lines from the device logcat`() {
+        val kept = RotatingLogFile.Tail("$turn\n".toByteArray(), 5L * 1024 * 1024)
+        val out = String(LogExport.compose(kept, listOf(banner, wg, insets, jni, crash, miui)))
+        assertEquals(
+            listOf(
+                "===== app log kept on device (WireGuard/* and crashes): the newest 0 KB of 5.0 MB =====",
+                turn,
+                "===== device logcat, all tags but ours (they are above) =====",
+                banner, insets, crash, miui,
+            ).joinToString("") { "$it\n" },
+            out
+        )
+    }
+
+    @Test
+    fun `export keeps the newest device lines that fit`() {
+        val bytes = "$turn\n".toByteArray()
+        val kept = RotatingLogFile.Tail(bytes, bytes.size.toLong())
+        val device = (1..10).map { "%02d %s".format(it, "z".repeat(96)) } // 100 bytes with the newline
+        val out = String(LogExport.compose(kept, device, deviceBytes = 350)).trimEnd('\n').split('\n')
+        assertEquals("===== app log kept on device (WireGuard/* and crashes) =====", out[0])
+        assertEquals("===== device logcat, all tags but ours (they are above): the newest 3 of 10 lines =====", out[2])
+        assertEquals(device.takeLast(3), out.drop(3))
+    }
+
+    @Test
+    fun `export with nothing kept is the device logcat alone, ours included`() {
+        val out = String(LogExport.compose(RotatingLogFile.Tail(ByteArray(0), 0), listOf(wg, insets)))
+        assertEquals("$wg\n$insets\n", out)
+    }
+
+    @Test
     fun `snapshot of an empty log is empty`() {
         assertArrayEquals(ByteArray(0), RotatingLogFile(File(tmp.root, "never-created"), 1000).snapshot())
     }

@@ -6,6 +6,7 @@ import (
 	fhttp "github.com/bogdanfinn/fhttp"
 	tlsclient "github.com/kiper292/tls-client"
 	"io"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -71,6 +72,19 @@ func TestVKCallsMissingAnonymousTokenRetriesWholeFlow(t *testing.T) {
 	}
 }
 
+// OK rejects a token minted a moment ago as either missing or expired; both
+// are the same handoff race and retry the flow instead of opening a captcha.
+func TestVKCallsFreshTokenRejectionsRetry(t *testing.T) {
+	for _, msg := range []string{
+		"PARAM : error.webrtc.auth.anonym_token.not_found",
+		"PARAM : error.webrtc.auth.anonym_token.outdated",
+	} {
+		if !isTransientVKCalls(vkCallsOKError("join", map[string]interface{}{"error_code": float64(100), "error_msg": msg})) {
+			t.Fatal(msg)
+		}
+	}
+}
+
 func TestVKCallsOtherOKErrorsDoNotRetry(t *testing.T) {
 	for _, msg := range []string{"invalid link", "error.webrtc.auth.other"} {
 		if isTransientVKCalls(vkCallsOKError("join", map[string]interface{}{"error_code": float64(100), "error_msg": msg})) {
@@ -83,5 +97,25 @@ func TestVKCallsOtherOKErrorsDoNotRetry(t *testing.T) {
 	_, _, _, _, err := getVKCredsViaVKCalls(ctx, "link", client, Profile{})
 	if calls != 1 || !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation: calls=%d err=%v", calls, err)
+	}
+}
+
+// The join link rides in every VK Calls query string, and the client returns a
+// network failure as a url.Error carrying the full URL. The error reaches the
+// log ("VK Calls flow failed"), so the URL is cut and the cause kept.
+func TestVKCallsRequestErrorOmitsJoinLink(t *testing.T) {
+	const link = "SECRETJOINLINKxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+	client := scriptedHTTPClient{do: func(r *fhttp.Request) (*fhttp.Response, error) {
+		return nil, &url.Error{Op: "Post", URL: r.URL.String(), Err: errors.New("i/o timeout")}
+	}}
+	_, _, _, _, err := vkCallsAttempt(context.Background(), link, client, Profile{})
+	if err == nil {
+		t.Fatal("expected a request error")
+	}
+	if strings.Contains(err.Error(), "SECRETJOINLINK") || strings.Contains(err.Error(), "call%2Fjoin") {
+		t.Fatalf("join link leaked: %v", err)
+	}
+	if !strings.Contains(err.Error(), "i/o timeout") || !isTransientVKCalls(err) {
+		t.Fatalf("cause or transience lost: %v", err)
 	}
 }

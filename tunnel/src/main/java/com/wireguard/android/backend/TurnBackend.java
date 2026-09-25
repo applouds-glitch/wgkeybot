@@ -65,9 +65,8 @@ public final class TurnBackend {
      * @param service The VpnService instance.
      */
     public static void onVpnServiceCreated(@Nullable VpnService service) {
-        Log.d(TAG, "onVpnServiceCreated called with service=" + (service != null ? "non-null" : "null"));
-
         if (service != null) {
+            Log.d(TAG, "onVpnServiceCreated called with service=non-null");
             // 1. First set in JNI so sockets can be protected
             Log.d(TAG, "Calling wgSetVpnService()...");
             wgSetVpnService(service);
@@ -246,7 +245,6 @@ public final class TurnBackend {
      */
     @SuppressWarnings("unused") // Called from native code
     public static void onCaptchaCancel() {
-        Log.d(TAG, "onCaptchaCancel");
         Runnable handler = captchaCancelHandler;
         if (handler == null) {
             return;

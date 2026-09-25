@@ -45,17 +45,17 @@ class TurnConfigProcessorTest {
             .`interface`.mtu.orElseThrow()
 
     @Test
-    fun `the MTU the bot issues is capped for TURN`() {
-        assertEquals(TurnConfigProcessor.TURN_MAX_MTU, turnMtu(configWithMtu(1280)))
+    fun `the MTU the bot issues is kept for TURN`() {
+        assertEquals(1280, turnMtu(configWithMtu(1280)))
     }
 
     @Test
-    fun `a config without an MTU gets the TURN cap`() {
-        assertEquals(TurnConfigProcessor.TURN_MAX_MTU, turnMtu(configWithMtu(null)))
+    fun `a config without an MTU gets the TURN default`() {
+        assertEquals(TurnConfigProcessor.TURN_DEFAULT_MTU, turnMtu(configWithMtu(null)))
     }
 
     @Test
-    fun `an MTU below the cap is kept`() {
+    fun `a smaller MTU is kept`() {
         assertEquals(1100, turnMtu(configWithMtu(1100)))
     }
 

@@ -159,12 +159,12 @@ func connectRelayTCP(ctx context.Context, d *net.Dialer, addr string) (net.Conn,
 // directions: set before the connect it is the MSS our SYN announces, which the
 // relay may not exceed, and the ceiling on our own.
 //
-// The tunnel's MTU is capped at 1200 because on cellular paths whose real MTU is
-// ~1350-1400 large datagrams were lost while small ones passed (TURN_MAX_MTU).
-// Over TCP that cap does nothing for this leg: the relay writes ChannelData into
-// a byte stream and the kernels cut it by MSS, not by packet — under load that is
-// full segments, 1460-byte packets on an interface that says 1460 (field log
-// 19.09), over the very kind of path the cap exists for, with ICMP filtered so
+// Over UDP the size of what crosses this leg follows the tunnel MTU (the config's,
+// the bot issues 1280: up to ~1390 B on the wire). Over TCP the tunnel MTU does
+// nothing for this leg: the relay writes ChannelData into a byte stream and the
+// kernels cut it by MSS, not by packet — under load that is full segments,
+// 1460-byte packets on an interface that says 1460 (field log 19.09), over
+// cellular paths whose real MTU is commonly ~1350-1400, with ICMP filtered so
 // that nobody learns. A lost full-size segment is retransmitted at the same size
 // for ever; everything behind it in the stream waits, the keepalive echo
 // included, and the relay's TCP eventually gives up. It would look like what the
@@ -173,8 +173,7 @@ func connectRelayTCP(ctx context.Context, d *net.Dialer, addr string) (net.Conn,
 //
 // Not proven to be the cause there: the log had no socket telemetry yet (see
 // silentSocketLine for what will tell). But the cost is a few per cent more
-// segments, and 1240 makes packets of at most 1280 — the IPv6 minimum, below
-// what the 1200 cap already puts on the same paths over UDP (~1310).
+// segments, and 1240 makes packets of at most 1280 — the IPv6 minimum.
 const relayTCPMaxSegment = 1240
 
 var maxSegmentRefused sync.Once

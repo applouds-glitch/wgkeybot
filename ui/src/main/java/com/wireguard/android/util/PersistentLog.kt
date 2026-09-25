@@ -13,11 +13,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.io.RandomAccessFile
+import java.util.Locale
 
 /**
  * This process's own log lines, kept on disk.
@@ -30,7 +33,8 @@ import java.io.OutputStream
  * lines this process writes under WireGuard/… tags — Go, C and Kotlin alike, so
  * no logging call had to change — into a rotating file as they appear, before
  * anything can evict them. logd applies the pid filter itself, so the child
- * wakes only for our own lines. The journal export puts this file first.
+ * wakes only for our own lines. The journal export puts the newest part of
+ * this file first (see [EXPORT_BYTES]).
  */
 class PersistentLog(dir: File) {
     private val file = RotatingLogFile(dir, MAX_FILE_BYTES)
@@ -39,8 +43,8 @@ class PersistentLog(dir: File) {
         scope.launch(Dispatchers.IO) { tail() }
     }
 
-    /** Everything kept so far, oldest first; empty if nothing could be read. */
-    fun snapshot(): ByteArray = file.snapshot()
+    /** The newest [maxBytes] at most, from a line start; see [RotatingLogFile.tail]. */
+    internal fun tail(maxBytes: Int): RotatingLogFile.Tail = file.tail(maxBytes)
 
     private suspend fun tail() {
         val pid = Process.myPid()
@@ -80,10 +84,21 @@ class PersistentLog(dir: File) {
         private const val TAG = "WireGuard/PersistentLog"
 
         // Two files of this size at most: ~4 MiB on disk. A healthy session writes
-        // ~25 KB an hour (one WireGuard keepalive line per 25s, a handshake pair
-        // per 2 min), so that is days of history; a session stuck reconnecting
-        // writes a few lines a second, and still keeps the last couple of hours.
+        // ~15 KB an hour (a handshake pair and a line counting the keepalives
+        // every 2 min — see wg_log_filter.go), so that is days of history; a
+        // session stuck reconnecting writes a few lines a second, and still keeps
+        // the last couple of hours.
         const val MAX_FILE_BYTES = 2L * 1024 * 1024
+
+        // What an export carries, which is not what the device keeps. The whole
+        // pair — days of an idle tunnel's keepalives, earlier sessions — made
+        // exports of 2 MB and more, too much to send or read; the part that is
+        // asked about is the latest, and the rest stays on the device.
+        const val EXPORT_BYTES = 512 * 1024
+
+        // The device logcat after it: the ROM's own chatter and system events,
+        // without our lines, which the part above already has.
+        const val EXPORT_DEVICE_BYTES = 128 * 1024
 
         private const val MIN_RESTART_DELAY_MS = 5_000L
         private const val MAX_RESTART_DELAY_MS = 5 * 60_000L
@@ -112,6 +127,59 @@ internal object LogcatLine {
         val tag = tag(line) ?: return false
         return tag.startsWith("WireGuard/") || tag == "AndroidRuntime"
     }
+}
+
+/**
+ * The exported journal: the newest part of the kept log, then the device logcat
+ * without the lines the kept part already has.
+ */
+internal object LogExport {
+    fun compose(
+        kept: RotatingLogFile.Tail,
+        device: List<String>,
+        deviceBytes: Int = PersistentLog.EXPORT_DEVICE_BYTES,
+        aloneBytes: Int = PersistentLog.EXPORT_BYTES,
+    ): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun line(text: String) = out.write("$text\n".toByteArray(Charsets.UTF_8))
+        if (kept.bytes.isEmpty()) {
+            // Nothing kept (a ROM that refused the logcat child): the device
+            // logcat is all there is, ours included — bounded all the same.
+            device.newest(aloneBytes).forEach(::line)
+            return out.toByteArray()
+        }
+        line(
+            "===== app log kept on device (WireGuard/* and crashes)" +
+                (if (kept.isWhole) "" else ": the newest ${size(kept.bytes.size.toLong())} of ${size(kept.total)}") +
+                " ====="
+        )
+        out.write(kept.bytes)
+        val others = device.filterNot { LogcatLine.tag(it)?.startsWith("WireGuard/") == true }
+        val shown = others.newest(deviceBytes)
+        line(
+            "===== device logcat, all tags but ours (they are above)" +
+                (if (shown.size == others.size) "" else ": the newest ${shown.size} of ${others.size} lines") +
+                " ====="
+        )
+        shown.forEach(::line)
+        return out.toByteArray()
+    }
+
+    /** The newest lines whose total, newlines included, fits in [maxBytes]. */
+    private fun List<String>.newest(maxBytes: Int): List<String> {
+        var bytes = 0L
+        var from = size
+        while (from > 0) {
+            bytes += this[from - 1].toByteArray(Charsets.UTF_8).size + 1
+            if (bytes > maxBytes) break
+            from--
+        }
+        return subList(from, size)
+    }
+
+    private fun size(bytes: Long): String =
+        if (bytes < 1024 * 1024) "${bytes / 1024} KB"
+        else String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
 }
 
 /**
@@ -179,6 +247,47 @@ internal class RotatingLogFile(private val dir: File, private val maxBytes: Long
                 (if (current.exists()) current.readBytes() else ByteArray(0))
         } catch (_: IOException) {
             ByteArray(0)
+        }
+    }
+
+    /** The newest part of the pair; [total] is how much the pair holds on disk. */
+    class Tail(val bytes: ByteArray, val total: Long) {
+        val isWhole get() = bytes.size.toLong() == total
+    }
+
+    /**
+     * The newest [maxBytes] of the pair at most, oldest first, beginning on a
+     * whole line: a line the cut falls inside is left out rather than exported
+     * half. Empty on any failure.
+     */
+    @Synchronized
+    fun tail(maxBytes: Int): Tail {
+        flush()
+        return try {
+            val currentLength = if (current.exists()) current.length() else 0L
+            val previousLength = if (previous.exists()) previous.length() else 0L
+            val total = currentLength + previousLength
+            if (total <= maxBytes) return Tail(snapshot(), total)
+            // One byte more than asked for, to see whether the cut falls on a
+            // line boundary (that byte is a newline) or inside a line.
+            val want = maxBytes + 1L
+            val fromCurrent = minOf(want, currentLength)
+            val bytes = readEnd(previous, want - fromCurrent) + readEnd(current, fromCurrent)
+            val start = bytes.indexOf('\n'.code.toByte()) + 1
+            val kept = if (start == 0) ByteArray(0) else bytes.copyOfRange(start, bytes.size)
+            Tail(kept, total)
+        } catch (_: IOException) {
+            Tail(ByteArray(0), 0)
+        }
+    }
+
+    private fun readEnd(file: File, count: Long): ByteArray {
+        if (count <= 0) return ByteArray(0)
+        RandomAccessFile(file, "r").use { raf ->
+            val bytes = ByteArray(count.toInt())
+            raf.seek(raf.length() - count)
+            raf.readFully(bytes)
+            return bytes
         }
     }
 

@@ -217,10 +217,12 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetVpnSe
 
 // protect_and_bind is the body shared by wgProtectSocket and
 // wgProtectSocketDirect: VpnService.protect(), then Network.bindSocket() to the
-// cached physical network. who names the caller in log lines; quiet drops the
-// success line, which the TURN dials want (a handful per session, and the
-// bound netId is a useful fact) and the sharing proxy's direct dials cannot
-// afford (one per connection a tethered client opens).
+// cached physical network. who names the caller in log lines. Success is
+// silent: it was one line per socket — every TURN dial and DNS query, the
+// largest single entry in exported logs — and the netId it named is already in
+// "wgSetNetwork: dials now bind to net N". quiet also drops the "not bound"
+// line, which the sharing proxy's direct dials cannot afford (one per
+// connection a tethered client opens).
 static int protect_and_bind(int fd, const char *who, int quiet)
 {
 	JNIEnv *env;
@@ -280,12 +282,10 @@ static int protect_and_bind(int fd, const char *who, int quiet)
 			if ((*env)->ExceptionCheck(env)) {
 				__android_log_print(ANDROID_LOG_ERROR, "WireGuard/JNI", "%s(fd=%d): bindSocket exception!", who, fd);
 				(*env)->ExceptionClear(env);
-			} else if (!quiet) {
-				__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI", "%s(fd=%d): SUCCESS (protected + bound to net %lld)", who, fd, (long long)network_handle);
 			}
 			(*env)->DeleteLocalRef(env, fd_obj);
 		} else if (!quiet) {
-			__android_log_print(ANDROID_LOG_INFO, "WireGuard/JNI", "%s(fd=%d): SUCCESS (protected, but NOT bound - handle=%lld)", who, fd, (long long)network_handle);
+			__android_log_print(ANDROID_LOG_WARN, "WireGuard/JNI", "%s(fd=%d): protected, but NOT bound - handle=%lld", who, fd, (long long)network_handle);
 		}
 		ret = 0;
 	} else {

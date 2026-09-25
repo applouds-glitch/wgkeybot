@@ -161,7 +161,7 @@ func pushCaptchaToken(link, token string, maxUses int) {
 	e.token = token
 	e.uses = maxUses
 	e.mu.Unlock()
-	turnLog("[Captcha] success_token cached for link %.12s, up to %d uses", link, maxUses)
+	turnLog("[Captcha] success_token cached, up to %d uses", maxUses)
 }
 
 func popCaptchaToken(link string) string {
@@ -172,7 +172,7 @@ func popCaptchaToken(link string) string {
 		return ""
 	}
 	e.uses--
-	turnLog("[Captcha] Using cached success_token for link %.12s (%d uses left)", link, e.uses)
+	turnLog("[Captcha] Using cached success_token (%d uses left)", e.uses)
 	return e.token
 }
 
@@ -182,7 +182,7 @@ func invalidateCaptchaToken(link string) {
 	e.token = ""
 	e.uses = 0
 	e.mu.Unlock()
-	turnLog("[Captcha] Cached success_token invalidated for link %.12s", link)
+	turnLog("[Captcha] Cached success_token invalidated")
 }
 
 type captchaSolveMode int

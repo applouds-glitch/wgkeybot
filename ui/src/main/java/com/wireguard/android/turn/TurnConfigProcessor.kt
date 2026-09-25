@@ -14,16 +14,13 @@ import java.util.ArrayList
 object TurnConfigProcessor {
 
     /**
-     * The ceiling on the tunnel MTU over TURN, whatever the config asks for (the bot
-     * issues 1280). Every inner packet leaves wrapped in WireGuard (+32 B), WRAP
-     * (+14 B, and the server pads the downlink by up to 32 B more), TURN ChannelData
-     * (+4 B) and UDP/IPv4 (+28 B): at 1280 that is up to ~1390 B on the wire toward
-     * the phone, at 1200 up to ~1310. Cellular paths commonly sit around 1350-1400,
-     * and a path that drops the big packets while passing the small ones keeps
-     * handshakes and keepalives going while pages and downloads hang. Up to v1.6.0
-     * the MTU was capped here; taking the config's 1280 instead dropped that margin.
+     * The tunnel MTU over TURN when the config names none; a config's own MTU is
+     * taken as is (the bot issues 1280). Every inner packet leaves wrapped in
+     * WireGuard (+32 B), WRAP (+14 B, and the server pads the downlink by up to
+     * 32 B more), TURN ChannelData (+4 B) and UDP/IPv4 (+28 B): at 1280 that is up
+     * to ~1390 B on the wire toward the phone, at 1200 up to ~1310.
      */
-    const val TURN_MAX_MTU = 1200
+    const val TURN_DEFAULT_MTU = 1200
 
     /**
      * Injects TURN settings into the first peer of the configuration as special comments.
@@ -74,8 +71,8 @@ object TurnConfigProcessor {
     }
 
     /**
-     * Modifies the configuration for active TURN usage (replaces Endpoint with local loopback and caps the MTU
-     * at [TURN_MAX_MTU]).
+     * Modifies the configuration for active TURN usage (replaces Endpoint with local loopback and sets the MTU:
+     * the config's, [TURN_DEFAULT_MTU] when it has none).
      * The native TURN grid drives WireGuard keepalives too, so an independent
      * PersistentKeepalive timer must stay disabled to avoid a second radio wake window.
      */
@@ -91,8 +88,8 @@ object TurnConfigProcessor {
 
         try {
             ifaceBuilder.setListenPort(iface.listenPort.orElse(0))
-            // The config's MTU, but never above TURN_MAX_MTU; a smaller one is kept.
-            ifaceBuilder.setMtu(minOf(iface.mtu.orElse(TURN_MAX_MTU), TURN_MAX_MTU))
+            // MTU comes from the config; TURN_DEFAULT_MTU only when the config omits it.
+            ifaceBuilder.setMtu(iface.mtu.orElse(TURN_DEFAULT_MTU))
         } catch (e: Exception) {
             // Should not happen with valid port/mtu
         }

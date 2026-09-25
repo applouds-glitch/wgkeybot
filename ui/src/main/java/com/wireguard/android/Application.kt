@@ -168,7 +168,6 @@ class Application : android.app.Application() {
         // does not keep a dialog on screen — and the next connect does not queue
         // behind a captcha belonging to a session that is already gone.
         TurnBackend.setCaptchaCancelHandler {
-            Log.d(TAG, "Captcha cancel requested by native")
             CaptchaWebViewManager.cancelActive()
             CaptchaActivity.cancelPending()
         }

@@ -10,7 +10,75 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/pion/rtp"
 )
+
+func TestReadRejectsSRTPReplays(t *testing.T) {
+	srv := startServer(t)
+	relay := newRelayLikeConn(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client, err := Client(ctx, relay, srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	server, err := srv.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	for _, tc := range []struct {
+		name     string
+		sender   *wrappedConn
+		receiver *wrappedConn
+	}{
+		{"client", server.(*wrappedConn), client.(*wrappedConn)},
+		{"server", client.(*wrappedConn), server.(*wrappedConn)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			packets := make(map[uint16][]byte)
+			for _, seq := range []uint16{0, 1, 2, 3, 100, 101} {
+				pkt := rtp.Packet{
+					Header:  rtp.Header{Version: 2, PayloadType: PayloadType, SequenceNumber: seq, SSRC: tc.sender.ssrc},
+					Payload: []byte{byte(seq)},
+				}
+				raw, err := pkt.Marshal()
+				if err != nil {
+					t.Fatal(err)
+				}
+				packets[seq], err = tc.sender.encCtx.EncryptRTP(nil, raw, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// Feed captured ciphertext in a deterministic order: a replay,
+			// an unseen reordered packet, then an unseen packet too old for
+			// the receive window. Each replay must be skipped by Read.
+			for _, seq := range []uint16{0, 0, 2, 1, 1, 100, 3, 101} {
+				pkt := pktPoolGet(len(packets[seq]))
+				copy(pkt, packets[seq])
+				tc.receiver.rxCh <- pkt
+			}
+			if err := tc.receiver.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, 2048)
+			for _, want := range []byte{0, 2, 1, 100, 101} {
+				n, err := tc.receiver.Read(buf)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n != 1 || buf[0] != want {
+					t.Fatalf("Read = %v, want [%d]", buf[:n], want)
+				}
+			}
+		})
+	}
+}
 
 // errRelayClosed is what a closed pion/turn relay conn reports: an error of
 // pion's own with net.ErrClosed's text, which errors.Is does not take for it.

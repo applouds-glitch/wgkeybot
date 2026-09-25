@@ -47,10 +47,17 @@ func newWatchHarness() *watchHarness {
 	return h
 }
 
-// socket registers a fake connection for a stream.
-func (h *watchHarness) socket(stream int, relay string) *net.TCPConn {
+// socket registers a fake connection for a stream: the one of h.streams with
+// that id, or a bare one.
+func (h *watchHarness) socket(id int, relay string) *net.TCPConn {
+	st := &stream{id: id}
+	for _, s := range h.streams {
+		if s.id == id {
+			st = s
+		}
+	}
 	c := &net.TCPConn{}
-	h.w.register(stream, relay, c)
+	h.w.register(st, relay, c)
 	h.set(c, relaySocketSample{})
 	return c
 }
@@ -220,7 +227,7 @@ func TestRelaySocketStallThatNeverEndsIsNotLost(t *testing.T) {
 	wantParts(t, h.only(t), "stalled now: stream 9 for 10s")
 
 	h.now = h.now.Add(30 * time.Second)
-	h.w.unregister(9, c, h.now)
+	h.w.unregister(c, h.now)
 	wantParts(t, h.lines[len(h.lines)-1],
 		"stream 9 (relay-a) stalled for ~41s",
 		"had not moved again when the session ended",
@@ -240,7 +247,7 @@ func TestReconnectedStreamCountsItsNewSocketFromZero(t *testing.T) {
 	h.ticks(11)
 	wantParts(t, h.only(t), "up 900 KB")
 
-	h.w.unregister(1, old, h.now)
+	h.w.unregister(old, h.now)
 	fresh := h.socket(1, "relay-b")
 	h.set(fresh, relaySocketSample{acked: 100 << 10})
 	h.ticks(10)
@@ -248,7 +255,7 @@ func TestReconnectedStreamCountsItsNewSocketFromZero(t *testing.T) {
 
 	// A stale unregister — the old session's defer running late — must not take
 	// the new socket with it.
-	h.w.unregister(1, old, h.now)
+	h.w.unregister(old, h.now)
 	if h.w.count() != 1 {
 		t.Fatalf("the old session's unregister removed the stream's new socket")
 	}
@@ -361,7 +368,7 @@ func TestRelaySocketWatcherSleepsUntilAStreamIsOnTCP(t *testing.T) {
 	if n := sampled.Load(); n != 0 {
 		t.Fatalf("sampled %d time(s) with nothing to watch", n)
 	}
-	h.w.register(0, "relay-a", &net.TCPConn{})
+	h.w.register(&stream{}, "relay-a", &net.TCPConn{})
 	waitFor(t, "the watcher to start sampling", 3*relaySocketSampleInterval, func() bool { return sampled.Load() > 0 })
 
 	cancel()
@@ -412,7 +419,7 @@ func TestLeavingWatcherLeavesTheWakeUpBehind(t *testing.T) {
 	// the unlucky one is certain to come up.
 	for i := 0; i < 64; i++ {
 		h := newWatchHarness()
-		h.w.register(0, "relay-a", &net.TCPConn{})
+		h.w.register(&stream{}, "relay-a", &net.TCPConn{})
 		h.w.run(ctx, nil)
 		if len(h.w.arrived) != 1 {
 			t.Fatalf("round %d: the stopped watcher left no wake-up for the next one", i)
