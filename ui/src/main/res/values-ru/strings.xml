@@ -320,6 +320,8 @@
     <string name="turn_enable">Включить TURN прокси</string>
     <string name="turn_ip">IP TURN</string>
     <string name="turn_ip_hint">(авто)</string>
+    <string name="turn_extra_relays">Доп. релеи TURN</string>
+    <string name="turn_extra_relays_hint">IP[:порт] через запятую</string>
     <string name="turn_port">Порт TURN</string>
     <string name="turn_port_hint">(авто)</string>
     <string name="turn_local_port">Локальный порт</string>
@@ -611,4 +613,47 @@
     <string name="wgk_import_http_error">При импорте подключения сервер вернул HTTP %1$d. Повторите попытку позже.</string>
     <string name="wgk_import_invalid_response">Сервер вернул некорректный ответ. Повторите попытку позже.</string>
     <string name="wgk_import_storage_error">Не удалось прочитать или сохранить конфиг подключения. Проверьте свободное место на устройстве.</string>
+
+    <!-- Режим эксперта: переопределение настроек из конфига бота при следующем подключении -->
+    <string name="wgk_expert_section">Режим эксперта</string>
+    <string name="wgk_expert_switch_label">Режим эксперта</string>
+    <string name="wgk_expert_switch_desc">Переопределить часть настроек из конфига бота. Действует при следующем подключении</string>
+    <string name="wgk_expert_note">Действует при следующем подключении. Выключение режима эксперта возвращает конфиг таким, каким его выдал бот.</string>
+    <string name="wgk_expert_mtu_label">MTU туннеля</string>
+    <string name="wgk_expert_dns_label">DNS внутри туннеля</string>
+    <string name="wgk_expert_links_label">Ссылки на VK-звонки</string>
+    <string name="wgk_expert_from_config">Из конфига</string>
+    <string name="wgk_expert_from_config_value">Из конфига (%1$s)</string>
+    <string name="wgk_expert_mtu_1200">1200 — запас для сотовых сетей</string>
+    <string name="wgk_expert_mtu_1280">1280 — как выдаёт бот</string>
+    <string name="wgk_expert_custom">Своё значение…</string>
+    <string name="wgk_expert_mtu_hint">Число от 1000 до 1500</string>
+    <string name="wgk_expert_mtu_invalid">Введите число от 1000 до 1500</string>
+    <string name="wgk_expert_dns_hint">IP-адреса через запятую</string>
+    <string name="wgk_expert_dns_invalid">Укажите IP-адреса через запятую</string>
+    <string name="wgk_expert_links_own_value">Свои: %1$d</string>
+    <string name="wgk_expert_links_config_value">Из конфига: %1$d</string>
+
+    <!-- Режим эксперта: экран ссылок на VK-звонки -->
+    <string name="wgk_vk_links_title">Ссылки на VK-звонки</string>
+    <string name="wgk_vk_links_own_section">Свои ссылки</string>
+    <string name="wgk_vk_links_hint">По одной ссылке или хешу на строку, до 8</string>
+    <string name="wgk_vk_links_note">Свои ссылки заменяют ссылки из конфига при следующем подключении. Пустое поле — используются ссылки из конфига. Каждая ссылка — отдельные креды, а каждые креды могут стоить капчи.</string>
+    <string name="wgk_vk_links_check">Проверить</string>
+    <string name="wgk_vk_links_save">Сохранить</string>
+    <string name="wgk_vk_links_saved">Сохранено</string>
+    <string name="wgk_vk_links_invalid">Не ссылка на VK-звонок: %1$s</string>
+    <string name="wgk_vk_links_too_many">Не больше 8 ссылок, лишние отброшены</string>
+    <string name="wgk_vk_links_none">Ссылок нет</string>
+    <string name="wgk_vk_links_busy">Предыдущая проверка ещё идёт</string>
+    <string name="wgk_vk_links_config_section">Ссылки из конфига</string>
+    <string name="wgk_vk_links_config_count">Ссылок в конфиге: %1$d</string>
+    <string name="wgk_vk_links_check_config">Проверить ссылки из конфига</string>
+    <string name="wgk_vk_links_checking">Проверяем %1$d из %2$d…</string>
+    <string name="wgk_vk_links_result_ok">Ссылка %1$d: звонок жив</string>
+    <string name="wgk_vk_links_result_auth">Ссылка %1$d: звонок требует входа в VK</string>
+    <string name="wgk_vk_links_result_dead">Ссылка %1$d: звонок завершён или ссылка неверна</string>
+    <string name="wgk_vk_links_result_captcha">Ссылка %1$d: VK требует капчу, проверить нельзя</string>
+    <string name="wgk_vk_links_result_temporary">Ссылка %1$d: VK не ответил, попробуйте позже</string>
+    <string name="wgk_vk_links_result_error">Ссылка %1$d: VK отклонил запрос</string>
 </resources>

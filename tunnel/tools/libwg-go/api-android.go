@@ -38,6 +38,11 @@ func (l AndroidLogger) Printf(format string, args ...interface{}) {
 }
 
 func (l AndroidLogger) write(msg string) {
+	// The VK relay ends STUN reason phrases with a NUL, and pion's error text
+	// carries it into the line; a C string ends there, and "(error 400: Bad
+	// Request)" logged as "(error 400: Bad Request". Only this line is cut on
+	// Android (logcat takes lines one by one), but the tail is the diagnosis.
+	msg = strings.ReplaceAll(msg, "\x00", "")
 	s := C.CString(msg)
 	defer C.free(unsafe.Pointer(s))
 	C.__android_log_write(l.level, l.tag, s)

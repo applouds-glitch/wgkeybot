@@ -92,6 +92,8 @@ type WorkerGroupConfig struct {
 	PeerType string
 	TurnIP   string
 	TurnPort int
+	// ExtraRelays join the relays VK hands out for the link (relay_extra.go).
+	ExtraRelays []string
 
 	// Set for the length of one attempt (pinTransport): the transport it was
 	// registered with, so that its server order and every dial of its race read
@@ -150,9 +152,9 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 // times in a row. Giving up is reported through reportWorkerGaveUp, which
 // escalates to a user-visible terminal failure once no worker is left.
 //
-// UDP streams prefer the elected TURN server (see assignServers). TCP streams
-// spread their preferred relays by stream ID (see assignTCPServers). Remaining
-// candidates are tried if the preferred relay fails or exceeds its head start.
+// Streams spread their preferred relays by stream ID, over UDP and TCP alike (see
+// assignRelays). Remaining candidates are tried if the preferred relay fails or
+// exceeds its head start.
 // failStreak only
 // counts consecutive connect failures to drive the retry backoff. A session
 // that stayed up for a while (or was closed cleanly by the server) resets the
@@ -246,8 +248,9 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 			continue
 		}
 
-		// Apply optional manual TurnIP/TurnPort override to the fetched list.
-		addrs = applyTurnOverride(addrs, cfg)
+		// Apply optional manual TurnIP/TurnPort override to the fetched list,
+		// and the relays the config adds to it.
+		addrs = withExtraRelays(applyTurnOverride(addrs, cfg), cfg)
 
 		if s.attemptOnce(ctx, cfg, user, pass, addrs, &st) {
 			return
@@ -277,14 +280,19 @@ type workerBackoff struct {
 // is woken by that the same as one in a session — the delay belonged to a path
 // that is no longer the one in use.
 func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, pass string, addrs []string, st *workerBackoff) (stop bool) {
-	// TCP spreads preferred relays; UDP keeps the election. Health and
-	// orphaned allocations override either preference. Keep the full list
-	// for the later retry decision, including relays that recover meanwhile.
+	// Both transports spread the streams over the relays (assignRelays). Health,
+	// a resting relay and orphaned allocations override that preference. Keep
+	// the full list for the later retry decision, including relays that recover
+	// meanwhile.
 	//
 	// Registered first: the order below and the dials after it have to follow
 	// the transport the attempt is tagged with.
 	attempt := beginAttempt(ctx, cfg)
 	defer attempt.end()
+	s.attempt.Store(attempt.a)
+	s.relays.Store(&addrs)
+	defer s.attempt.Store(nil)
+	defer s.relays.Store(nil)
 	attemptCfg := cfg.pinTransport(attempt.overTCP)
 
 	ordered := streamAttemptOrder(user, addrs, s.id, attemptCfg, time.Now())
@@ -305,8 +313,8 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 	}
 	if attempt.moved() {
 		// Recycled by a move to another network or relay transport (see
-		// network_switch.go): not a failure of anything, so reconnect over the
-		// new one at once.
+		// network_switch.go), or off a relay that is being rested
+		// (relay_rest.go): not a failure of anything, so reconnect at once.
 		st.failStreak = 0
 		return false
 	}
@@ -364,7 +372,9 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 		turnLog("[WORKER %d] 486 from %s while %s gave no answer — one more try on the same creds before they are given up",
 			s.id, quota, silent)
 	}
-	if !graced && classifyCredError(runErr) {
+	// Unless it is a 486 the breaker holds minting against: a relay refusing
+	// fresh credentials is not cured by another one (quota_breaker.go).
+	if !graced && classifyCredError(runErr) && !quotaRefusalPausesMinting(runErr, cfg.GroupID, user, time.Now()) {
 		refreshGroupCreds(cfg.GroupID, user)
 	}
 
@@ -384,11 +394,7 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 	// that failed twice on a dead relay waited 7-17s before trying the
 	// working one — most of TunnelManager's 25s connect budget, spent
 	// sleeping next to a server that was already known to work.
-	retryCandidates := ordered // preserve the UDP election's retry policy
-	if relayOverTCP(cfg) {
-		retryCandidates = addrs
-	}
-	if streamAttemptOrder(user, retryCandidates, s.id, cfg, time.Now())[0] != attemptHead {
+	if streamAttemptOrder(user, addrs, s.id, cfg, time.Now())[0] != attemptHead {
 		st.failStreak = 0
 	}
 
@@ -513,6 +519,15 @@ func reconnectDelay(failStreak int) time.Duration {
 // rejection (486). Narrower than classifyCredError: only the quota case warrants
 // the long quotaCooldown, because the cred IS valid — its allocation slots are
 // just full (usually with our own zombie allocations after a mass teardown).
+// isAllocateMismatch: the relay answered 437 — a 5-tuple that already has an
+// allocation (Allocate: the translator handed this socket the port of one out
+// of reach), or none any more (Refresh, a deallocate). Never the credential's
+// fault, and not the relay's: the worker's next attempt takes a fresh socket.
+func isAllocateMismatch(err error) bool {
+	code, ok := turnErrorCode(err)
+	return ok && code == stun.CodeAllocMismatch
+}
+
 func isQuotaError(err error) bool {
 	if code, ok := turnErrorCode(err); ok {
 		return code == stun.CodeAllocQuotaReached
@@ -579,9 +594,14 @@ func quotaCooldown() time.Duration {
 func classifyCredError(err error) bool {
 	if code, ok := turnErrorCode(err); ok {
 		switch code {
+		// 437 is not here. iOS field log 2026-09-28 12:58: Allocate answered
+		// 437 on a fresh socket, the credential was rotated, and the fresh
+		// credential got the same 437 on both relays — the 5-tuple was the
+		// problem (a port the translator reused for an allocation out of
+		// reach), and the worker's next socket succeeded. A trip to VK for it
+		// is a step towards a captcha for nothing (isAllocateMismatch).
 		case stun.CodeUnauthorized, // 401
 			stun.CodeStaleNonce,           // 438
-			stun.CodeAllocMismatch,        // 437
 			stun.CodeWrongCredentials,     // 441
 			stun.CodeAllocQuotaReached,    // 486
 			stun.CodeInsufficientCapacity: // 508
@@ -599,7 +619,6 @@ func classifyCredError(err error) bool {
 		strings.Contains(e, "error 401") ||
 		strings.Contains(e, "unauthorized") ||
 		strings.Contains(e, "stale nonce") ||
-		strings.Contains(e, "allocation mismatch") ||
 		strings.Contains(e, "attribute not found") ||
 		strings.Contains(e, "error 508") ||
 		strings.Contains(e, "error 29")

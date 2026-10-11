@@ -89,7 +89,7 @@ func TestDeadStreamDetectorReportsTheTypedError(t *testing.T) {
 	activity := newStreamActivity(now.Add(-deadStreamTimeout-time.Second), 0)
 	got := make(chan error, 1)
 	s := &stream{id: 7}
-	s.runKeepalive(context.Background(), activity, func(err error) { got <- err }, func(int) error { return nil })
+	s.runKeepalive(context.Background(), activity, func(err error) { got <- err }, func(int) error { return nil }, nil)
 
 	var dead *deadStreamError
 	select {
@@ -118,7 +118,7 @@ func TestFreezeResetDoesNotShortenTheSilence(t *testing.T) {
 	activity.resetLiveness(now.Add(-deadStreamTimeout - time.Second))
 
 	got := make(chan error, 1)
-	(&stream{id: 8}).runKeepalive(context.Background(), activity, func(err error) { got <- err }, func(int) error { return nil })
+	(&stream{id: 8}).runKeepalive(context.Background(), activity, func(err error) { got <- err }, func(int) error { return nil }, nil)
 	var dead *deadStreamError
 	select {
 	case err := <-got:

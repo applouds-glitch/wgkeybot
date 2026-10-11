@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -166,7 +167,7 @@ func (w *staleWatch) observe(streams []*stream, now time.Time) []string {
 		w.stale[i] = isStale
 		if isStale {
 			lines = append(lines, fmt.Sprintf("[DISPATCH] stream %d silent for %v — skipped while siblings hear echoes",
-				st.id, st.activity.Load().rxAge(now).Round(time.Second)))
+				st.id, st.activity.Load().heardAge(now).Round(time.Second)))
 			// Over TCP, what the socket looked like at that moment (nothing over UDP).
 			if line := relaySockets.silentSocketLine(st); line != "" {
 				lines = append(lines, line)
@@ -186,4 +187,99 @@ func (w *staleWatch) observe(streams []*stream, now time.Time) []string {
 		}
 	}
 	return lines
+}
+
+// thawHold keeps WireGuard's handshake initiation while every ready stream is
+// silent — the moment after a thaw. Field 2026-09-28, build 10, Wi-Fi: after
+// freezes of 1m18s and 2m43s every allocation was dead, the initiation sent at
+// the thaw was lost, and WireGuard asked again only at RekeyTimeout, 5 s at a
+// time, seven times in a row. The one packet the tunnel's recovery hangs on is
+// released the moment one stream has heard its relay (the probe's echo, a
+// fresh session's proof) — the dispatcher then prefers that stream — or after
+// thawHoldMax through whatever is there. Only the newest initiation is kept;
+// every other packet is dispatched as always (a data packet into a dead stream
+// costs its sender a retransmit, an initiation costs the tunnel five seconds).
+const (
+	thawHoldPoll = 50 * time.Millisecond
+)
+
+// Vars so that a test can shrink them; nothing else writes them.
+var thawHoldMax = 2500 * time.Millisecond
+
+// isWireGuardInitiation: a handshake initiation (message type 1, 148 bytes).
+func isWireGuardInitiation(pkt []byte) bool {
+	return len(pkt) == 148 && pkt[0] == 1 && pkt[1] == 0 && pkt[2] == 0 && pkt[3] == 0
+}
+
+// anyStreamProven: some ready stream has heard its relay within
+// dispatchStaleAfter — the moment a held initiation may go.
+func anyStreamProven(streams []*stream, now time.Time) bool {
+	for _, st := range streams {
+		if st.ready.Load() && !st.dispatchStale(now) {
+			return true
+		}
+	}
+	return false
+}
+
+type thawHold struct {
+	mu      sync.Mutex
+	held    []byte
+	since   time.Time
+	holding bool
+}
+
+// offer takes pkt (a pooled buffer) if it is to be held, and reports whether
+// it did; a packet not taken is the caller's to dispatch. send dispatches a
+// released packet and owns its buffer from then on. Called with the caller's
+// dispatch lock held; release never calls send under h.mu, so send may take
+// that lock.
+func (h *thawHold) offer(pkt []byte, allSilent bool, now time.Time, streams []*stream, send func(pkt []byte, now time.Time) bool) bool {
+	if !allSilent || !isWireGuardInitiation(pkt) {
+		return false
+	}
+	h.mu.Lock()
+	if h.held != nil {
+		packetPool.Put(h.held[:cap(h.held)]) // only the newest initiation matters
+	}
+	h.held = pkt
+	start := !h.holding
+	if start {
+		h.holding = true
+		h.since = now
+	}
+	h.mu.Unlock()
+	if start {
+		go h.release(streams, send)
+	}
+	return true
+}
+
+func (h *thawHold) release(streams []*stream, send func([]byte, time.Time) bool) {
+	ticker := time.NewTicker(thawHoldPoll)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		proven := anyStreamProven(streams, now)
+		h.mu.Lock()
+		waited := now.Sub(h.since)
+		if !proven && waited < thawHoldMax {
+			h.mu.Unlock()
+			continue
+		}
+		pkt := h.held
+		h.held, h.holding = nil, false
+		h.mu.Unlock()
+		if pkt == nil {
+			return
+		}
+		sent := send(pkt, now)
+		why := "a stream has heard its relay"
+		if !proven {
+			why = "no stream proved itself in time"
+		}
+		turnLog("[DISPATCH] WireGuard handshake initiation held %v while every stream was silent — %s, sent=%v",
+			waited.Round(10*time.Millisecond), why, sent)
+		return
+	}
 }

@@ -6,8 +6,10 @@
 package main
 
 import (
+	"errors"
 	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -87,11 +89,13 @@ var allocationBook = struct {
 	orphanedTill map[relayIdentity]time.Time
 	announced    map[relayIdentity]bool      // this mark has already been logged as steering a dial
 	releasedAt   map[relayIdentity]time.Time // when our latest release there went out
+	succeeded    map[string]bool             // credentials at least one allocation was ever accepted on (quota_breaker.go)
 }{
 	live:         map[relayIdentity]int{},
 	orphanedTill: map[relayIdentity]time.Time{},
 	announced:    map[relayIdentity]bool{},
 	releasedAt:   map[relayIdentity]time.Time{},
+	succeeded:    map[string]bool{},
 }
 
 // trackedRelay counts one live allocation until it is closed. The relay conn is
@@ -110,6 +114,7 @@ func trackAllocation(relay net.PacketConn, user, addr string) net.PacketConn {
 	key := relayIdentity{user: user, relay: addr}
 	allocationBook.Lock()
 	allocationBook.live[key]++
+	allocationBook.succeeded[user] = true
 	allocationBook.Unlock()
 	return &trackedRelay{PacketConn: relay, key: key}
 }
@@ -161,6 +166,43 @@ func orphanLocked(key relayIdentity, now time.Time) bool {
 	return fresh
 }
 
+// noteOutOfReach marks (user, relay) orphaned after a session whose allocation
+// the relay no longer answered to: 400 on CreatePermission after a thaw, or no
+// echo to the post-wake probe (outOfReachError). The socket woke under a new
+// NAT mapping while the allocation lives on under the old 5-tuple (anton48's
+// stand, build 432): the Refresh(0) the close sent went out on the new one,
+// which the relay does not know, so the seat is held for the rest of the
+// allocation's lifetime — and the release "went out", so releasedAt would read a
+// 486 from there as our release settling. The mark steers the next attempts to
+// the other relays and settlingQuotaError leaves an orphaned relay out.
+func noteOutOfReach(user, relay string, now time.Time) {
+	key := relayIdentity{user: user, relay: relay}
+	allocationBook.Lock()
+	fresh := orphanLocked(key, now)
+	allocationBook.Unlock()
+	if fresh {
+		turnLog("[QUOTA] our allocation on %s was out of reach (the relay no longer knew its socket) — creds %s held there for %v, other relays go first",
+			relay, credsTag(user), orphanedAllocationLifetime)
+	}
+}
+
+// outOfReachError reports whether a session ended because the relay no longer
+// knew its socket: the relay's own 400 to a CreatePermission (permWatch, the
+// allocation check), or the post-wake probe's verdict. The periodic detector's
+// verdict is not one — a relay silent for 90s on a network that is still there
+// may just as well have dropped the allocation, and a lost network marks the
+// allocations itself (noteBoundNetwork).
+func outOfReachError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dead *deadStreamError
+	if errors.As(err, &dead) {
+		return dead.probe
+	}
+	return strings.Contains(err.Error(), permBadRequestMarker)
+}
+
 // noteBoundNetwork records the physical network our sockets are now bound to
 // (0 when there is none). Leaving a network orphans every allocation still
 // counted live: their sockets are bound to it and can no longer release them.
@@ -192,15 +234,6 @@ func noteBoundNetwork(handle int64, now time.Time) {
 			prev,
 			m.count, m.key.relay, credsTag(m.key.user), orphanedAllocationLifetime)
 	}
-}
-
-// attemptOrder is the server order for one attempt on user's credential: the
-// session's order (assignServers — election, stand-downs, canonical order),
-// with relays still holding our orphaned allocations for this credential moved
-// to the end. Callers comparing "where would the next attempt go" must use this
-// too, not assignServers alone, or they see a different head than the attempt.
-func attemptOrder(user string, addrs []string, now time.Time) []string {
-	return orderAroundOrphans(user, assignServers(addrs), now)
 }
 
 // orderAroundOrphans moves the relays holding orphaned allocations for user to

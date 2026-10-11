@@ -9,8 +9,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.PowerManager
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
@@ -18,13 +22,25 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * The stats poller ([com.wireguard.android.model.TunnelStateTracker]) only exists
  * to feed UI surfaces; with the screen off nobody is looking, so it parks on this
- * signal instead of burning a JNI stats call every 2s all night. This is purely a
- * display concern — it never touches the tunnel, keepalives, or reconnect logic,
- * and the handshake watchdog keeps running unchanged to catch a dead tunnel.
+ * signal instead of burning a JNI stats call every 2s all night. The screen state
+ * itself is purely a display concern — it never touches the tunnel, keepalives,
+ * or reconnect logic, and the handshake watchdog keeps running unchanged to catch
+ * a dead tunnel.
+ *
+ * [userPresent] is the one signal here that does reach the tunnel: the unlock is
+ * the moment the user expects it to work, so the native TURN layer is told to
+ * check its streams right then ([com.wireguard.android.turn.TurnProxyManager.onUserPresent]).
+ * The unlock, not the screen coming on: notifications light the lock screen
+ * without anyone about to use the network.
  */
 object ScreenStateMonitor {
     private val _screenOn = MutableStateFlow(true)
     val screenOn: StateFlow<Boolean> = _screenOn.asStateFlow()
+
+    // One slot, newest wins: unlocks that pile up before the collector runs are
+    // one unlock as far as the tunnel is concerned.
+    private val _userPresent = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    val userPresent: SharedFlow<Unit> = _userPresent.asSharedFlow()
 
     fun init(context: Context) {
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -34,12 +50,14 @@ object ScreenStateMonitor {
                 when (intent.action) {
                     Intent.ACTION_SCREEN_ON -> _screenOn.value = true
                     Intent.ACTION_SCREEN_OFF -> _screenOn.value = false
+                    Intent.ACTION_USER_PRESENT -> _userPresent.tryEmit(Unit)
                 }
             }
         }
         context.applicationContext.registerReceiver(receiver, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
         })
     }
 }

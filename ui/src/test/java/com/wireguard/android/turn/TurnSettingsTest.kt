@@ -29,6 +29,19 @@ class TurnSettingsTest {
     }
 
     @Test
+    fun `extra relays round-trip through the config comments`() {
+        val settings = TurnSettings.fromComments(listOf(
+            "#@wgt:EnableTURN = true",
+            "#@wgt:ExtraRelays = 95.163.34.168, 95.163.34.190:3478",
+        ))!!
+        assertEquals("95.163.34.168, 95.163.34.190:3478", settings.extraRelays)
+        assertEquals(settings, TurnSettings.fromComments(settings.toComments()))
+        val none = TurnSettings.fromComments(listOf("#@wgt:EnableTURN = true"))!!
+        assertEquals("", none.extraRelays)
+        assertEquals(false, none.toComments().any { it.contains("ExtraRelays") })
+    }
+
+    @Test
     fun `validation enforces ten streams per credential independently of total`() {
         val settings = TurnSettings(
             enabled = true,

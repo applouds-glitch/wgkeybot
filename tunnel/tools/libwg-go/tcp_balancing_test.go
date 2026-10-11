@@ -35,7 +35,7 @@ func TestTCPPoolBalancesAndRecoversOnTheSurvivingRelay(t *testing.T) {
 	}
 }
 
-func TestTCPRelayPreferencesPreserveHealthAndUDPPolicy(t *testing.T) {
+func TestRelayPreferencesSpreadBothTransportsAndPreserveHealth(t *testing.T) {
 	resetServerHealth()
 	t.Cleanup(resetServerHealth)
 	resetAllocationBook(t)
@@ -45,31 +45,30 @@ func TestTCPRelayPreferencesPreserveHealthAndUDPPolicy(t *testing.T) {
 	addrs := []string{electTestB, electTestA, electTestB}
 	original := slices.Clone(addrs)
 	tcp, udp := WorkerGroupConfig{}, WorkerGroupConfig{UseUDP: true}
-	proveServer(electTestB, time.Millisecond, electionSettleWindow+time.Second)
-	proveServer(electTestA, time.Second, electionSettleWindow+time.Second)
+	proveServer(electTestB, time.Minute)
+	proveServer(electTestA, time.Minute)
 
+	// UDP spreads the way TCP does (relay_judge.go needs a second relay to
+	// compare with).
 	for id := 0; id < 10; id++ {
-		got := streamAttemptOrder("user", addrs, id, tcp, now)
 		want := []string{electTestA, electTestB}[id%2]
-		if len(got) != 2 || got[0] != want {
-			t.Fatalf("TCP stream %d got %v, want preferred %s with one fallback", id, got, want)
-		}
-		if got := streamAttemptOrder("user", addrs[:2], id, udp, now); got[0] != electTestB {
-			t.Fatalf("UDP stream %d ignored the elected relay: %v", id, got)
+		for _, cfg := range []WorkerGroupConfig{tcp, udp} {
+			got := streamAttemptOrder("user", addrs, id, cfg, now)
+			if len(got) != 2 || got[0] != want {
+				t.Fatalf("stream %d (UseUDP=%v) got %v, want preferred %s with one fallback", id, cfg.UseUDP, got, want)
+			}
 		}
 	}
 	if !slices.Equal(addrs, original) {
 		t.Fatal("relay ordering mutated cached credentials")
 	}
 
-	// Android's per-network override must select the same policy as the config.
-	setRelayTransport(relayTransportTCP)
-	if got := streamAttemptOrder("user", addrs, 0, udp, now); got[0] != electTestA {
-		t.Fatalf("TCP network override did not distribute streams: %v", got)
-	}
-	setRelayTransport(relayTransportUDP)
-	if got := streamAttemptOrder("user", addrs[:2], 0, tcp, now); got[0] != electTestB {
-		t.Fatalf("UDP network override did not keep election: %v", got)
+	// Android's per-network override changes the transport, not the spread.
+	for _, choice := range []int32{relayTransportTCP, relayTransportUDP} {
+		setRelayTransport(choice)
+		if got := streamAttemptOrder("user", addrs, 1, udp, now); got[0] != electTestB {
+			t.Fatalf("transport override %d moved stream 1 off its relay: %v", choice, got)
+		}
 	}
 	setRelayTransport(relayTransportAsConfigured)
 

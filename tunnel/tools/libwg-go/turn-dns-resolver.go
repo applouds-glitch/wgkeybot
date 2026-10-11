@@ -259,6 +259,59 @@ func isContextErr(err error) bool {
 // touching the network.
 var resolveAnyFn = resolveAny
 
+// The DoH and DoT ports, variables only so a test can point them at a local
+// listener.
+var (
+	dohPort = "443"
+	dotPort = "853"
+)
+
+// dnsReached marks a query that failed after the resolver itself had spoken: a
+// reply came back — an rcode, an empty or unreadable one, an HTTP status, a DoH
+// body cut short — or a DoT session got past a TLS handshake that proved the
+// server's certificate. Anything short of that proves nothing about the network
+// beyond the phone: a refused connection or an accepted one may be a firewall or
+// a captive portal on the way, and a timeout, a protect() refusal or a missing
+// route is the phone's side outright. Erring towards "not reached" costs little —
+// see fetchVkCreds, which asks for the legacy host before writing the legacy
+// chain off. The message is the inner error's.
+type dnsReached struct{ error }
+
+func (e dnsReached) Unwrap() error { return e.error }
+
+func dnsReachedf(format string, a ...interface{}) error {
+	return dnsReached{fmt.Errorf(format, a...)}
+}
+
+// serverReached: this query's failure came back from a resolver (dnsReached).
+func serverReached(err error) bool {
+	var reached dnsReached
+	return errors.As(err, &reached)
+}
+
+// dnsResolveError is "all DNS servers failed for <name>", with whether any of
+// them was reached. When none was — the network's own resolvers and the public
+// ones over plain DNS, DoH and DoT all silent — that is no verdict on the name:
+// it is the phone's network not carrying the queries out (vk_calls.go reads it
+// so). One reached server, even one that only said SERVFAIL, keeps the failure
+// the name's.
+type dnsResolveError struct {
+	error
+	reached bool
+}
+
+func (e dnsResolveError) Unwrap() error { return e.error }
+
+// dnsLookupOutcome finds the lookup failure in err: isLookup says whether there
+// is one at all, reached whether any server was reached in it.
+func dnsLookupOutcome(err error) (reached, isLookup bool) {
+	var lookup dnsResolveError
+	if !errors.As(err, &lookup) {
+		return false, false
+	}
+	return lookup.reached, true
+}
+
 type dnsRaceResult struct {
 	idx int
 	ips []string
@@ -304,6 +357,7 @@ func resolveWithOrderedServers(ctx context.Context, domain string) ([]string, er
 		started  int
 		finished int
 		firstErr error
+		reached  bool // some server was reached, if only to say no
 	)
 	for finished < len(servers) {
 		// Once every server is running there is nothing left to start, and the
@@ -325,7 +379,7 @@ func resolveWithOrderedServers(ctx context.Context, domain string) ([]string, er
 			go func() {
 				ips, err := resolve(ctx, domain, server)
 				if err == nil && len(ips) == 0 {
-					err = errors.New("no addresses in DNS answer")
+					err = dnsReachedf("no addresses in DNS answer")
 				}
 				// Buffered for every server, so a straggler losing the race
 				// still delivers and exits instead of leaking.
@@ -348,6 +402,7 @@ func resolveWithOrderedServers(ctx context.Context, domain string) ([]string, er
 			if firstErr == nil {
 				firstErr = res.err
 			}
+			reached = reached || serverReached(res.err)
 			// A server that already said no is not worth waiting the stagger
 			// out for: bring the next one forward.
 			if started < len(servers) {
@@ -357,7 +412,14 @@ func resolveWithOrderedServers(ctx context.Context, domain string) ([]string, er
 		}
 	}
 
-	return nil, fmt.Errorf("all DNS servers failed for %s: %w", domain, firstErr)
+	// A cancellation can lose the select to the last result, and the query its
+	// closing sockets failed is no verdict on any server: the caller that is
+	// still alive must see a cancellation to take the lookup over (ResolveAll),
+	// not a network that answered nothing.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, dnsResolveError{fmt.Errorf("all DNS servers failed for %s: %w", domain, firstErr), reached}
 }
 
 // resolveAny resolves DNS using the specified server
@@ -439,7 +501,7 @@ func resolveDoHWithServer(ctx context.Context, domain string, serverIP string, s
 
 	// Build HTTP request with IP directly (no DNS resolution needed)
 	// DoH uses port 443. JoinHostPort brackets IPv6 hosts for the URL.
-	addr := net.JoinHostPort(serverIP, "443")
+	addr := net.JoinHostPort(serverIP, dohPort)
 	ipURL := "https://" + addr + "/dns-query"
 	req, err := http.NewRequestWithContext(ctx, "POST", ipURL, bytes.NewReader(query))
 	if err != nil {
@@ -453,8 +515,8 @@ func resolveDoHWithServer(ctx context.Context, domain string, serverIP string, s
 	client := &http.Client{
 		Timeout: dohTimeout,
 		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return protectAndDial(ctx, network, net.JoinHostPort(serverIP, "443"))
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return protectAndDial(ctx, network, addr)
 			},
 			TLSClientConfig: &tls.Config{
 				ServerName: serverName,
@@ -475,12 +537,12 @@ func resolveDoHWithServer(ctx context.Context, domain string, serverIP string, s
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("DoH returned status %d", resp.StatusCode)
+		return nil, dnsReachedf("DoH returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, dnsReached{err}
 	}
 
 	return parseDNSResponse(body, domain)
@@ -502,7 +564,7 @@ func resolveDoTWithServer(ctx context.Context, domain string, serverIP string, s
 	}
 
 	// DoT uses port 853
-	tcpConn, err := protectAndDial(ctx, "tcp", net.JoinHostPort(serverIP, "853"))
+	tcpConn, err := protectAndDial(ctx, "tcp", net.JoinHostPort(serverIP, dotPort))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to DoT server: %w", err)
 	}
@@ -523,6 +585,8 @@ func resolveDoTWithServer(ctx context.Context, domain string, serverIP string, s
 	if err != nil {
 		return nil, fmt.Errorf("TLS handshake failed: %w", err)
 	}
+	// The certificate checked out: the resolver itself is on the other end, so
+	// whatever fails from here failed at a server reached (dnsReached).
 
 	// Send DNS query with 2-byte length prefix (DoT protocol)
 	lengthPrefix := make([]byte, 2)
@@ -530,21 +594,21 @@ func resolveDoTWithServer(ctx context.Context, domain string, serverIP string, s
 
 	_, err = tlsConn.Write(append(lengthPrefix, query...))
 	if err != nil {
-		return nil, fmt.Errorf("failed to send DoT query: %w", err)
+		return nil, dnsReachedf("failed to send DoT query: %w", err)
 	}
 
 	// Read response length
 	lengthBuf := make([]byte, 2)
 	_, err = io.ReadFull(tlsConn, lengthBuf)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read DoT response length: %w", err)
+		return nil, dnsReachedf("failed to read DoT response length: %w", err)
 	}
 
 	responseLen := binary.BigEndian.Uint16(lengthBuf)
 	response := make([]byte, responseLen)
 	_, err = io.ReadFull(tlsConn, response)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read DoT response: %w", err)
+		return nil, dnsReachedf("failed to read DoT response: %w", err)
 	}
 
 	return parseDNSResponse(response, domain)
@@ -586,25 +650,25 @@ func buildDNSQuery(domain string) ([]byte, error) {
 // that can be reached — see DnsCache.
 func parseDNSResponse(response []byte, domain string) ([]string, error) {
 	if len(response) < 12 {
-		return nil, fmt.Errorf("DNS response too short")
+		return nil, dnsReachedf("DNS response too short")
 	}
 
 	// Check response flag
 	flags := binary.BigEndian.Uint16(response[2:4])
 	if flags&0x8000 == 0 {
-		return nil, fmt.Errorf("not a DNS response")
+		return nil, dnsReachedf("not a DNS response")
 	}
 
 	// Check response code
 	rcode := flags & 0x000F
 	if rcode != 0 {
-		return nil, fmt.Errorf("DNS error: rcode=%d", rcode)
+		return nil, dnsReachedf("DNS error: rcode=%d", rcode)
 	}
 
 	// Get answer count
 	ansCount := binary.BigEndian.Uint16(response[6:8])
 	if ansCount == 0 {
-		return nil, fmt.Errorf("no answers in DNS response")
+		return nil, dnsReachedf("no answers in DNS response")
 	}
 
 	// Skip question section
@@ -660,7 +724,7 @@ func parseDNSResponse(response []byte, domain string) ([]string, error) {
 	}
 
 	if len(ips) == 0 {
-		return nil, fmt.Errorf("no A record found in DNS response")
+		return nil, dnsReachedf("no A record found in DNS response")
 	}
 	return ips, nil
 }

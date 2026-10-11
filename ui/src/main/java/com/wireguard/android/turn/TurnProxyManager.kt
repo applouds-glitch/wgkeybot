@@ -19,9 +19,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -293,13 +295,18 @@ class TurnProxyManager(private val context: Context) {
                     return@withContext false
                 }
 
-                // If there is no network yet, give the monitor one quick moment. Only
-                // for the log line: native binds to whatever wgSetNetwork last pushed.
+                // No network known: ask Android again — its "no network" can be stale
+                // (PhysicalNetworkMonitor.reask) — and give the answer a moment. Native
+                // takes whatever comes through the rawPath collector either way; the
+                // wait is so that the startup window does not open with the workers
+                // parked on a network the phone is using.
                 var network = networkMonitor.currentPath?.network
                 if (network == null) {
-                    Log.w(TAG, "Network still null, waiting 500ms for PhysicalNetworkMonitor...")
-                    delay(500)
-                    network = networkMonitor.currentPath?.network
+                    Log.w(TAG, "No physical network known — asking Android again")
+                    networkMonitor.reaskNow()
+                    network = withTimeoutOrNull(NETWORK_REASK_WAIT_MS) {
+                        networkMonitor.rawPath.first { it != null }
+                    }?.network
                 }
 
                 val networkHandle = network?.getNetworkHandle() ?: 0L
@@ -307,15 +314,23 @@ class TurnProxyManager(private val context: Context) {
                 Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $network (type=$networkType, handle=$networkHandle, mtu=${networkMonitor.mtuOf(network)}, validated=${networkMonitor.validated.value})")
 
                 val stability = isStabilityMode()
+                // Expert mode's own links, while it is on and has any, stand in
+                // for the config's on this start — for the start only, so the
+                // bot's next config refresh changes nothing here. Counted, never
+                // printed: the journal is exported, and a join link admits anyone.
+                val ownLinks = ExpertSettings.getInstance(context).vkLinksForStart()
+                val configuredVkLink = ownLinks?.joinToString(",") ?: settings.vkLink
+                if (ownLinks != null) {
+                    Log.i(TAG, "Expert mode: ${ownLinks.size} own VK link(s) stand in for the ${VkLinks.split(settings.vkLink).size} from the config")
+                }
                 val effectiveVkLink = if (stability) {
-                    settings.vkLink.split(",", "|").map { it.trim() }
-                        .firstOrNull { it.isNotEmpty() } ?: settings.vkLink
+                    VkLinks.split(configuredVkLink).firstOrNull() ?: configuredVkLink
                 } else {
-                    settings.vkLink
+                    configuredVkLink
                 }
                 val effectivePeerType = if (stability) "proxy_v2" else settings.peerType
                 val effectiveWrapKey = if (stability) "" else settings.wrapKey
-                Log.d(TAG, "Mode: ${if (stability) "Stability (proxy_v2, 1 link, no WRAP)" else "Speed (${settings.peerType}, ${settings.vkLink.split(",","|").count { it.isNotBlank() }} links, WRAP=${settings.wrapKey.isNotBlank()})"}")
+                Log.d(TAG, "Mode: ${if (stability) "Stability (proxy_v2, 1 link, no WRAP)" else "Speed (${settings.peerType}, ${VkLinks.split(configuredVkLink).size} links, WRAP=${settings.wrapKey.isNotBlank()})"}")
 
                 // Build list of stream counts to try.
                 // 1. Last successful count (fast path on reconnect)
@@ -342,6 +357,13 @@ class TurnProxyManager(private val context: Context) {
                         Log.d(TAG, "Stop requested — abandoning TURN start")
                         break
                     }
+                    if (attempt > 0 && networkMonitor.currentPath == null) {
+                        // The workers sat parked for the whole window: no stream count
+                        // fails differently on no network. Field log 2026-10-09: every
+                        // connect without one took 30s at 8 streams, then 30s at 6.
+                        Log.d(TAG, "No physical network — not trying $streamsToTry streams")
+                        break
+                    }
                     if (attempt > 0) {
                         val label = when {
                             remembered != null && attempt == 1 && streamsToTry == settings.streams -> "remembered count failed, trying primary $streamsToTry"
@@ -362,7 +384,8 @@ class TurnProxyManager(private val context: Context) {
                         effectivePeerType,
                         settings.streamsPerCred,
                         settings.watchdogTimeout,
-                        effectiveWrapKey
+                        effectiveWrapKey,
+                        settings.extraRelays
                     )
 
                     if (ret == START_CALL_REQUIRES_AUTH) {
@@ -473,6 +496,19 @@ class TurnProxyManager(private val context: Context) {
             }
         }
 
+    /**
+     * The device was just unlocked ([com.wireguard.android.util.ScreenStateMonitor.userPresent]):
+     * the native streams ask their relays whether they survived the pause, so a
+     * stream whose NAT mapping died while the phone lay idle is recycled within a
+     * round trip of the unlock rather than when the 90s detector gets to it. Only
+     * while a proxy is running — the native side is a no-op otherwise too — and
+     * off the main thread: the call is a JNI hop that takes a Go mutex.
+     */
+    fun onUserPresent() {
+        if (activeTunnelName == null) return
+        scope.launch { TurnBackend.wgTurnProxyWake() }
+    }
+
     fun isRunning(tunnelName: String): Boolean {
         return instances[tunnelName]?.running == true
     }
@@ -521,6 +557,10 @@ class TurnProxyManager(private val context: Context) {
     companion object {
         private const val TAG = "WireGuard/TurnProxyManager"
         private const val MAX_LOG_CHARS = 128 * 1024
+
+        // How long a connect that knows no network waits for Android's answer to
+        // being asked again (a fresh registration answers within milliseconds).
+        private const val NETWORK_REASK_WAIT_MS = 1_500L
 
         /** wgTurnProxyStart: the call refuses anonymous joins (CALL_REQUIRES_AUTH). */
         const val START_CALL_REQUIRES_AUTH = -2

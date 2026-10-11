@@ -149,8 +149,18 @@ type streamActivity struct {
 	// lastHeard is lastRx without the freeze reset: the last packet that really
 	// arrived, or the session's start if none has. It is for the health
 	// accounting — how long the relay was silent — which the detector's clock
-	// cannot answer once resetLiveness has moved it.
+	// cannot answer once resetLiveness has moved it — and for the dispatcher,
+	// which trusts a stream on a real echo, not on a reset (dispatchStale).
 	lastHeard atomic.Int64
+
+	// lastPong is the highest seq the server has echoed back on this session
+	// (stunProbeSeq): the post-wake probe's mark. It only moves forward — a late
+	// or repeated echo never takes back what a newer one has shown — and starts
+	// from zero with every session, as the probe's seq does (wake_probe.go).
+	// probeSent is the highest seq the probe has written: an echo naming a seq
+	// beyond it is not ours and moves nothing.
+	lastPong  atomic.Uint64
+	probeSent atomic.Uint64
 }
 
 func newStreamActivity(now time.Time, phase time.Duration) *streamActivity {
@@ -164,6 +174,30 @@ func (a *streamActivity) noteRx(now time.Time) {
 	a.lastRx.Store(now.UnixNano())
 	a.lastHeard.Store(now.UnixNano())
 }
+
+// notePong records an echoed probe seq; forward only, and never beyond what
+// the probe has sent.
+func (a *streamActivity) notePong(seq uint64) {
+	if seq > a.probeSent.Load() {
+		return
+	}
+	for {
+		old := a.lastPong.Load()
+		if seq <= old || a.lastPong.CompareAndSwap(old, seq) {
+			return
+		}
+	}
+}
+
+// noteProbeEcho is the RX path's call for an echoed STUN keepalive: only one
+// of our probe's shape names a seq (isStunProbeEcho).
+func (a *streamActivity) noteProbeEcho(b []byte) {
+	if isStunProbeEcho(b) {
+		a.notePong(stunProbeSeq(b))
+	}
+}
+
+func (a *streamActivity) pongMark() uint64 { return a.lastPong.Load() }
 
 // heardAge is how long ago the relay was last really heard — since the session
 // began, if it never was.
@@ -246,5 +280,24 @@ func waitUntil(ctx context.Context, deadline time.Time) bool {
 		return false
 	case <-timer.C:
 		return true
+	}
+}
+
+// waitUntilOrWake is waitUntil that also returns, with woke = true, when a
+// host wake is broadcast (hostWakeChannel). ok = false means ctx is done.
+func waitUntilOrWake(ctx context.Context, deadline time.Time, wake <-chan struct{}) (woke, ok bool) {
+	delay := time.Until(deadline)
+	if delay <= 0 {
+		return false, ctx.Err() == nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false, false
+	case <-timer.C:
+		return false, true
+	case <-wake:
+		return true, true
 	}
 }

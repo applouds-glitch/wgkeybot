@@ -5,11 +5,9 @@
 package com.wireguard.android.activity
 
 import android.content.Context
-import android.content.DialogInterface
 import android.os.Bundle
 import android.util.Log
 import android.util.Patterns
-import android.view.LayoutInflater
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -20,9 +18,6 @@ import androidx.core.view.updatePadding
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
-import com.google.android.material.textfield.TextInputLayout
 import com.wireguard.android.Application
 import com.wireguard.android.R
 import com.wireguard.android.databinding.RoutingSettingsActivityBinding
@@ -229,35 +224,10 @@ class RoutingSettingsActivity : AppCompatActivity() {
         invalid: Int,
         onSave: (String) -> Unit,
     ) {
-        val view = LayoutInflater.from(this).inflate(R.layout.wgk_text_input_dialog, null)
-        val layout = view.findViewById<TextInputLayout>(R.id.wgk_input_layout)
-        val field = view.findViewById<TextInputEditText>(R.id.wgk_input_text)
-        layout.hint = getString(hint)
-        field.setText(current)
-        field.setSelection(current.length)
-        val prompt = MaterialAlertDialogBuilder(this)
-            .setTitle(title)
-            .setView(view)
-            .setPositiveButton(android.R.string.ok, null)
-            .setNegativeButton(android.R.string.cancel, null)
-            .create()
         dialog?.dismiss()
+        val prompt = showTextInputDialog(title, hint, current, validate = validate, invalid = invalid, onSave = onSave)
         dialog = prompt
         prompt.setOnDismissListener { if (dialog === prompt) dialog = null }
-        prompt.setOnShowListener {
-            // Bound here rather than in the builder so a rejected value keeps the
-            // dialog open with the error under the field.
-            prompt.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
-                val value = field.text?.toString()?.trim().orEmpty()
-                if (!validate(value)) {
-                    layout.error = getString(invalid)
-                    return@setOnClickListener
-                }
-                prompt.dismiss()
-                onSave(value)
-            }
-        }
-        prompt.show()
     }
 
     /** Fetches the rules now and applies them to a live session. */

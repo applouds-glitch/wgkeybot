@@ -32,6 +32,8 @@ import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.configStore.ConfigStore
 import com.wireguard.android.databinding.ObservableSortedKeyedArrayList
 import com.wireguard.android.fragment.TunnelFailure
+import com.wireguard.android.turn.ExpertOverrides
+import com.wireguard.android.turn.ExpertSettings
 import com.wireguard.android.turn.TurnConfigProcessor
 import com.wireguard.android.turn.TurnProxyManager
 import com.wireguard.android.turn.TurnSettings
@@ -67,6 +69,8 @@ class TunnelManager(
 ) : BaseObservable() {
     private val tunnels = CompletableDeferred<ObservableSortedKeyedArrayList<String, ObservableTunnel>>()
     private val context: Context = get()
+
+    private fun getExpertSettings() = ExpertSettings.getInstance(context)
     private val tunnelMap: ObservableSortedKeyedArrayList<String, ObservableTunnel> = ObservableSortedKeyedArrayList(TunnelComparator)
     private var haveLoaded = false
 
@@ -212,6 +216,11 @@ class TunnelManager(
             }
         }
         registerPackageInstallReceiver()
+        // Every unlock of the device lets the native TURN streams check on their
+        // relays (see TurnProxyManager.onUserPresent).
+        applicationScope.launch {
+            ScreenStateMonitor.userPresent.collect { getTurnProxyManager().onUserPresent() }
+        }
     }
 
     // ── Split tunneling vs. newly installed apps ───────────────────────────────
@@ -555,7 +564,14 @@ class TunnelManager(
             }
 
             if (turnEnabled && shouldStartTurn) {
-                configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn)
+                // Expert mode's MTU and resolvers, while it is on: applied to the
+                // config this tunnel comes up with and never to the stored one,
+                // which the bot reissues (see ExpertSettings).
+                val overrides = getExpertSettings().overrides() ?: ExpertOverrides.NONE
+                if (!overrides.isEmpty) {
+                    Log.i(TAG, "Expert mode: mtu=${overrides.mtu ?: "from config"}, dns=${overrides.dns?.let { ExpertOverrides.formatDns(it) } ?: "from config"}")
+                }
+                configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn, overrides)
 
                 // Start VpnService early so TURN sockets can be protected before WireGuard starts
                 if (getBackend() is GoBackend) {

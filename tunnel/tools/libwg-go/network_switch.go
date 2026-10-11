@@ -90,6 +90,20 @@ func beginAttempt(parent context.Context, cfg WorkerGroupConfig) *attemptHandle 
 	return &attemptHandle{ctx: ctx, overTCP: a.overTCP, id: id, a: a}
 }
 
+// recycleAttempt ends one attempt the way a move to another network does: its
+// worker reconnects at once and counts no failure. Used to move the sessions
+// off a relay that has been rested (relay_rest.go).
+func recycleAttempt(a *networkAttempt) {
+	networkSwitch.Lock()
+	if a.moved {
+		networkSwitch.Unlock()
+		return
+	}
+	a.moved = true
+	networkSwitch.Unlock()
+	a.cancel()
+}
+
 // moved reports whether the attempt has been recycled, without ending it.
 func (h *attemptHandle) moved() bool {
 	networkSwitch.Lock()

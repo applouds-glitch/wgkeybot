@@ -38,6 +38,7 @@ func resetAllocationBook(t *testing.T) {
 		allocationBook.orphanedTill = map[relayIdentity]time.Time{}
 		allocationBook.announced = map[relayIdentity]bool{}
 		allocationBook.releasedAt = map[relayIdentity]time.Time{}
+		allocationBook.succeeded = map[string]bool{}
 		allocationBook.Unlock()
 	}
 	reset()
@@ -257,20 +258,22 @@ func TestALaterOrphanExtendsTheMark(t *testing.T) {
 	}
 }
 
-// attemptOrder is what both the attempt and the "did the head move" check in
-// runWorker use, so it has to apply the marks on top of the session's order.
-func TestAttemptOrderAppliesTheMarks(t *testing.T) {
+// streamAttemptOrder is what both the attempt and the "did the head move"
+// check in attemptOnce use, so it has to apply the marks on top of the
+// stream's own order.
+func TestStreamAttemptOrderAppliesTheMarks(t *testing.T) {
 	resetAllocationBook(t)
 	defer resetServerHealth()
 	resetServerHealth()
 	now := time.Now()
-	head := assignServers(orphanRelays)[0]
+	head := assignRelays(orphanRelays, 0, now)[0]
 	noteBoundNetwork(orphanNetA, now)
 	trackAllocation(&countingConn{}, "alice", head)
 	noteBoundNetwork(0, now)
 
-	if got := attemptOrder("alice", orphanRelays, now); got[0] == head || got[len(got)-1] != head {
-		t.Fatalf("attemptOrder = %v, want %s moved last", got, head)
+	got := streamAttemptOrder("alice", orphanRelays, 0, WorkerGroupConfig{UseUDP: true}, now)
+	if got[0] == head || got[len(got)-1] != head {
+		t.Fatalf("streamAttemptOrder = %v, want %s moved last", got, head)
 	}
 }
 

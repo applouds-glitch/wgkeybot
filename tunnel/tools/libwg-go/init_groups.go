@@ -69,6 +69,7 @@ type TunnelGroupsConfig struct {
 	UseUDP          bool
 	TurnIP          string
 	TurnPort        int
+	ExtraRelays     []string
 	StreamsPerGroup int
 	// TotalStreams is the stream count to spread over Links. It may be less
 	// than len(Links)*StreamsPerGroup, in which case the last group is short —
@@ -154,6 +155,11 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 		runDownlinkFeedback(feedbackCtx, allStreams)
 	}()
 
+	// The downlink loss of each relay, judged against the others; a relay
+	// whose downlink went bad rests and its streams move (relay_rest.go).
+	setRelayRestPeer(cfg.PeerAddr.String())
+	go runRelayLossJudge(gCtx)
+
 	// What the relay connections are doing, for the streams that run over TCP;
 	// asleep while none does (relay_tcp_watch.go).
 	go relaySockets.run(gCtx, allStreams)
@@ -201,13 +207,14 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			groupStreams := allStreams[start:end]
 
 			groupCfg := WorkerGroupConfig{
-				GroupID:  gi,
-				Link:     link,
-				PeerAddr: cfg.PeerAddr,
-				UseUDP:   cfg.UseUDP,
-				PeerType: cfg.PeerType,
-				TurnIP:   cfg.TurnIP,
-				TurnPort: cfg.TurnPort,
+				GroupID:     gi,
+				Link:        link,
+				PeerAddr:    cfg.PeerAddr,
+				UseUDP:      cfg.UseUDP,
+				PeerType:    cfg.PeerType,
+				TurnIP:      cfg.TurnIP,
+				TurnPort:    cfg.TurnPort,
+				ExtraRelays: cfg.ExtraRelays,
 			}
 
 			groupsWg.Add(1)
@@ -237,6 +244,18 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	go func() {
 		rotor := newChunkRotor(totalStreams)
 		stale := newStaleWatch(totalStreams)
+		// WireGuard's handshake initiation waits while every stream is silent,
+		// until one is proven (dispatch_policy.go thawHold). Released off this
+		// goroutine: no rotor, proven streams first.
+		var hold thawHold
+		sendHeld := func(p []byte, now time.Time) bool {
+			sent, anyReady := dispatchPacket(allStreams, 0, now, p)
+			if !sent {
+				packetPool.Put(p[:cap(p)])
+				noteDispatchDrop(anyReady)
+			}
+			return sent
+		}
 		// Broadcast the WG source addr to every stream so each stream's RX
 		// can forward responses back to WG even if the dispatcher never
 		// picked it for TX. (The server's backendLoop round-robins peer
@@ -279,6 +298,9 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			now := time.Now()
 			for _, line := range stale.observe(allStreams, now) {
 				turnLog("%s", line)
+			}
+			if hold.offer(b[:nRead], stale.allStale, now, allStreams, sendHeld) {
+				continue
 			}
 			overTCP := relayOverTCP(WorkerGroupConfig{UseUDP: cfg.UseUDP})
 			sent, anyReady := dispatchPacket(allStreams, rotor.startPacket(now, nRead, overTCP), now, b[:nRead])

@@ -21,12 +21,14 @@ extern int wgGetSocketV4(int handle);
 extern int wgGetSocketV6(int handle);
 extern char *wgGetConfig(int handle);
 extern char *wgVersion();
-extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, const char *mode, int n, int udp, const char *listen_addr, const char *turn_ip, int turn_port, const char *peer_type, int streams_per_cred, int watchdog_timeout, const char *wrap_key);
+extern int wgTurnProxyStart(const char *peer_addr, const char *vklink, const char *mode, int n, int udp, const char *listen_addr, const char *turn_ip, int turn_port, const char *peer_type, int streams_per_cred, int watchdog_timeout, const char *wrap_key, const char *extra_relays);
 extern void wgTurnProxyStop();
 extern void wgTurnDropCredentials(void);
 extern void wgSetSystemDns(const char *dns_servers);
 extern void wgSetNetworkState(long long handle, int relay_transport);
 extern int wgTurnReadyStreams(void);
+extern void wgTurnProxyWake(void);
+extern int wgTurnCheckVKLink(const char *link);
 extern int wgTetherStart(const char *bind_ip, int port, const char *dns_servers, const char *tunnel_addrs, const char *routing_dir, const char *direct_dns);
 extern void wgTetherStop(void);
 extern char *wgTetherStats(void);
@@ -459,7 +461,7 @@ JNIEXPORT jstring JNICALL Java_com_wireguard_android_backend_GoBackend_wgVersion
 	return ret;
 }
 
-JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jstring mode, jint n, jint useUdp, jstring listen_addr, jstring turn_ip, jint turn_port, jstring peer_type, jint streams_per_cred, jint watchdog_timeout, jstring wrap_key)
+JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStart(JNIEnv *env, jclass c, jstring peer_addr, jstring vklink, jstring mode, jint n, jint useUdp, jstring listen_addr, jstring turn_ip, jint turn_port, jstring peer_type, jint streams_per_cred, jint watchdog_timeout, jstring wrap_key, jstring extra_relays)
 {
 	const char *peer_addr_jni = (*env)->GetStringUTFChars(env, peer_addr, 0);
 	const char *vklink_jni = (*env)->GetStringUTFChars(env, vklink, 0);
@@ -469,6 +471,8 @@ JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProx
 	const char *peer_type_jni = (*env)->GetStringUTFChars(env, peer_type, 0);
     const char *wrap_key_jni = wrap_key ? (*env)->GetStringUTFChars(env, wrap_key, 0) : NULL;
     char *wrap_key_str = wrap_key_jni ? strdup(wrap_key_jni) : NULL;
+	const char *extra_relays_jni = extra_relays ? (*env)->GetStringUTFChars(env, extra_relays, 0) : NULL;
+	char *extra_relays_str = extra_relays_jni ? strdup(extra_relays_jni) : NULL;
 
 	// Duplicate strings to avoid MTE issues with JNI-tagged pointers during Go execution
 	char *peer_addr_str = peer_addr_jni ? strdup(peer_addr_jni) : NULL;
@@ -484,7 +488,7 @@ JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProx
 	// loop began — and applying that on every attempt put the dialer, and the
 	// resolver, back on the network the session started on. Both follow
 	// wgSetNetwork() instead.
-	int ret = wgTurnProxyStart(peer_addr_str, vklink_str, mode_str, (int)n, (int)useUdp, listen_addr_str, turn_ip_str, (int)turn_port, peer_type_str, (int)streams_per_cred, (int)watchdog_timeout,wrap_key_str);
+	int ret = wgTurnProxyStart(peer_addr_str, vklink_str, mode_str, (int)n, (int)useUdp, listen_addr_str, turn_ip_str, (int)turn_port, peer_type_str, (int)streams_per_cred, (int)watchdog_timeout,wrap_key_str, extra_relays_str);
 
 	(*env)->ReleaseStringUTFChars(env, peer_addr, peer_addr_jni);
 	(*env)->ReleaseStringUTFChars(env, vklink, vklink_jni);
@@ -494,6 +498,8 @@ JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProx
 	(*env)->ReleaseStringUTFChars(env, peer_type, peer_type_jni);
     if (wrap_key_jni) (*env)->ReleaseStringUTFChars(env, wrap_key, wrap_key_jni);
     free(wrap_key_str);
+	if (extra_relays_jni) (*env)->ReleaseStringUTFChars(env, extra_relays, extra_relays_jni);
+	free(extra_relays_str);
 
 	free(peer_addr_str);
 	free(vklink_str);
@@ -610,9 +616,27 @@ JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnRead
 	return (jint)wgTurnReadyStreams();
 }
 
+JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyWake(JNIEnv *env, jclass c)
+{
+	wgTurnProxyWake();
+}
+
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnDropCredentials(JNIEnv *env, jclass c)
 {
 	wgTurnDropCredentials();
+}
+
+JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnCheckVKLink(JNIEnv *env, jclass c, jstring link)
+{
+	// Duplicated and released before the call, like the other string arguments:
+	// the check can sit in Go for the better part of a minute.
+	const char *link_jni = link ? (*env)->GetStringUTFChars(env, link, 0) : NULL;
+	char *link_str = link_jni ? strdup(link_jni) : NULL;
+	if (link_jni)
+		(*env)->ReleaseStringUTFChars(env, link, link_jni);
+	int ret = wgTurnCheckVKLink(link_str ? link_str : "");
+	free(link_str);
+	return (jint)ret;
 }
 
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStop(JNIEnv *env, jclass c)

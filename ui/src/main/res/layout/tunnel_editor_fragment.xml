@@ -515,6 +515,25 @@
                             </LinearLayout>
 
                             <com.google.android.material.textfield.TextInputLayout
+                                android:id="@+id/turn_extra_relays_layout"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_margin="4dp"
+                                android:enabled="@{config.turn.enabled}"
+                                android:hint="@string/turn_extra_relays"
+                                app:expandedHintEnabled="false">
+
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/turn_extra_relays_text"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:hint="@string/turn_extra_relays_hint"
+                                    android:imeOptions="actionNext"
+                                    android:inputType="textNoSuggestions|textVisiblePassword"
+                                    android:text="@={config.turn.extraRelays}" />
+                            </com.google.android.material.textfield.TextInputLayout>
+
+                            <com.google.android.material.textfield.TextInputLayout
                                 android:id="@+id/turn_watchdog_timeout_layout"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"

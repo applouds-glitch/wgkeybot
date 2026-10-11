@@ -50,6 +50,21 @@ const (
 	// not change the outcome, but it lets the teardown carry a real reason
 	// instead of surfacing as a bare "use of closed network connection".
 	allocClosedMarker = "closing TURN allocation"
+
+	// The relay's answer inside a permFailMarker line, as stun.TurnError words
+	// it: "<type> (error <code>: <reason>)". A CreatePermission answered 400 is
+	// the VK relay saying this socket HAS NO allocation (anton48
+	// vk-turn-proxy-ios build 432, stand-measured 2026-09-21 over UDP and TCP,
+	// no exception): it expired, was given back, or — after a silence long
+	// enough for a translator on the path to forget the flow — lives on under
+	// the old 5-tuple, out of this socket's reach. The iOS journal has it twice
+	// (2026-09-28, Wi-Fi, the first refresh after freezes of 3m57s and 2m24s).
+	// Either way the stream is dead at the relay now, so it is recycled on the
+	// first such answer rather than after permFailThreshold of them — which,
+	// at 240 s a refresh, would be eight minutes of a "ready" stream that
+	// cannot carry a packet. Anchored on the error-code form, not on a bare
+	// "400": a port number reads the same.
+	permBadRequestMarker = "(error 400:"
 )
 
 // Thresholds are per failure class because pion retries each class on a
@@ -73,6 +88,8 @@ const (
 	// the 60s of margin left under the 300s permission lifetime means one miss
 	// does not yet cost anything. Two ≈ 8 minutes, which is why this stays the
 	// slowest of the three classes and the other two carry the detection.
+	// A miss is a refresh that got no answer or a refusal other than 400; a
+	// 400 is not a miss but the relay's verdict (permBadRequestMarker).
 	permFailThreshold = 2
 )
 
@@ -170,7 +187,7 @@ func (w *permWatch) note(msg string) {
 		fire = w.allocFails >= allocFailThreshold
 	case strings.Contains(msg, permFailMarker):
 		w.permFails++
-		fire = w.permFails >= permFailThreshold
+		fire = w.permFails >= permFailThreshold || strings.Contains(msg, permBadRequestMarker)
 	}
 	w.mu.Unlock()
 

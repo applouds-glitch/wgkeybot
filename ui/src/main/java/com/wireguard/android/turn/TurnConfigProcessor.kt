@@ -75,12 +75,21 @@ object TurnConfigProcessor {
      * the config's, [TURN_DEFAULT_MTU] when it has none).
      * The native TURN grid drives WireGuard keepalives too, so an independent
      * PersistentKeepalive timer must stay disabled to avoid a second radio wake window.
+     *
+     * [overrides] is expert mode's word on the MTU and the resolvers: each one
+     * given replaces the config's value for this start; the config is untouched.
+     * The resolvers are replaced, not merged — a user who names a resolver wants
+     * that resolver, not it and the bot's.
      */
-    fun modifyConfigForActiveTurn(config: Config, turnSettings: TurnSettings): Config {
+    fun modifyConfigForActiveTurn(
+        config: Config,
+        turnSettings: TurnSettings,
+        overrides: ExpertOverrides = ExpertOverrides.NONE,
+    ): Config {
         val iface = config.`interface`
         val ifaceBuilder = com.wireguard.config.Interface.Builder()
         ifaceBuilder.addAddresses(iface.addresses)
-        ifaceBuilder.addDnsServers(iface.dnsServers)
+        ifaceBuilder.addDnsServers(overrides.dns ?: iface.dnsServers)
         ifaceBuilder.addDnsSearchDomains(iface.dnsSearchDomains)
         ifaceBuilder.setKeyPair(iface.keyPair)
         ifaceBuilder.excludeApplications(iface.excludedApplications)
@@ -89,7 +98,7 @@ object TurnConfigProcessor {
         try {
             ifaceBuilder.setListenPort(iface.listenPort.orElse(0))
             // MTU comes from the config; TURN_DEFAULT_MTU only when the config omits it.
-            ifaceBuilder.setMtu(iface.mtu.orElse(TURN_DEFAULT_MTU))
+            ifaceBuilder.setMtu(overrides.mtu ?: iface.mtu.orElse(TURN_DEFAULT_MTU))
         } catch (e: Exception) {
             // Should not happen with valid port/mtu
         }

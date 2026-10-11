@@ -335,9 +335,20 @@ public final class TurnBackend {
             String peerType,
             int streamsPerCred,
             int watchdogTimeout,
-            String wrapKey
+            String wrapKey,
+            @Nullable String extraRelays
     );
     public static native void wgTurnProxyStop();
+
+    /**
+     * The user has just unlocked the device: every native stream asks its relay
+     * whether its allocation survived the pause and listens for a probe's echo,
+     * so a stream whose NAT mapping died in the pause is recycled in about a
+     * round trip instead of ninety seconds later. Cheap and self-throttled on
+     * the native side (a stream heard within 5s or probed within 30s is left
+     * alone); a no-op while no proxy is running.
+     */
+    public static native void wgTurnProxyWake();
 
     /**
      * Re-points the native socket binding at the current physical network.
@@ -393,6 +404,29 @@ public final class TurnBackend {
      * known here at once, while WireGuard's handshake takes minutes to go stale.
      */
     public static native int wgTurnReadyStreams();
+
+    /** {@link #wgTurnCheckVKLink}: the call is live and hands out TURN credentials. */
+    public static final int LINK_CHECK_OK = 0;
+    /** {@link #wgTurnCheckVKLink}: VK could not be reached or asked to come back later. */
+    public static final int LINK_CHECK_TEMPORARY = -1;
+    /** {@link #wgTurnCheckVKLink}: the call refuses anonymous joins (the start's -2). */
+    public static final int LINK_CHECK_REQUIRES_AUTH = -2;
+    /** {@link #wgTurnCheckVKLink}: VK's captcha gate stood in the way; the link itself got no verdict. */
+    public static final int LINK_CHECK_CAPTCHA = -3;
+    /** {@link #wgTurnCheckVKLink}: the call has ended or the link is wrong (the start's -4). */
+    public static final int LINK_CHECK_UNAVAILABLE = -4;
+    /** {@link #wgTurnCheckVKLink}: VK refused the request with an error the check does not classify. */
+    public static final int LINK_CHECK_REFUSED = -5;
+
+    /**
+     * Asks VK whether a call link (or a bare join hash) still admits anonymous
+     * participants, through the same captcha-free flow a credential fetch starts
+     * with, and returns one of the {@code LINK_CHECK_*} codes. Never opens a
+     * captcha. Independent of the proxy, so it may run with the tunnel up or
+     * down; blocking for up to ~45 s, so never on the main thread. The library
+     * must be loaded (GoBackend) before the first call.
+     */
+    public static native int wgTurnCheckVKLink(String link);
 
     /**
      * Starts the internet-sharing proxy on the access point interface.

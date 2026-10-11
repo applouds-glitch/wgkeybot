@@ -261,34 +261,37 @@ func getCustomDialContext(ctx context.Context, network, addr string) (net.Conn, 
 	return dialVKHost(ctx, hostCache, network, addr, dialer.DialContext)
 }
 
+// vkLegacyFirstHost is the first host the legacy chain asks (get_anonym_token).
+const vkLegacyFirstHost = "login.vk.ru"
+
+// vkLegacyHostCheckTimeout bounds vkLegacyHostResolves: one walk of the resolver
+// list, which with every server silent takes ~5s.
+const vkLegacyHostCheckTimeout = 10 * time.Second
+
+// vkLegacyHostResolves settles an own-network failure of the VK Calls flow before
+// the legacy chain is written off. Silence from every resolver about one name
+// need not be the network: a whitelist resolver may drop queries for
+// internal.api.vk.ru and still answer for login.vk.ru, and then the legacy chain
+// is the only way in. If the legacy host resolves now, the chain goes ahead
+// exactly as it did before own-network failures were told apart; if it does not,
+// the chain could only fail on the same DNS — or get through if DNS returned
+// halfway, by the path with the captcha. A success lands in hostCache, so the
+// chain's first dial does not ask again.
+func vkLegacyHostResolves(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, vkLegacyHostCheckTimeout)
+	defer cancel()
+	_, err := hostCache.ResolveAll(ctx, vkLegacyFirstHost)
+	return err == nil
+}
+
 // fetchVkCreds performs the actual VK/OK API calls to fetch credentials.
 // Returns (username, password, serverAddrs, lifetimeSecs, error).
 func fetchVkCreds(ctx context.Context, link string) (string, string, []string, int, error) {
-	// One identity for the whole session: the mobile Android UA, the client
-	// hints and the ClientHello all come from the same Chrome major
-	// (vkSessionIdentity in profiles.go), so the transport cannot claim a
-	// different browser than the headers do, and the captcha phase cannot claim
-	// a different one than the phase that triggered it. Mobile end-to-end, so
-	// VK's detector never sees a desktop UA paired with accelerometer readings.
-	profile, chromeMajor := vkSessionIdentity()
-
-	client, err := tlsclient.NewHttpClient(
-		tlsclient.NewNoopLogger(),
-		tlsclient.WithTimeoutSeconds(20),
-		// ClientHello matching the session's Chrome major (vk_tls_clienthello.go)
-		// + random extension order: the combination VK's bot detector accepts.
-		tlsclient.WithClientProfile(vkChromeClientProfile(chromeMajor)),
-		tlsclient.WithRandomTLSExtensionOrder(),
-		tlsclient.WithCookieJar(tlsclient.NewCookieJar()),
-		tlsclient.WithDialer(getCustomNetDialer()),
-		tlsclient.WithDialContext(getCustomDialContext),
-		// Additive trust: system CAs + bundled Минцифры chain, in case VK/OK
-		// migrate onto Russian roots.
-		tlsclient.WithTransportOptions(&tlsclient.TransportOptions{RootCAs: vkRootCAPool()}),
-	)
-
+	// One identity for the whole session, see newVKAPIClient (vk_link_check.go):
+	// the link check goes to VK through the same client.
+	client, profile, chromeMajor, err := newVKAPIClient()
 	if err != nil {
-		return "", "", nil, 0, fmt.Errorf("failed to create tlsclient: %w", err)
+		return "", "", nil, 0, err
 	}
 	defer client.CloseIdleConnections()
 
@@ -307,10 +310,26 @@ func fetchVkCreds(ctx context.Context, link string) (string, string, []string, i
 		// resolve a call that no longer exists — surface as terminal instead.
 		turnLog("[VK Auth] VK Calls: call unavailable (%v) — not falling back to legacy", vkErr)
 		return "", "", nil, 0, vkErr
+	} else if isVKCallsOwnNetwork(vkErr) && !vkLegacyHostResolves(ctx) {
+		// The legacy chain would go out over the same dead network; see
+		// errVKCallsOwnNetwork. The caller retries the whole fetch later.
+		turnLog("[VK Auth] VK Calls flow failed (%v) — not falling back to legacy: %s does not resolve either", vkErr, vkLegacyFirstHost)
+		return "", "", nil, 0, vkErr
+	} else if isVKCallsOwnNetwork(vkErr) {
+		turnLog("[VK Auth] VK Calls flow failed (%v), but %s resolves — falling back to legacy captcha path", vkErr, vkLegacyFirstHost)
 	} else {
 		turnLog("[VK Auth] VK Calls flow failed (%v) — falling back to legacy captcha path", vkErr)
 	}
+	return vkLegacyChain(ctx, link, client, profile)
+}
 
+// vkLegacyChain is fetchVkCredsLegacy; a test replaces it to see whether
+// fetchVkCreds reaches the legacy chain at all.
+var vkLegacyChain = fetchVkCredsLegacy
+
+// fetchVkCredsLegacy is the captcha-gated fallback: the token chain through
+// login.vk.ru and api.vk.ru, rotating the VK app credentials.
+func fetchVkCredsLegacy(ctx context.Context, link string, client tlsclient.HttpClient, profile Profile) (string, string, []string, int, error) {
 	// Global captcha lockout guards only the legacy path: if repeated captcha
 	// attempts failed recently, bail instead of running the full token chain
 	// just to hit captcha again. Self-clearing, and the window grows with each
@@ -840,9 +859,8 @@ func getTokenChain(ctx context.Context, link string, creds VKCredentials, client
 		return "", "", nil, 0, fmt.Errorf("invalid urls in turn_server (keys=%s)", responseKeys(ts))
 	}
 
-	// Parse and resolve EVERY TURN URL the API returns. assignServers puts all
-	// streams on one of them (canonical order, then the elected server); the
-	// rest are failover candidates.
+	// Parse and resolve EVERY TURN URL the API returns. assignRelays spreads the
+	// streams over them; for each stream the rest are failover candidates.
 	var addresses []string
 	for _, u := range urls {
 		urlStr, ok := u.(string)

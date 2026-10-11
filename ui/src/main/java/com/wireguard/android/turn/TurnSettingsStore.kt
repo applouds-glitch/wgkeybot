@@ -44,6 +44,7 @@ class TurnSettingsStore(private val context: Context) {
                 localPort = json.optInt("localPort", 9000),
                 turnIp = json.optString("turnIp", ""),
                 turnPort = json.optInt("turnPort", 0),
+                extraRelays = json.optString("extraRelays", ""),
                 peerType = json.optString("peerType", peerTypeDefault),
                 streamsPerCred = json.optInt("streamsPerCred", 4).coerceIn(1, TurnSettings.MAX_STREAMS_PER_CREDENTIAL),
                 wrapKey = json.optString("wrapKey", ""),
@@ -74,6 +75,7 @@ class TurnSettingsStore(private val context: Context) {
             .put("localPort", settings.localPort)
             .put("turnIp", settings.turnIp)
             .put("turnPort", settings.turnPort)
+            .put("extraRelays", settings.extraRelays)
             .put("peerType", settings.peerType)
             .put("streamsPerCred", settings.streamsPerCred)
             .put("wrapKey", settings.wrapKey)

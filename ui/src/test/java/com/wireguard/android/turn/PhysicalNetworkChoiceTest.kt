@@ -38,6 +38,31 @@ class PhysicalNetworkChoiceTest {
     }
 
     @Test
+    fun `android's pick beats its default network`() {
+        assertEquals("wifi", PhysicalNetworkChoice.pick(SystemPick("wifi"), listOf(wifi, cell), systemDefault = "cell"))
+    }
+
+    @Test
+    fun `a no-network pick yields to a physical default network`() {
+        // Field logs 2026-10-09/10: the callback said "no network" while the phone
+        // was on cellular. The default network is asked for directly; our own
+        // list still is not used.
+        assertEquals("cell", PhysicalNetworkChoice.pick(SystemPick<String>(null), listOf(wifi), systemDefault = "cell"))
+    }
+
+    @Test
+    fun `no pick and no physical default network is no network`() {
+        // Airplane mode: asked directly, Android has no physical network either.
+        assertNull(PhysicalNetworkChoice.pick(SystemPick<String>(null), listOf(wifi, cell), systemDefault = null))
+    }
+
+    @Test
+    fun `before android has spoken the ranking comes first, then the default network`() {
+        assertEquals("wifi", PhysicalNetworkChoice.pick(null, listOf(cell, wifi), systemDefault = "cell"))
+        assertEquals("cell", PhysicalNetworkChoice.pick(null, emptyList(), systemDefault = "cell"))
+    }
+
+    @Test
     fun `until android has spoken, wifi comes before cellular before anything else`() {
         // Before API 31, and in the first milliseconds after start.
         assertEquals("wifi", PhysicalNetworkChoice.pick(null, listOf(eth, cell, wifi)))

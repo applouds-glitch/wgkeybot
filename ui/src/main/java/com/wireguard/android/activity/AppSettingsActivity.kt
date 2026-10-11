@@ -7,10 +7,12 @@ package com.wireguard.android.activity
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.text.InputType
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.ColorRes
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
@@ -36,6 +38,10 @@ import com.wireguard.android.tether.TetherState
 import com.wireguard.android.tether.TetherToggle
 import com.wireguard.android.tether.messageRes
 import com.wireguard.android.turn.ConnectionMode
+import com.wireguard.android.turn.ExpertOverrides
+import com.wireguard.android.turn.ExpertSettings
+import com.wireguard.android.turn.TurnConfigProcessor
+import com.wireguard.android.turn.VkLinks
 import com.wireguard.android.turn.RelayTransport
 import com.wireguard.android.updater.GithubReleases
 import com.wireguard.android.updater.UpdateActivity
@@ -101,6 +107,7 @@ class AppSettingsActivity : AppCompatActivity() {
         bindAutoRefresh()
         bindTheme()
         bindUpdateCheck()
+        bindExpert()
         if (bindTether()) {
             observeTether()
             // Arrived from the chip on the connect screen, which is the sharing
@@ -400,6 +407,209 @@ class AppSettingsActivity : AppCompatActivity() {
         }
     }
 
+    // ── Expert mode ────────────────────────────────────────────────────────────
+
+    /** The MTU and DNS dialogs, held so a recreation takes them down (see [showTextInputDialog]). */
+    private var expertDialog: AlertDialog? = null
+
+    private val expert: ExpertSettings get() = ExpertSettings.getInstance(this)
+
+    /**
+     * Overrides of the bot's configuration for the next connection: the tunnel
+     * MTU, the resolvers inside the tunnel and the VK call links. Stored values
+     * like the rest of this screen, so they are readable and editable with the
+     * tunnel down; the switch is what makes any of them count, and the rows
+     * only come out from under it once it is on. Nothing here touches a
+     * running tunnel — the note under the card says so. See [ExpertSettings]
+     * for why these are overrides and not edits of the config.
+     */
+    private fun bindExpert() {
+        binding.wgkExpertSwitchRow.apply {
+            wgkSwitchIcon.setImageResource(R.drawable.ic_settings)
+            wgkSwitchLabel.setText(R.string.wgk_expert_switch_label)
+            wgkSwitchValue.setText(R.string.wgk_expert_switch_desc)
+            wgkSwitchValue.maxLines = 3
+            wgkSwitchRoot.setOnClickListener {
+                expert.setEnabled(!expert.isEnabled())
+                renderExpert()
+            }
+        }
+        binding.wgkExpertMtuRow.apply {
+            wgkRowIcon.setImageResource(R.drawable.ic_filter_list)
+            wgkRowLabel.setText(R.string.wgk_expert_mtu_label)
+            wgkRowBtn.setOnClickListener { chooseMtu() }
+        }
+        binding.wgkExpertDnsRow.apply {
+            wgkRowIcon.setImageResource(R.drawable.ic_search)
+            wgkRowLabel.setText(R.string.wgk_expert_dns_label)
+            wgkRowBtn.setOnClickListener { chooseDns() }
+        }
+        binding.wgkExpertLinksRow.apply {
+            wgkRowIcon.setImageResource(R.drawable.ic_key)
+            wgkRowLabel.setText(R.string.wgk_expert_links_label)
+            wgkRowBtn.setOnClickListener {
+                startActivity(Intent(this@AppSettingsActivity, VkLinksActivity::class.java))
+            }
+        }
+        renderExpert()
+    }
+
+    private fun renderExpert() {
+        val enabled = expert.isEnabled()
+        binding.wgkExpertSwitchRow.wgkSwitch.isChecked = enabled
+        binding.wgkExpertRows.isVisible = enabled
+        binding.wgkExpertNote.isVisible = enabled
+        if (!enabled) return
+
+        val tunnel = Application.getTunnelManager().primaryTunnelOrNull()
+        val configured = VkLinks.split(tunnel?.turnSettings?.vkLink.orEmpty()).size
+        val own = VkLinks.parse(expert.vkLinksText()).hashes.size
+        binding.wgkExpertLinksRow.wgkRowValue.text =
+            if (own > 0) getString(R.string.wgk_expert_links_own_value, own)
+            else getString(R.string.wgk_expert_links_config_value, configured)
+
+        val mtu = expert.mtu().takeIf { ExpertOverrides.isValidMtu(it) }
+        val dns = ExpertOverrides.parseDns(expert.dns())?.takeIf { it.isNotEmpty() }
+        // "From the configuration" names the config's value, which takes a
+        // load: shown without it until then, and never wrong meanwhile.
+        binding.wgkExpertMtuRow.wgkRowValue.text = mtu?.toString() ?: getString(R.string.wgk_expert_from_config)
+        binding.wgkExpertDnsRow.wgkRowValue.text = dns?.let { ExpertOverrides.formatDns(it) } ?: getString(R.string.wgk_expert_from_config)
+        if (tunnel == null || (mtu != null && dns != null)) return
+        lifecycleScope.launch {
+            val iface = try {
+                tunnel.getConfigAsync().`interface`
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "config unavailable for the expert rows", e)
+                return@launch
+            }
+            if (mtu == null) {
+                binding.wgkExpertMtuRow.wgkRowValue.text = getString(
+                    R.string.wgk_expert_from_config_value,
+                    iface.mtu.orElse(TurnConfigProcessor.TURN_DEFAULT_MTU).toString(),
+                )
+            }
+            if (dns == null && iface.dnsServers.isNotEmpty()) {
+                binding.wgkExpertDnsRow.wgkRowValue.text = getString(
+                    R.string.wgk_expert_from_config_value,
+                    ExpertOverrides.formatDns(iface.dnsServers.toList()),
+                )
+            }
+        }
+    }
+
+    /**
+     * The config's, the two values that matter over TURN (see
+     * [TurnConfigProcessor.TURN_DEFAULT_MTU] for what each costs on the wire),
+     * or a number typed in.
+     */
+    private fun chooseMtu() {
+        val options = arrayOf(
+            getString(R.string.wgk_expert_from_config),
+            getString(R.string.wgk_expert_mtu_1200),
+            getString(R.string.wgk_expert_mtu_1280),
+            getString(R.string.wgk_expert_custom),
+        )
+        val checked = when (expert.mtu()) {
+            0 -> 0
+            1200 -> 1
+            1280 -> 2
+            else -> 3
+        }
+        showExpertDialog(
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.wgk_expert_mtu_label)
+                .setSingleChoiceItems(options, checked) { dialog, which ->
+                    dialog.dismiss()
+                    when (which) {
+                        0 -> expert.setMtu(0)
+                        1 -> expert.setMtu(1200)
+                        2 -> expert.setMtu(1280)
+                        else -> {
+                            editMtu()
+                            return@setSingleChoiceItems
+                        }
+                    }
+                    renderExpert()
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .create()
+                .also { it.show() },
+        )
+    }
+
+    private fun editMtu() {
+        val current = expert.mtu().takeIf { ExpertOverrides.isValidMtu(it) }?.toString().orEmpty()
+        showExpertDialog(
+            showTextInputDialog(
+                title = R.string.wgk_expert_mtu_label,
+                hint = R.string.wgk_expert_mtu_hint,
+                current = current,
+                inputType = InputType.TYPE_CLASS_NUMBER,
+                validate = { v -> v.toIntOrNull()?.let { ExpertOverrides.isValidMtu(it) } == true },
+                invalid = R.string.wgk_expert_mtu_invalid,
+            ) { value ->
+                expert.setMtu(value.toInt())
+                renderExpert()
+            },
+        )
+    }
+
+    /** The config's resolvers, a public one, or addresses typed in. */
+    private fun chooseDns() {
+        val current = ExpertOverrides.parseDns(expert.dns())?.let { ExpertOverrides.formatDns(it) }.orEmpty()
+        val options = ArrayList<String>()
+        options.add(getString(R.string.wgk_expert_from_config))
+        DNS_PRESETS.forEach { (name, servers) -> options.add("$name · $servers") }
+        options.add(getString(R.string.wgk_expert_custom))
+        val checked = when {
+            current.isEmpty() -> 0
+            else -> DNS_PRESETS.indexOfFirst { it.second == current }.let { if (it < 0) options.size - 1 else it + 1 }
+        }
+        showExpertDialog(
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.wgk_expert_dns_label)
+                .setSingleChoiceItems(options.toTypedArray(), checked) { dialog, which ->
+                    dialog.dismiss()
+                    when {
+                        which == 0 -> expert.setDns("")
+                        which <= DNS_PRESETS.size -> expert.setDns(DNS_PRESETS[which - 1].second)
+                        else -> {
+                            editDns()
+                            return@setSingleChoiceItems
+                        }
+                    }
+                    renderExpert()
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .create()
+                .also { it.show() },
+        )
+    }
+
+    private fun editDns() {
+        showExpertDialog(
+            showTextInputDialog(
+                title = R.string.wgk_expert_dns_label,
+                hint = R.string.wgk_expert_dns_hint,
+                current = expert.dns(),
+                validate = { v -> ExpertOverrides.parseDns(v) != null },
+                invalid = R.string.wgk_expert_dns_invalid,
+            ) { value ->
+                expert.setDns(ExpertOverrides.parseDns(value)?.let { ExpertOverrides.formatDns(it) }.orEmpty())
+                renderExpert()
+            },
+        )
+    }
+
+    /** One expert dialog at a time, and none left behind by a recreation. */
+    private fun showExpertDialog(prompt: AlertDialog) {
+        expertDialog?.takeIf { it !== prompt }?.dismiss()
+        expertDialog = prompt
+        prompt.setOnDismissListener { if (expertDialog === prompt) expertDialog = null }
+    }
+
     // ── Internet sharing ───────────────────────────────────────────────────────
 
     /** Returns whether the section exists at all on this device. */
@@ -519,6 +729,14 @@ class AppSettingsActivity : AppCompatActivity() {
         // The routing screen may have fetched or discarded rules while this one
         // was behind it, so the summary is re-read on every return, not bound once.
         if (Application.getTetherManager().isSupported) renderRoutingSummary()
+        // Likewise the links screen and the expert rows.
+        renderExpert()
+    }
+
+    override fun onDestroy() {
+        expertDialog?.dismiss()
+        expertDialog = null
+        super.onDestroy()
     }
 
     private fun renderRoutingSummary() {
@@ -612,6 +830,20 @@ class AppSettingsActivity : AppCompatActivity() {
         const val EXTRA_OPEN_TETHER = "open_tether"
 
         private const val TAG = "WireGuard/AppSettings"
+
+        /**
+         * Public resolvers offered for the tunnel, name and addresses. Yandex is
+         * there for the network behind a whitelist, where the foreign ones may
+         * not answer; the rest are the usual suspects. All reached through the
+         * tunnel, so none of them is a leak.
+         */
+        private val DNS_PRESETS = listOf(
+            "Cloudflare" to "1.1.1.1, 1.0.0.1",
+            "Google" to "8.8.8.8, 8.8.4.4",
+            "Quad9" to "9.9.9.9, 149.112.112.112",
+            "AdGuard" to "94.140.14.14, 94.140.15.15",
+            "Yandex" to "77.88.8.8, 77.88.8.1",
+        )
         private const val STATE_OPEN_WHEN_ACTIVE = "open_tether_when_active"
         private const val TAG_TETHER = "tether_sheet"
         private const val DISABLED_ALPHA = 0.6f

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/pion/stun/v3"
 )
 
 // The whole detector rests on pion's log wording. If a version bump rephrases a
@@ -62,13 +64,16 @@ func TestMarkersExistInVendoredPion(t *testing.T) {
 // Exact log lines pion emits, with the format verbs already substituted the way
 // pionLogger.Warnf hands them to note().
 const (
-	logBindFail   = "Failed to bind channel 16384: channel bind transaction failed: all retransmissions failed"
-	logBindOK     = "Channel binding successful: 1.2.3.4:56000 16384"
-	logAllocFail  = "Failed to refresh allocation: error 437: Allocation Mismatch"
-	logAllocOK    = "Updated lifetime: 600 seconds"
-	logPermFail   = "Failed to refresh permissions: error 403: Forbidden"
-	logPermOK     = "Refresh permissions successful"
-	logAllocClose = "ChannelBind rejected with 400 for 1.2.3.4:56000 on channel 16384; closing TURN allocation"
+	logBindFail  = "Failed to bind channel 16384: channel bind transaction failed: all retransmissions failed"
+	logBindOK    = "Channel binding successful: 1.2.3.4:56000 16384"
+	logAllocFail = "Failed to refresh allocation: error 437: Allocation Mismatch"
+	logAllocOK   = "Updated lifetime: 600 seconds"
+	logPermFail  = "Failed to refresh permissions: error 403: Forbidden"
+	// The line the iOS journal carried on 2026-09-28 (Wi-Fi, first refresh
+	// after a freeze): pion's Warnf with a stun.TurnError substituted.
+	logPermFail400 = "Failed to refresh permissions: CreatePermission error response (error 400: Bad Request)"
+	logPermOK      = "Refresh permissions successful"
+	logAllocClose  = "ChannelBind rejected with 400 for 1.2.3.4:56000 on channel 16384; closing TURN allocation"
 )
 
 func TestChannelBindNeedsTwoConsecutiveFailures(t *testing.T) {
@@ -309,5 +314,40 @@ func TestWarnfReasonCarriesFormattedError(t *testing.T) {
 	}
 	if !strings.Contains(w.why(), "401") {
 		t.Errorf("Warnf must hand note() the formatted message, got %q", w.why())
+	}
+}
+
+// A CreatePermission answered 400 is the relay saying the socket has no
+// allocation any more: the stream is dead now, not after a second refresh
+// four minutes later.
+func TestPermissionRefreshAnswered400FiresImmediately(t *testing.T) {
+	w := newPermWatch(12)
+
+	w.note(logPermFail400)
+
+	if !w.fired() {
+		t.Fatal("a permission refresh answered 400 must recycle the stream at once")
+	}
+	if !strings.Contains(w.why(), "400") {
+		t.Errorf("reason must carry the relay's answer, got %q", w.why())
+	}
+}
+
+// The marker is the error-code form stun.TurnError prints, so a wording change
+// in pion/stun is caught here; and a plain port number that happens to be 400
+// must not read as the relay's answer.
+func TestBadRequestMarkerMatchesStunWording(t *testing.T) {
+	refused := stun.TurnError{
+		StunMessageType: stun.NewType(stun.MethodCreatePermission, stun.ClassErrorResponse),
+		ErrorCodeAttr:   stun.ErrorCodeAttribute{Code: stun.CodeBadRequest, Reason: []byte("Bad Request")},
+	}
+	if !strings.Contains(refused.Error(), permBadRequestMarker) {
+		t.Fatalf("stun.TurnError no longer prints %q: %q", permBadRequestMarker, refused.Error())
+	}
+
+	w := newPermWatch(0)
+	w.note("Failed to refresh permissions: write udp 10.0.0.2:400->1.2.3.4:19302: broken pipe")
+	if w.fired() {
+		t.Fatal("a port number 400 in a transport error must not read as the relay's 400")
 	}
 }

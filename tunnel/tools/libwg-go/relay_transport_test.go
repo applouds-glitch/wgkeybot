@@ -73,7 +73,7 @@ func startTCPTestRelay(t *testing.T, ln *countingListener) *tcpTestRelay {
 func twoTCPRelayListeners(t *testing.T) (first, second *countingListener) {
 	t.Helper()
 	a, b := listenTCPRelay(t), listenTCPRelay(t)
-	if assignServers([]string{a.Addr().String(), b.Addr().String()})[0] == a.Addr().String() {
+	if assignRelays([]string{a.Addr().String(), b.Addr().String()}, 0, time.Now())[0] == a.Addr().String() {
 		return a, b
 	}
 	return b, a

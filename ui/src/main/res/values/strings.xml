@@ -332,6 +332,8 @@
     <string name="turn_advanced">Advanced settings</string>
     <string name="turn_ip">Turn IP</string>
     <string name="turn_ip_hint">(auto)</string>
+    <string name="turn_extra_relays">Extra TURN relays</string>
+    <string name="turn_extra_relays_hint">IP[:port], comma-separated</string>
     <string name="turn_port">Turn port</string>
     <string name="turn_port_hint">(auto)</string>
     <string name="turn_watchdog_timeout">Watchdog timeout</string>
@@ -605,4 +607,47 @@
     <string name="wgk_import_http_error">The server returned HTTP %1$d while importing the connection. Try again later.</string>
     <string name="wgk_import_invalid_response">The server returned an invalid response. Try again later.</string>
     <string name="wgk_import_storage_error">Could not read or save the connection config. Check free space on the device.</string>
+
+    <!-- Expert mode: overrides of the bot's configuration for the next connection -->
+    <string name="wgk_expert_section">Expert mode</string>
+    <string name="wgk_expert_switch_label">Expert mode</string>
+    <string name="wgk_expert_switch_desc">Override parts of the bot\'s configuration. Applies at the next connection</string>
+    <string name="wgk_expert_note">Applies at the next connection. Switching expert mode off restores the configuration as the bot issued it.</string>
+    <string name="wgk_expert_mtu_label">Tunnel MTU</string>
+    <string name="wgk_expert_dns_label">DNS inside the tunnel</string>
+    <string name="wgk_expert_links_label">VK call links</string>
+    <string name="wgk_expert_from_config">From the configuration</string>
+    <string name="wgk_expert_from_config_value">From the configuration (%1$s)</string>
+    <string name="wgk_expert_mtu_1200">1200 — headroom for mobile paths</string>
+    <string name="wgk_expert_mtu_1280">1280 — as the bot issues</string>
+    <string name="wgk_expert_custom">Custom…</string>
+    <string name="wgk_expert_mtu_hint">A number from 1000 to 1500</string>
+    <string name="wgk_expert_mtu_invalid">Enter a number from 1000 to 1500</string>
+    <string name="wgk_expert_dns_hint">IP addresses, comma separated</string>
+    <string name="wgk_expert_dns_invalid">Enter IP addresses, comma separated</string>
+    <string name="wgk_expert_links_own_value">Own links: %1$d</string>
+    <string name="wgk_expert_links_config_value">From the configuration: %1$d</string>
+
+    <!-- Expert mode: the VK call links screen -->
+    <string name="wgk_vk_links_title">VK call links</string>
+    <string name="wgk_vk_links_own_section">Own links</string>
+    <string name="wgk_vk_links_hint">One link or join hash per line, up to 8</string>
+    <string name="wgk_vk_links_note">Own links stand in for the configuration\'s at the next connection. Leave the field empty to use the configuration\'s links. Each link is a separate set of credentials, and each set can cost a captcha.</string>
+    <string name="wgk_vk_links_check">Check</string>
+    <string name="wgk_vk_links_save">Save</string>
+    <string name="wgk_vk_links_saved">Saved</string>
+    <string name="wgk_vk_links_invalid">Not a VK call link: %1$s</string>
+    <string name="wgk_vk_links_too_many">At most 8 links; the rest were dropped</string>
+    <string name="wgk_vk_links_none">No links</string>
+    <string name="wgk_vk_links_busy">Another check is still running</string>
+    <string name="wgk_vk_links_config_section">Links from the configuration</string>
+    <string name="wgk_vk_links_config_count">Links in the configuration: %1$d</string>
+    <string name="wgk_vk_links_check_config">Check the configuration\'s links</string>
+    <string name="wgk_vk_links_checking">Checking %1$d of %2$d…</string>
+    <string name="wgk_vk_links_result_ok">Link %1$d: the call is live</string>
+    <string name="wgk_vk_links_result_auth">Link %1$d: the call requires a VK login</string>
+    <string name="wgk_vk_links_result_dead">Link %1$d: the call has ended or the link is invalid</string>
+    <string name="wgk_vk_links_result_captcha">Link %1$d: VK asks for a captcha, cannot check</string>
+    <string name="wgk_vk_links_result_temporary">Link %1$d: VK did not answer, try again later</string>
+    <string name="wgk_vk_links_result_error">Link %1$d: VK refused the request</string>
 </resources>

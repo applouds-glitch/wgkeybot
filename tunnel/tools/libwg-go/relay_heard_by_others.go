@@ -73,7 +73,7 @@ func relayHeardByOthers(addr string, except *stream, now time.Time) bool {
 		if s == except || !s.ready.Load() {
 			continue
 		}
-		if a := s.activity.Load(); a != nil && a.rxAge(now) <= dispatchStaleAfter {
+		if a := s.activity.Load(); a != nil && a.heardAge(now) <= dispatchStaleAfter {
 			return true
 		}
 	}

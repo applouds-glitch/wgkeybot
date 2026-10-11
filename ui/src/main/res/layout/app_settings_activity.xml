@@ -397,6 +397,104 @@
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
 
+                    <!-- Expert mode. Last, under everything set once: it is for
+                         the user who knows why the bot's configuration is not
+                         what they want on this network, and the three rows only
+                         come out from under the switch once it is on — off, the
+                         card is the switch alone and says nothing about MTU or
+                         resolvers to the user who has no reason to think about
+                         them. The rows are overrides of the bot's configuration
+                         for the next connection, not edits to it (see
+                         ExpertSettings). -->
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
+                        android:layout_marginBottom="8dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:text="@string/wgk_expert_section"
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/Widget.WGKeyBot.InstrumentCard"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical">
+
+                            <include
+                                android:id="@+id/wgk_expert_switch_row"
+                                layout="@layout/view_wgk_settings_switch_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content" />
+
+                            <LinearLayout
+                                android:id="@+id/wgk_expert_rows"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="vertical"
+                                android:visibility="gone">
+
+                                <View
+                                    android:layout_width="match_parent"
+                                    android:layout_height="1dp"
+                                    android:layout_marginStart="16dp"
+                                    android:layout_marginEnd="16dp"
+                                    android:background="@color/wgk_divider" />
+
+                                <include
+                                    android:id="@+id/wgk_expert_mtu_row"
+                                    layout="@layout/view_wgk_settings_row"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content" />
+
+                                <View
+                                    android:layout_width="match_parent"
+                                    android:layout_height="1dp"
+                                    android:layout_marginStart="16dp"
+                                    android:layout_marginEnd="16dp"
+                                    android:background="@color/wgk_divider" />
+
+                                <include
+                                    android:id="@+id/wgk_expert_dns_row"
+                                    layout="@layout/view_wgk_settings_row"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content" />
+
+                                <View
+                                    android:layout_width="match_parent"
+                                    android:layout_height="1dp"
+                                    android:layout_marginStart="16dp"
+                                    android:layout_marginEnd="16dp"
+                                    android:background="@color/wgk_divider" />
+
+                                <include
+                                    android:id="@+id/wgk_expert_links_row"
+                                    layout="@layout/view_wgk_settings_row"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content" />
+                            </LinearLayout>
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <!-- Shown with the rows: when an override applies, and what
+                         switching the mode off does. -->
+                    <TextView
+                        android:id="@+id/wgk_expert_note"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:text="@string/wgk_expert_note"
+                        android:textAppearance="?attr/textAppearanceBodySmall"
+                        android:textColor="@color/wgk_on_surface_variant"
+                        android:visibility="gone" />
+
                 </LinearLayout>
             </androidx.constraintlayout.widget.ConstraintLayout>
         </androidx.core.widget.NestedScrollView>

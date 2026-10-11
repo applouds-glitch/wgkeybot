@@ -19,6 +19,9 @@ data class TurnSettings(
     val localPort: Int = 9000,
     val turnIp: String = "",
     val turnPort: Int = 0,
+    // Relays to use on top of the link's own: VK credentials are not tied to the
+    // relays VK names for the link (relay_extra.go). IPs, optional :port, comma-separated.
+    val extraRelays: String = "",
     val peerType: String = "proxy_v2",  // "proxy_v2", "proxy_v1", "wireguard", "srtp"
     val streamsPerCred: Int = 4,
     val watchdogTimeout: Int = 0,
@@ -41,6 +44,7 @@ data class TurnSettings(
         )
         if (turnIp.isNotBlank()) lines.add("#@wgt:TurnIP = $turnIp")
         if (turnPort > 0) lines.add("#@wgt:TurnPort = $turnPort")
+        if (extraRelays.isNotBlank()) lines.add("#@wgt:ExtraRelays = $extraRelays")
         if (watchdogTimeout > 0) lines.add("#@wgt:WatchdogTimeout = $watchdogTimeout")
         if (wrapKey.isNotBlank()) lines.add("#@wgt:WrapKey = $wrapKey")
         if (fallbackStreams > 0) lines.add("#@wgt:FallbackStreamNum = $fallbackStreams")
@@ -60,6 +64,7 @@ data class TurnSettings(
             var localPort = 9000
             var turnIp = ""
             var turnPort = 0
+            var extraRelays = ""
             var peerType: String? = null  // null means not set, will be determined from noDtls
             var streamsPerCred = 4
             var watchdogTimeout = 0
@@ -85,6 +90,7 @@ data class TurnSettings(
                     "streamnum"      -> streams          = (value.toIntOrNull() ?: 4).coerceIn(1, 128)
                     "localport"      -> localPort        = (value.toIntOrNull() ?: 9000).coerceIn(1, 65535)
                     "turnip"         -> turnIp           = value
+                    "extrarelays"    -> extraRelays      = value
                     "turnport"       -> turnPort         = (value.toIntOrNull() ?: 0).let { if (it == 0) 0 else it.coerceIn(1, 65535) }
                     "watchdogtimeout"-> watchdogTimeout  = (value.toIntOrNull() ?: 0).let { if (it == 0) 0 else it.coerceIn(5, Int.MAX_VALUE) }
                     "nodtls"         -> noDtlsLegacy     = value.toBoolean()
@@ -110,6 +116,7 @@ data class TurnSettings(
                 localPort = localPort,
                 turnIp = turnIp,
                 turnPort = turnPort,
+                extraRelays = extraRelays,
                 peerType = peerType,
                 streamsPerCred = streamsPerCred,
                 watchdogTimeout = watchdogTimeout,

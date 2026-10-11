@@ -47,13 +47,13 @@ func startTestRelay(t *testing.T, pc net.PacketConn, replyDelay time.Duration) *
 	return &testRelay{addr: pc.LocalAddr().String(), server: server, seen: seen}
 }
 
-// twoRelaySockets returns two listening sockets in the order the session would
-// dial their addresses (assignServers sorts the list), so a test can decide
+// twoRelaySockets returns two listening sockets in the order stream 0 would
+// dial their addresses (assignRelays sorts the list), so a test can decide
 // what stands first.
 func twoRelaySockets(t *testing.T) (first, second net.PacketConn) {
 	t.Helper()
 	a, b := listenFakeRelay(t), listenFakeRelay(t)
-	if assignServers([]string{a.LocalAddr().String(), b.LocalAddr().String()})[0] == a.LocalAddr().String() {
+	if assignRelays([]string{a.LocalAddr().String(), b.LocalAddr().String()}, 0, time.Now())[0] == a.LocalAddr().String() {
 		return a, b
 	}
 	return b, a
@@ -243,11 +243,14 @@ func TestQueueingForAHealthyRelayIsNotSilence(t *testing.T) {
 	a := startTestRelay(t, first, 400*time.Millisecond)
 	b := startTestRelay(t, second, 0)
 
-	workers := 2 * allocSlotsPerRelay
+	// The streams spread over both relays (assignRelays), so half of them go to
+	// the second by preference; two waves per relay keep the slow one queueing.
+	// Not one of its workers may race the other relay for it.
+	workers := 4 * allocSlotsPerRelay
 	h := runWorkersAgainst(t, 105, workers, []string{a.addr, b.addr})
-	waitFor(t, "every worker on the first relay", 6*time.Second, func() bool { return h.ready() == workers })
-	if n := b.seen.count(); n != 0 {
-		t.Fatalf("the second relay was dialed %d time(s) by workers that were only queueing", n)
+	waitFor(t, "every worker on its relay", 6*time.Second, func() bool { return h.ready() == workers })
+	if n := b.seen.count(); n != workers/2 {
+		t.Fatalf("the second relay was dialed %d time(s), want its own %d: workers only queueing for the first raced it", n, workers/2)
 	}
 }
 

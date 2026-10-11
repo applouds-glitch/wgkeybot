@@ -119,7 +119,7 @@ type winner struct {
 }
 
 // runWithCreds establishes one TURN session with pre-fetched credentials on the
-// session's server, addrs[0] (see assignServers). There is no latency
+// stream's own server, addrs[0] (see assignRelays). There is no latency
 // race: only if that server fails to Allocate are the remaining candidates
 // dialed, all at once, and the first of those to complete Allocate takes the
 // session while the others are cancelled/closed. The assignment is per attempt,
@@ -229,7 +229,11 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 	for {
 		select {
 		case w := <-winCh:
-			return s.runSession(ctx, w, cfg)
+			err := s.runSession(ctx, w, cfg)
+			if outOfReachError(err) {
+				noteOutOfReach(user, w.addr, time.Now())
+			}
+			return err
 		case <-connecting:
 			if !fannedOut {
 				startHeadStart()
@@ -639,7 +643,7 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		// refused, or silence while the network was leaving (relayNotToBlame).
 		// Over TCP a live sibling also excuses transport failure or silence;
 		// explicit TURN refusals keep their existing handling.
-		if session.Err() == nil && !isQuotaError(err) && !relayNotToBlame(err, dialStart) &&
+		if session.Err() == nil && !isQuotaError(err) && !isAllocateMismatch(err) && !relayNotToBlame(err, dialStart) &&
 			(!overTCP || !tcpAttemptFailureIsIsolated(addr, s, err)) {
 			noteServerFailure(addr)
 		}
@@ -724,13 +728,14 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	s.overTCP.Store(relayFlow(w.raw) != nil)
 	defer trackLiveSession(w.addr, s)()
 
-	// Stamped before the transport runs, so a server that goes on to prove its
-	// data plane already has a latency the election can rank it by.
-	noteServerRTT(w.addr, w.rtt)
-
 	// Only for the log line below: which side of the relay a failed data-plane
 	// handshake died on (see relayWriteProbe).
 	relay := newRelayWriteProbe(w.relay)
+
+	// The allocation check for this session (alloc_check.go): the peer the
+	// permission is asked for is the one every transport sends to.
+	s.allocCheck.Store(newAllocCheck(s.id, w.client, cfg.PeerAddr, w.perm))
+	defer s.allocCheck.Store(nil)
 
 	started := time.Now()
 	var err error

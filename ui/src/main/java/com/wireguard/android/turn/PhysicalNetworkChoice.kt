@@ -31,6 +31,19 @@ package com.wireguard.android.turn
  *
  * Where the platform cannot tell us its pick (before API 31, or until its first
  * report) the choice is v1.6.0's: Wi-Fi, then cellular, then whatever there is.
+ *
+ * Android's pick reaches us through a callback, and a callback can be stale. In
+ * the field logs of 2026-10-09/10 (Pixel 9, Android 17) it said "no network"
+ * five times, mostly within milliseconds of the app coming back to the screen
+ * with the tunnel off, while the phone was on cellular: unbound sockets reached
+ * DNS and VK, and the app's own HTTP went out from the operator's address. It
+ * stayed "no network" for up to 22 minutes, until some other network event came
+ * along, and every connect in between failed with the workers parked. So "no
+ * network" from the callback is checked against what Android says when asked
+ * directly, which cannot be stale: a physical network there is the answer.
+ * Before the tunnel is up that is the default network, the one every app uses.
+ * Once it is up, the app rides its own tunnel and the default is the VPN, so the
+ * network in use stands for as long as Android still knows it.
  */
 internal object PhysicalNetworkChoice {
     enum class Transport { WIFI, CELLULAR, OTHER }
@@ -42,12 +55,15 @@ internal object PhysicalNetworkChoice {
 
     /**
      * The network to bind to, or null when there is none. [system] is null while
-     * the platform has not told us its pick; once it has, that is the answer —
-     * including "none", whatever [candidates] may still hold.
+     * the platform has not told us its pick; once it has, that is the answer.
+     * Its "none" is not taken from [candidates], which are stale by then, but
+     * from [systemDefault]: the physical network the platform has for this app
+     * when asked directly, if any.
      */
-    fun <T> pick(system: SystemPick<T>?, candidates: List<Candidate<T>>): T? {
-        if (system != null) return system.network
-        return byTransport(candidates).firstOrNull()
+    fun <T> pick(system: SystemPick<T>?, candidates: List<Candidate<T>>, systemDefault: T? = null): T? {
+        system?.network?.let { return it }
+        if (system == null) byTransport(candidates).firstOrNull()?.let { return it }
+        return systemDefault
     }
 
     /**

@@ -13,7 +13,9 @@ import android.net.NetworkRequest
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.util.Log
+import androidx.annotation.RequiresApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -124,10 +126,32 @@ class PhysicalNetworkMonitor(context: Context) {
     private val networks = ConcurrentHashMap<Network, NetworkCapabilities>()
     private val links = ConcurrentHashMap<Network, String>()
 
+    private val request = NetworkRequest.Builder()
+        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        .build()
+
     // Android's pick, once it has told us (API 31+); null until then, and for
     // good on older platforms. SystemPick(null) is "Android has no network".
     @Volatile private var systemPick: PhysicalNetworkChoice.SystemPick<Network>? = null
     private var systemCallbackThread: HandlerThread? = null
+
+    // The registration that follows Android's pick, and the handler it runs on;
+    // both null when the platform does not report its pick. reask() replaces
+    // the registration, and a callback that is no longer this one is ignored.
+    @Volatile private var systemCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var systemHandler: Handler? = null
+
+    // For the log, under the monitor's lock: the default network last announced
+    // as standing in for "no network", and how often and when the current
+    // stretch of "no network" has been re-asked.
+    private var announcedDefault: Network? = null
+    private var reasks = 0
+    private var lastReaskAt = 0L
+
+    private val reaskTick = Runnable {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) reask()
+    }
 
     /**
      * Follows the best network matching the request, the way a network *request*
@@ -135,8 +159,9 @@ class PhysicalNetworkMonitor(context: Context) {
      * onAvailable(B) and no onLost(A); onLost means there is nothing left at all.
      * Capabilities and link properties come for the pick only.
      */
-    private val systemCallback = object : ConnectivityManager.NetworkCallback() {
+    private fun newSystemCallback() = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
+            if (this !== systemCallback) return
             networks.keys.retainAll(setOf(network))
             links.keys.retainAll(setOf(network))
             systemPick = PhysicalNetworkChoice.SystemPick(network)
@@ -144,23 +169,105 @@ class PhysicalNetworkMonitor(context: Context) {
         }
 
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-            if (systemPick?.network != network) return
+            if (this !== systemCallback || systemPick?.network != network) return
             networks[network] = caps
             update()
         }
 
         override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
-            if (systemPick?.network != network) return
+            if (this !== systemCallback || systemPick?.network != network) return
             links[network] = addressIdentity(linkProperties)
             update()
         }
 
         override fun onLost(network: Network) {
+            if (this !== systemCallback) return
             networks.remove(network)
             links.remove(network)
             if (systemPick?.network == network) systemPick = PhysicalNetworkChoice.SystemPick(null)
             update()
         }
+    }
+
+    /**
+     * Asks Android for its pick again while it says there is no network, in case
+     * that answer is stale. A new registration is told the best network at once,
+     * so a pick the old one missed shows up within milliseconds.
+     *
+     * Field logs 2026-10-09/10 (Pixel 9, Android 17): the callback said "no
+     * network" and then stayed silent — 22 minutes once — while the phone was on
+     * cellular (see PhysicalNetworkChoice for the evidence). In two of the five
+     * cases the "none" landed within milliseconds of the app coming back to the
+     * screen with the tunnel off, so after a stretch in the cached state. Where
+     * the cellular network did show up in the end, its number was lower than
+     * the Wi-Fi's that had gone (113 against 115), so it had been up in the
+     * background all along, and it showed up a second before a new Wi-Fi did,
+     * as if only the next network event got the pick recomputed. A wifi →
+     * cellular move onto a newly connected cellular network (19:19, 129 after
+     * Wi-Fi 117) came through as it should. Whatever the cause, a fresh registration
+     * gets a fresh answer. It runs every [REASK_EVERY_MS] while "no network"
+     * lasts. A tick that falls due while the process is frozen runs as soon as
+     * it thaws, which is when the app comes back to the screen. A connect asks
+     * straight away ([reaskNow]).
+     */
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun reask() {
+        val handler = systemHandler ?: return
+        val old = systemCallback ?: return
+        if (systemPick?.network != null) return
+        val fresh = newSystemCallback()
+        systemCallback = fresh
+        try {
+            cm.registerBestMatchingNetworkCallback(request, fresh, handler)
+        } catch (e: RuntimeException) {
+            systemCallback = old
+            Log.w(TAG, "Asking Android again for its pick failed: $e")
+            update()
+            return
+        }
+        try {
+            cm.unregisterNetworkCallback(old)
+        } catch (e: RuntimeException) {
+            // Already gone; nothing of it is listened to any more either way.
+        }
+        synchronized(this) {
+            if (reasks++ == 0) Log.i(TAG, "Android reports no physical network — asking it again every ${REASK_EVERY_MS / 1000}s while that lasts")
+            lastReaskAt = SystemClock.elapsedRealtime()
+        }
+        update()
+    }
+
+    /**
+     * Asks Android for its pick straight away if it says there is no network. For
+     * a connect, which otherwise starts with the workers parked and fails ~30s
+     * later on a network the phone is using. The answer arrives on [rawPath].
+     */
+    fun reaskNow() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        systemHandler?.post(reaskTick)
+    }
+
+    /**
+     * The physical network Android has for this app, asked for directly rather
+     * than through a callback. Before the tunnel is up that is the default
+     * network, the one every app uses. Once it is up, the app rides its own
+     * tunnel and the default is the VPN, which says nothing about the physical
+     * side; then [current], the network the sockets are on, stands for as long
+     * as Android still knows it. Without that, a connect brought up on the
+     * default network would lose it to the next re-ask once the tunnel was up,
+     * and the workers would be parked under a live tunnel.
+     */
+    private fun physicalDefault(current: Network?): Network? {
+        val active = cm.activeNetwork ?: return null
+        if (isPhysicalWithInternet(active)) return active
+        return current?.takeIf { isPhysicalWithInternet(it) }
+    }
+
+    // getNetworkCapabilities answers null for a network that is gone.
+    private fun isPhysicalWithInternet(network: Network): Boolean {
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
     }
 
     // The ranking of our own, for platforms that do not report theirs.
@@ -243,7 +350,35 @@ class PhysicalNetworkMonitor(context: Context) {
                 },
             )
         }
-        val best = PhysicalNetworkChoice.pick(systemPick, candidates)
+        val pick = systemPick
+        // While Android's pick says "no network" — or has not been given — its
+        // answer may be stale: check it against what Android says when asked
+        // directly, and keep re-asking (reask). Only where the platform reports
+        // its pick at all.
+        val handler = systemHandler
+        val unsure = pick?.network == null
+        val systemDefault = if (handler != null && unsure) physicalDefault(_bestPath.value?.network) else null
+        val best = PhysicalNetworkChoice.pick(pick, candidates, systemDefault)
+
+        // Logged only against an actual "none": before the first report the
+        // default stands in silently, as the ranking does.
+        val standIn = if (pick != null && pick.network == null) systemDefault else null
+        if (standIn != announcedDefault) {
+            if (standIn != null) {
+                Log.w(TAG, "Android's pick says no physical network, but asked directly it has $standIn — following that")
+            }
+            announcedDefault = standIn
+        }
+        if (unsure && handler != null) {
+            handler.removeCallbacks(reaskTick)
+            handler.postDelayed(reaskTick, REASK_EVERY_MS)
+        } else {
+            handler?.removeCallbacks(reaskTick)
+            if (reasks > 0 && pick?.network != null) {
+                Log.i(TAG, "Android picks ${pick.network} ${SystemClock.elapsedRealtime() - lastReaskAt}ms after it was last asked again ($reasks time(s))")
+            }
+            reasks = 0
+        }
 
         _bestPath.value = best?.let { network -> NetworkPath(network, identityFor(network)) }
         // onAvailable comes ahead of the pick's capabilities, hence the direct query.
@@ -282,11 +417,7 @@ class PhysicalNetworkMonitor(context: Context) {
         }
         update()
 
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-            .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && followSystemPick(request)) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && followSystemPick()) return
         Log.i(TAG, "Ranking the physical networks by transport (API ${Build.VERSION.SDK_INT})")
         cm.registerNetworkCallback(request, callback)
     }
@@ -296,39 +427,58 @@ class PhysicalNetworkMonitor(context: Context) {
      * callbacks one app may hold), in which case the caller ranks the networks
      * itself, as it does before API 31.
      */
-    @androidx.annotation.RequiresApi(Build.VERSION_CODES.S)
-    private fun followSystemPick(request: NetworkRequest): Boolean {
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun followSystemPick(): Boolean {
         val thread = HandlerThread("wgk-netmon").apply { start() }
+        val handler = Handler(thread.looper)
+        val cb = newSystemCallback()
+        // Set before registering: the first report may come before the call returns.
+        systemCallback = cb
+        systemHandler = handler
         return try {
-            cm.registerBestMatchingNetworkCallback(request, systemCallback, Handler(thread.looper))
+            cm.registerBestMatchingNetworkCallback(request, cb, handler)
             systemCallbackThread = thread
             Log.i(TAG, "Following Android's pick of the physical network")
+            // If Android has no network to report, nothing else would start the re-asking.
+            update()
             true
         } catch (e: RuntimeException) {
             Log.w(TAG, "registerBestMatchingNetworkCallback refused: $e")
+            systemCallback = null
+            systemHandler = null
             thread.quitSafely()
             false
         }
     }
 
     fun stop() {
-        for (cb in listOf(callback, systemCallback)) {
+        systemHandler?.removeCallbacks(reaskTick)
+        for (cb in listOfNotNull(callback, systemCallback)) {
             try {
                 cm.unregisterNetworkCallback(cb)
             } catch (e: Exception) {
                 // Ignore: only one of the two was ever registered.
             }
         }
+        systemCallback = null
+        systemHandler = null
         systemCallbackThread?.quitSafely()
         systemCallbackThread = null
         systemPick = null
         networks.clear()
         links.clear()
+        synchronized(this) {
+            announcedDefault = null
+            reasks = 0
+        }
         _bestPath.value = null
         _validated.value = false
     }
 
     private companion object {
         const val TAG = "WireGuard/PhysicalNetworkMonitor"
+
+        // How often a "no network" from Android is asked again (see reask).
+        const val REASK_EVERY_MS = 10_000L
     }
 }

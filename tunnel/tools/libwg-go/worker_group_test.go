@@ -83,7 +83,7 @@ func TestClassifyCredErrorTurnCodes(t *testing.T) {
 	}{
 		{stun.CodeUnauthorized, true, false},         // 401
 		{stun.CodeStaleNonce, true, false},           // 438
-		{stun.CodeAllocMismatch, true, false},        // 437
+		{stun.CodeAllocMismatch, false, false},       // 437: a 5-tuple's fault, not the credential's (isAllocateMismatch)
 		{stun.CodeWrongCredentials, true, false},     // 441
 		{stun.CodeAllocQuotaReached, true, true},     // 486
 		{stun.CodeInsufficientCapacity, true, false}, // 508

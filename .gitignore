@@ -19,6 +19,7 @@ build/
 gradlew.bat
 maint/
 CLAUDE.md
+AGENTS.md
 .claude/
 /.codegraph/
 docs/superpowers/

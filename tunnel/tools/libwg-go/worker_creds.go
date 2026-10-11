@@ -43,25 +43,20 @@ func fetchCreds(ctx context.Context, link string, groupID int) (user, pass strin
 	return
 }
 
-// assignServers returns the TURN servers a UDP stream should try, best first.
+// assignRelays returns the TURN servers a stream should try, its own first, over
+// UDP and TCP alike: stream i prefers the (i mod n)-th of the n usable servers,
+// so ten streams split 5/5 over the two relays VK hands out, and the rest of the
+// list are its failover candidates.
 //
 // The list is sorted into a canonical order so the same physical server gets the
 // same index in every group, regardless of the order VK returned the urls in for
 // that group's link. Servers with a verdict against them — demoted for failing a
-// data-plane handshake, or standing down under a penalty — are dropped outright
-// rather than demoted to the back: runWithCreds fans out to addrs[1:] all at
-// once when the head fails to Allocate, so a dead host left anywhere in the list
-// can still win that race and cost the stream another session.
-//
-// What is left is assigned one of two ways:
-//
-//   - Once the session has elected a server (see turn_server_election.go), every
-//     stream in every group runs on it.
-//   - Until then, every stream runs on the first server of what is left. The
-//     streams are not spread over the relays: the others are reached only as
-//     failover (runWithCreds fans out to them when the head fails to Allocate),
-//     and a server that proves itself that way becomes eligible for the election
-//     like any other.
+// data-plane handshake, standing down under a penalty, or resting from a bad
+// downlink (relay_rest.go) — are dropped outright rather than demoted to the
+// back: runWithCreds fans out to addrs[1:] all at once when the head fails to
+// Allocate, so a dead host left anywhere in the list can still win that race and
+// cost the stream another session. A healthy session is never moved, except off
+// a relay that is being rested.
 //
 // If every server has a verdict against it the whole list stands. That is an
 // outage, not a bad host, and an empty list would leave the stream nothing to
@@ -69,40 +64,15 @@ func fetchCreds(ctx context.Context, link string, groupID int) (user, pass strin
 // outageOrder puts a server that failed only Allocates ahead of one that
 // allocated and then failed the data plane, because the latter never fails over.
 //
+// UDP used to route every stream to one elected relay. Spread, the downlink of
+// each relay pair carries half the traffic, and when one relay's downlink goes
+// bad the judge has the other to compare it with (relay_judge.go) — a single
+// relay going bad under every stream looked healthy to every check the session
+// had (bench, 2026-10-10).
+//
 // Returns a fresh slice — addrs may alias the cached ServerAddrs slice (returned
 // by reference on a cache hit), so it must not be mutated in place.
-func assignServers(addrs []string) []string {
-	if len(addrs) < 2 {
-		return addrs
-	}
-	sorted := append([]string(nil), addrs...)
-	sort.Strings(sorted)
-
-	now := time.Now()
-	live := make([]string, 0, len(sorted))
-	for _, addr := range sorted {
-		if serverDemoted(addr) || serverPenalized(addr, now) {
-			continue
-		}
-		live = append(live, addr)
-	}
-	if len(live) == 0 {
-		live = outageOrder(sorted)
-	}
-
-	if elected := electServer(live, now); elected != "" {
-		if idx := slices.Index(live, elected); idx >= 0 {
-			return rotateServers(live, idx)
-		}
-	}
-	return live
-}
-
-// assignTCPServers gives each stream a stable preferred relay, spreading ten
-// streams 5/5 when two relays are available. Health still takes precedence:
-// failed relays are excluded and an outage retains the existing recovery order.
-// Reconnecting workers rebalance naturally; healthy sessions are never moved.
-func assignTCPServers(addrs []string, streamID int, now time.Time) []string {
+func assignRelays(addrs []string, streamID int, now time.Time) []string {
 	sorted := append([]string(nil), addrs...)
 	sort.Strings(sorted)
 	sorted = slices.Compact(sorted)
@@ -111,7 +81,7 @@ func assignTCPServers(addrs []string, streamID int, now time.Time) []string {
 	}
 	live := make([]string, 0, len(sorted))
 	for _, addr := range sorted {
-		if !serverDemoted(addr) && !serverPenalized(addr, now) {
+		if relayUsable(addr, now) {
 			live = append(live, addr)
 		}
 	}
@@ -121,11 +91,25 @@ func assignTCPServers(addrs []string, streamID int, now time.Time) []string {
 	return rotateServers(live, streamID%len(live))
 }
 
-func streamAttemptOrder(user string, addrs []string, streamID int, cfg WorkerGroupConfig, now time.Time) []string {
-	if !relayOverTCP(cfg) {
-		return attemptOrder(user, addrs, now)
+// relayUsable reports whether addr has no verdict against it: not demoted, not
+// penalized, not resting.
+func relayUsable(addr string, now time.Time) bool {
+	return !serverDemoted(addr) && !serverPenalized(addr, now) && !relayResting(addr, now)
+}
+
+// hasOtherUsableRelay reports whether a session on addr, dialed from relays,
+// has another usable relay to go to (relay_rest.go).
+func hasOtherUsableRelay(relays []string, addr string, now time.Time) bool {
+	for _, r := range relays {
+		if r != addr && relayUsable(r, now) {
+			return true
+		}
 	}
-	return orderAroundOrphans(user, assignTCPServers(addrs, streamID, now), now)
+	return false
+}
+
+func streamAttemptOrder(user string, addrs []string, streamID int, cfg WorkerGroupConfig, now time.Time) []string {
+	return orderAroundOrphans(user, assignRelays(addrs, streamID, now), now)
 }
 
 // rotateServers returns list rotated so idx comes first, leaving the rest in

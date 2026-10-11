@@ -2,7 +2,7 @@
   ~ Copyright © 2017-2025 WireGuard LLC. All Rights Reserved.
   ~ SPDX-License-Identifier: Apache-2.0
   -->
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <style name="WireGuardTheme" parent="Theme.Material3.Light">
         <item name="colorPrimary">@color/md_theme_light_primary</item>
         <item name="colorOnPrimary">@color/md_theme_light_onPrimary</item>
@@ -133,10 +133,12 @@
         <item name="cardElevation">0dp</item>
     </style>
 
+    <!-- No android:clipToOutline: MaterialCardView clips to its round-rect outline
+         itself (CardView on API 21+, again in setShapeAppearanceModel), and the
+         attribute exists only from API 31. -->
     <style name="Widget.WGKeyBot.InstrumentCard" parent="Widget.WGKeyBot.Card">
         <item name="cardCornerRadius">22dp</item>
         <item name="contentPadding">0dp</item>
-        <item name="android:clipToOutline">true</item>
     </style>
 
     <style name="TextAppearance.WGKeyBot.InstrumentValue" parent="TextAppearance.Material3.BodySmall">
@@ -187,14 +189,16 @@
     <style name="TextAppearance.WGKeyBot.NetworkValue" parent="TextAppearance.WGKeyBot.InstrumentValue">
         <item name="android:textSize">14sp</item>
         <item name="lineHeight">20sp</item>
-        <item name="android:lineHeight">20sp</item>
+        <!-- lineHeight above covers every API through MaterialTextView; the
+             framework attribute is for the platform TextView from API 28. -->
+        <item name="android:lineHeight" tools:targetApi="28">20sp</item>
         <item name="android:textColor">@color/wgk_on_surface</item>
     </style>
 
     <style name="TextAppearance.WGKeyBot.SessionValue" parent="TextAppearance.WGKeyBot.InstrumentValue">
         <item name="android:textSize">18sp</item>
         <item name="lineHeight">24sp</item>
-        <item name="android:lineHeight">24sp</item>
+        <item name="android:lineHeight" tools:targetApi="28">24sp</item>
         <item name="android:textColor">@color/wgk_on_surface</item>
     </style>
 

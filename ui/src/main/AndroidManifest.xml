@@ -151,6 +151,13 @@
             android:parentActivityName=".activity.AppSettingsActivity" />
 
         <activity
+            android:name=".activity.VkLinksActivity"
+            android:screenOrientation="portrait"
+            android:label="@string/wgk_vk_links_title"
+            android:theme="@style/AppTheme.NoActionBar"
+            android:parentActivityName=".activity.AppSettingsActivity" />
+
+        <activity
             android:name="com.journeyapps.barcodescanner.CaptureActivity"
             android:screenOrientation="portrait"
             tools:replace="screenOrientation" />

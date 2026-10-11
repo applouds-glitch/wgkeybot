@@ -160,6 +160,12 @@ type stream struct {
 	// wrapPacket / unwrapPacket before any DTLS processing.
 	// nil = WRAP disabled (plain mode).
 	wrapKey []byte
+	// attempt is the worker attempt the stream is running, for the judge of
+	// relay loss to move it off a rested relay (relay_rest.go), and relays the
+	// TURN servers of its link the attempt dials from, for the judge to tell
+	// whether it has another to go to. Set and cleared by attemptOnce.
+	attempt atomic.Pointer[networkAttempt]
+	relays  atomic.Pointer[[]string]
 
 	// kaPhase is this stream's offset within the shared keepalive grid window,
 	// derived from id and the total stream count at startup (see keepalivePhase).
@@ -185,6 +191,10 @@ type stream struct {
 	// downlink_feedback.go.
 	control         atomic.Pointer[clientStreamControl]
 	feedbackEnabled bool
+
+	// allocCheck asks the relay, at a thaw or a wake, whether this session's
+	// allocation still exists (alloc_check.go); nil between sessions.
+	allocCheck atomic.Pointer[allocCheck]
 
 	// wrapTx carries this stream's outbound WRAP SSRC and counter. Both are
 	// per-stream, so each stream (and each device) uses a distinct keystream
@@ -230,9 +240,17 @@ func sameRelayPeer(from net.Addr, peer *net.UDPAddr, peerStr string) bool {
 // fresher sibling exists (see dispatchPacket). Only ready streams are asked; a
 // session that has not published its clock yet counts as fresh — the ready
 // flag is the gate there, not this.
+//
+// It reads the last packet that really arrived (heardAge), not the detector's
+// clock (rxAge): a thaw resets that clock for every stream at once, and for
+// the next 35 s a stream whose mapping died in the freeze looked exactly like
+// one that had just echoed. Now a thaw leaves every stream stale until it
+// echoes — and while none has, the dispatcher uses them all (staleWatch's
+// "every ready stream is silent"), so the first packet after a thaw still
+// goes out at once; from the first echo on, only proven streams are used.
 func (s *stream) dispatchStale(now time.Time) bool {
 	a := s.activity.Load()
-	return a != nil && a.rxAge(now) > dispatchStaleAfter
+	return a != nil && a.heardAge(now) > dispatchStaleAfter
 }
 
 const iPacketBuffMaxSize = 2048
@@ -242,9 +260,17 @@ const iPacketBuffMaxSize = 2048
 // accounting takes off the session's length (see sessionOutcome).
 type deadStreamError struct {
 	silent time.Duration
+	// probe: the post-wake probe's verdict (wake_probe.go) rather than the
+	// periodic detector's; listened is what it listened through.
+	probe    bool
+	listened time.Duration
 }
 
 func (e *deadStreamError) Error() string {
+	if e.probe {
+		return fmt.Sprintf("dead-stream: no echo to the post-wake probe in %v of listening (relay silent for %v)",
+			e.listened.Round(time.Second), e.silent.Round(time.Second))
+	}
 	return fmt.Sprintf("dead-stream: no RX for %v", e.silent.Round(time.Second))
 }
 
@@ -256,14 +282,68 @@ func (e *deadStreamError) Error() string {
 // burst cannot starve every sibling's liveness clock at the same instant. A
 // failed write may retry early; after success the stream rejoins the grid.
 // Only a validated inbound packet proves liveness, except after a host freeze,
-// where a stale clock says nothing about the path and is reset (see freezeSlack).
-func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, reportErr func(error), send func(tick int) error) {
+// where a stale clock says nothing about the path and is reset (see freezeSlack)
+// — and the relay is then asked whether the stream survived the freeze at all
+// (the post-wake probe, wake_probe.go).
+//
+// probe writes one sequenced ping (stunProbe) for that probe; nil disables it,
+// and the loop is then the periodic detector alone. Returns when ctx is
+// cancelled, the dead-stream detector fires or the probe finds the relay gone.
+func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, reportErr func(error), send func(tick int) error, probe func(seq uint64) error) {
 	var retryAt time.Time
 	tick := 0
+	var probeSeq uint64
+	var lastProbeAt time.Time
+	wake := newWakeWatch()
+	// runProbe asks the relay whether this stream is still there; false means
+	// the stream is dead and has been reported.
+	runProbe := func(now time.Time, why string) (alive bool) {
+		if probe == nil {
+			return true
+		}
+		alive, covered, err := s.runWakeProbe(ctx, activity, &probeSeq, probe, why)
+		if err != nil {
+			// A probe that could not even write is not a probe the throttle
+			// should count: the next wake asks again.
+			if ctx.Err() == nil {
+				turnLog("[STREAM %d] post-wake probe given up on send errors: %v", s.id, err)
+				retryAt = time.Now().Add(keepaliveSendRetry)
+			}
+			return true
+		}
+		lastProbeAt = now
+		wake.served = covered
+		if !alive {
+			reportErr(&deadStreamError{silent: activity.heardAge(wakeProbeClock()), probe: true, listened: wakeProbeWindow})
+		}
+		return alive
+	}
 	for {
+		// The wake channel is read before the epoch is compared: a wake that
+		// came earlier is in the epoch, one that comes later closes this channel.
+		// The epoch is read ONCE, before the throttle decides: a wake broadcast
+		// between the decision and the bookkeeping must stay pending.
+		wakeCh := hostWakeChannel()
+		if epoch := hostWakeEpoch(); epoch != wake.served {
+			now := time.Now()
+			if wakeProbeDue(activity, lastProbeAt, now) {
+				s.runAllocCheck("wake")
+				if !wakeProbeSpread(ctx) {
+					return
+				}
+				if !runProbe(time.Now(), "wake") {
+					return
+				}
+			} else {
+				wake.served = epoch
+			}
+			continue
+		}
+
 		deadline, wakeReason := activity.nextDeadline(time.Now(), retryAt)
 		before := time.Now()
-		if !waitUntil(ctx, deadline) {
+		woke, ok := waitUntilOrWake(ctx, deadline, wakeCh)
+		if !ok {
 			return
 		}
 
@@ -277,6 +357,15 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 		if slept := now.Sub(before); slept > keepaliveInterval+freezeSlack {
 			turnLog("[STREAM %d] keepalive: slept %v (freeze) — resetting liveness clock", s.id, slept.Round(time.Second))
 			activity.resetLiveness(now)
+			// The relay's own answer comes within a round trip, and pion
+			// retransmits what the radio drops (alloc_check.go).
+			s.runAllocCheck("thaw")
+			// Every stream's loop fires in this same instant: spread the whole
+			// burst that follows over wakeProbeJitter (wakeProbeSpread).
+			if !wakeProbeSpread(ctx) {
+				return
+			}
+			now = time.Now()
 			// A thawed host must re-stimulate both layers in the same radio
 			// window: one WireGuard keepalive for this grid, then this stream's
 			// TURN liveness probe.
@@ -289,7 +378,15 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 				continue
 			}
 			retryAt = time.Time{}
+			// The thaw is a wake nobody announces: ask the relay now whether the
+			// stream survived it (a mapping lost in the silence answers nothing).
+			if !runProbe(now, "thaw") {
+				return
+			}
 			continue
+		}
+		if woke {
+			continue // a wake ended the wait early; the top of the loop serves it
 		}
 
 		if rxAge >= deadStreamTimeout {
@@ -394,8 +491,8 @@ const (
 	// four is not going to answer a fifth. It used to be 30s, longer than
 	// TunnelManager's 25s connect budget: on the default proxy_v2 peer type a
 	// blackholed relay failed its handshake — and was demoted, see
-	// turn_server_election.go — only after the tunnel had already been torn
-	// down, so the election effectively ran only for peerType "wireguard". A
+	// turn_server_demotion.go — only after the tunnel had already been torn
+	// down, so the demotion effectively worked only for peerType "wireguard". A
 	// healthy handshake over these relays measures 130-220ms, so the window
 	// keeps an order of magnitude of headroom for a bad mobile RTT plus a lost
 	// flight or two.
@@ -420,6 +517,9 @@ const (
 // a full round trip through the relay. So probe with one and wait for it, and
 // fail the stream if it never comes.
 func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr) error {
+	// The relay this session runs on, for the downlink loss per relay
+	// (relay_loss.go). Set by runWithCreds before the transport starts.
+	relayAddr := s.serverAddr
 	sCtx, sCancel := context.WithCancel(ctx)
 	defer sCancel()
 
@@ -546,13 +646,18 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				if m == 0 {
 					continue
 				}
-				if control.receive(plain[:m]) || isStunKeepalive(plain[:m]) {
+				if control.receive(plain[:m]) {
+					continue
+				}
+				if isStunKeepalive(plain[:m]) {
+					activity.noteProbeEcho(plain[:m]) // the echo names the ping it answers (wake_probe.go)
 					continue
 				}
 				a := s.peer.Load()
 				if a == nil {
 					continue
 				}
+				downlinkRelayLoss.observe(plain[:m], relayAddr, time.Now())
 				if _, err := s.out.WriteTo(plain[:m], *a); err != nil {
 					noDtlsRxErrorCount.Add(1)
 					reportErr(fmt.Errorf("TUN write: %w", err))
@@ -564,13 +669,18 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				}
 				activity.noteRx(time.Now())
 				proven()
-				if control.receive(wire[:n]) || isStunKeepalive(wire[:n]) {
+				if control.receive(wire[:n]) {
+					continue
+				}
+				if isStunKeepalive(wire[:n]) {
+					activity.noteProbeEcho(wire[:n]) // the echo names the ping it answers (wake_probe.go)
 					continue
 				}
 				a := s.peer.Load()
 				if a == nil {
 					continue
 				}
+				downlinkRelayLoss.observe(wire[:n], relayAddr, time.Now())
 				if _, err := s.out.WriteTo(wire[:n], *a); err != nil {
 					noDtlsRxErrorCount.Add(1)
 					reportErr(fmt.Errorf("TUN write: %w", err))
@@ -615,6 +725,17 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				}
 			}
 			return sendErr
+		}, func(seq uint64) error {
+			p := stunProbe(seq)
+			if hasWrap {
+				enc, err := wrapPacket(s.wrapKey, p, s.wrapTx)
+				if err != nil {
+					return err
+				}
+				p = enc
+			}
+			_, err := relayConn.WriteTo(p, peer)
+			return err
 		})
 	}()
 
@@ -736,6 +857,9 @@ func (s *stream) awaitRelayProof(ctx context.Context, proof <-chan struct{}, pro
 }
 
 func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr, sendHandshake bool) error {
+	// The relay this session runs on, for the downlink loss per relay
+	// (relay_loss.go). Set by runWithCreds before the transport starts.
+	relayAddr := s.serverAddr
 	sCtx, sCancel := context.WithCancel(ctx)
 	defer sCancel()
 
@@ -967,13 +1091,18 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			// dtlsConn.Read only returns authenticated application data, so this
 			// is valid inbound liveness evidence.
 			activity.noteRx(time.Now())
-			if control.receive(buf[:n]) || isStunKeepalive(buf[:n]) {
+			if control.receive(buf[:n]) {
+				continue
+			}
+			if isStunKeepalive(buf[:n]) {
+				activity.noteProbeEcho(buf[:n]) // the echo names the ping it answers (wake_probe.go)
 				continue
 			}
 			if n == 0 {
 				continue
 			}
 			if a := s.peer.Load(); a != nil {
+				downlinkRelayLoss.observe(buf[:n], relayAddr, time.Now())
 				if _, err := s.out.WriteTo(buf[:n], *a); err != nil {
 					dtlsRxErrorCount.Add(1)
 					reportErr(fmt.Errorf("TUN write: %w", err))
@@ -996,6 +1125,9 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		defer sCancel()
 		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
 			_, err := dtlsConn.Write(control.keepalive())
+			return err
+		}, func(seq uint64) error {
+			_, err := dtlsConn.Write(stunProbe(seq))
 			return err
 		})
 	}()
@@ -1021,6 +1153,9 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 // the server aggregates this stream's sibling SRTP sessions onto one
 // WireGuard backend conn.
 func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *net.UDPAddr) error {
+	// The relay this session runs on, for the downlink loss per relay
+	// (relay_loss.go). Set by runWithCreds before the transport starts.
+	relayAddr := s.serverAddr
 	sCtx, sCancel := context.WithCancel(ctx)
 	defer sCancel()
 
@@ -1127,13 +1262,18 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 			}
 			// srtpConn.Read has already authenticated and decrypted this packet.
 			activity.noteRx(time.Now())
-			if control.receive(buf[:n]) || isStunKeepalive(buf[:n]) {
+			if control.receive(buf[:n]) {
+				continue
+			}
+			if isStunKeepalive(buf[:n]) {
+				activity.noteProbeEcho(buf[:n]) // the echo names the ping it answers (wake_probe.go)
 				continue
 			}
 			if n == 0 {
 				continue
 			}
 			if a := s.peer.Load(); a != nil {
+				downlinkRelayLoss.observe(buf[:n], relayAddr, time.Now())
 				if _, err := s.out.WriteTo(buf[:n], *a); err != nil {
 					dtlsRxErrorCount.Add(1)
 					reportErr(fmt.Errorf("TUN write: %w", err))
@@ -1155,6 +1295,9 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 		defer sCancel()
 		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
 			_, err := srtpConn.Write(control.keepalive())
+			return err
+		}, func(seq uint64) error {
+			_, err := srtpConn.Write(stunProbe(seq))
 			return err
 		})
 	}()
@@ -1194,6 +1337,25 @@ func wgTurnDropCredentials() {
 //export wgTurnReadyStreams
 func wgTurnReadyStreams() C.int {
 	return C.int(readyStreamCount())
+}
+
+// wgTurnProxyWake tells every keepalive loop that the host is back: the user
+// unlocked the device (ACTION_USER_PRESENT → TurnProxyManager.onUserPresent).
+// Each stream then asks its relay whether its allocation is still there
+// (alloc_check.go) and listens for the echo of a probe (wake_probe.go) — unless
+// it heard the relay within wakeProbeRecentEcho or was probed within
+// wakeProbeThrottle, and the loop that saw a freeze of its own has already
+// asked. The radio is up for the user's own traffic at that moment, so the
+// burst costs no wake-up of its own; a Doze exit with the screen off is left to
+// the loop's freeze detection on purpose. A no-op without a running proxy.
+//
+//export wgTurnProxyWake
+func wgTurnProxyWake() {
+	if readyStreamCount() < 0 {
+		return
+	}
+	turnLog("[PROXY] host wake (device unlocked) — the streams ask their relays")
+	broadcastHostWake()
 }
 
 // wgSetNetworkState is the Go half of wgSetNetwork: the handle of the network
@@ -1236,7 +1398,7 @@ func parseLinks(raw string, maxLinks int) []string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 //export wgTurnProxyStart
-func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char) int32 {
+func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int, udp C.int, listenAddrC *C.char, turnIpC *C.char, turnPortC C.int, peerTypeC *C.char, streamsPerCredC C.int, watchdogTimeoutC C.int, wrapKeyC *C.char, extraRelaysC *C.char) int32 {
 	clearTransientState() // flush DNS without clearing credential caches
 	resetServerHealth()   // new credentials, usually a new server list
 	resetRelayConnectPacing()
@@ -1254,6 +1416,13 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	turnPort := int(turnPortC)
 	peerType := C.GoString(peerTypeC)
 	watchdogTimeout := int(watchdogTimeoutC)
+	extraRelays, badRelays := parseExtraRelays(C.GoString(extraRelaysC))
+	if len(badRelays) > 0 {
+		turnLog("[PROXY] ExtraRelays: skipping %v — not an IP address with an optional port", badRelays)
+	}
+	if len(extraRelays) > 0 {
+		turnLog("[PROXY] Extra relays on top of each link's own: %v", extraRelays)
+	}
 
 	// ── WRAP key parsing ──────────────────────────────────────────────────────
 	var wrapKey []byte
@@ -1289,12 +1458,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	rawLinks := parseLinks(vklink, 8)
 	links := make([]string, len(rawLinks))
 	for i, raw := range rawLinks {
-		parts := strings.Split(raw, "join/")
-		lk := parts[len(parts)-1]
-		if idx := strings.IndexAny(lk, "/?#"); idx != -1 {
-			lk = lk[:idx]
-		}
-		links[i] = lk
+		links[i] = joinHash(raw) // the same reduction the link check applies
 	}
 	globalGetCreds = func(ctx context.Context, lk string, streamID int) (string, string, []string, error) {
 		return getCredsCached(ctx, lk, streamID, fetchVkCreds)
@@ -1435,6 +1599,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		UseUDP:          udp != 0,
 		TurnIP:          turnIp,
 		TurnPort:        turnPort,
+		ExtraRelays:     extraRelays,
 		StreamsPerGroup: perCred,
 		TotalStreams:    totalStreams,
 		Cert:            &cert,

@@ -68,11 +68,60 @@ func isCallUnavailable(err error) bool { return errors.Is(err, errCallUnavailabl
 // gone through a second later.
 var errVKCallsTransient = errors.New("transient VK Calls failure")
 
+// errVKCallsCaptchaGate marks VK's captcha gate (error_code 14) on the captcha-
+// free flow. A verdict on this client rather than on the call: fetchVkCreds
+// answers it with the legacy chain, which is where the captcha lives, and the
+// link check (vk_link_check.go) reports it as "cannot tell" rather than guess.
+var errVKCallsCaptchaGate = errors.New("VK captcha gate")
+
 func transientVKCallsf(format string, a ...interface{}) error {
 	return fmt.Errorf("%w: "+format, append([]interface{}{errVKCallsTransient}, a...)...)
 }
 
 func isTransientVKCalls(err error) bool { return errors.Is(err, errVKCallsTransient) }
+
+// errVKCallsNoResponse marks a request that got no response at all — the HTTP
+// client gave up before any status line — as opposed to one VK (or something
+// speaking for it) answered: a 5xx, an error_code, a body that is not JSON.
+var errVKCallsNoResponse = errors.New("request failed")
+
+// errVKCallsOwnNetwork marks a flow that never reached VK because the phone's own
+// network failed it: not one DNS server was reached, protect() refused the
+// socket, the local stack had no route, or the network was left mid-attempt. It
+// rides on top of the transient error it ended with, so it is still "try later"
+// to everything that only asks that (the link check).
+//
+// fetchVkCreds does not answer it with the legacy chain unless the legacy host
+// resolves (see there). That chain needs the same network — DNS for
+// login.vk.ru, a socket to api.vk.ru — so it can only fail the same way, or, if
+// the network comes back while it runs, get to VK by the one path that shows a
+// captcha, for a call the captcha-free flow would have joined a second later.
+// Field log 28.09 06:45: DNS dead for 14s on a cellular network, three attempts
+// spent on it, then the legacy chain and a captcha (solved automatically that
+// time), 31s to the first stream.
+var errVKCallsOwnNetwork = errors.New("VK unreachable from this network")
+
+func isVKCallsOwnNetwork(err error) bool { return errors.Is(err, errVKCallsOwnNetwork) }
+
+// ownNetworkFailure reports whether an attempt begun at started failed on the
+// phone's side before VK could say anything. Only a request that got no response
+// qualifies: anything VK answered, even while the network changed under it, is
+// VK's. A failed lookup is judged by the lookup alone — ours only if no DNS
+// server was reached; one that was makes it the name's, whatever errno another
+// server's socket carried. Otherwise ours: protect() refused, the local stack
+// refused the route, or the network was left mid-attempt. What stays VK's: a
+// timeout or a reset on a socket that did connect, a refusal, a TLS failure —
+// silence from VK on a network that answers DNS may be VK or a filter in front
+// of it, and the legacy chain goes to other hosts, so that keeps its fallback.
+func ownNetworkFailure(err error, started time.Time) bool {
+	if !errors.Is(err, errVKCallsNoResponse) {
+		return false
+	}
+	if reached, isLookup := dnsLookupOutcome(err); isLookup {
+		return !reached
+	}
+	return errors.Is(err, errSocketNotProtected) || relayNotToBlame(err, started)
+}
 
 // isRetryableVKCode reports whether a VK error_code is VK asking us to come back
 // rather than a verdict on the request: 1 (unknown error), 6 (too many requests
@@ -114,6 +163,20 @@ const (
 	vkCallsRetryDelay = 400 * time.Millisecond
 )
 
+// Attempts that failed on the phone's own network (ownNetworkFailure) are not
+// counted against vkCallsAttempts: they say nothing about VK, and there is no
+// captcha-free alternative to fall back to. They repeat instead, every
+// vkCallsOwnNetworkRetryDelay, until vkCallsOwnNetworkBudget has passed since
+// the flow began. The budget covers the outages the field shows — DNS dead for
+// 13-16s on a cellular network just woken or just attached (28.09 06:45, 29.09
+// 06:37) — and stays inside the link check's 45s. With every resolver silent an
+// attempt itself takes ~5s (the hedged walk of the server list), so the delay
+// only spaces out the instant failures, such as protect() refused.
+var (
+	vkCallsOwnNetworkBudget     = 30 * time.Second
+	vkCallsOwnNetworkRetryDelay = time.Second
+)
+
 // getVKCredsViaVKCalls returns (username, password, resolvedTurnAddrs,
 // lifetimeSecs, error) from the VK Calls anonymous flow, repeating the whole
 // flow while VK answers with something transient.
@@ -123,28 +186,43 @@ const (
 // failed is not resumed under an identity VK has already refused. Steps 1-2 are
 // two extra cheap requests, which is the entire cost.
 func getVKCredsViaVKCalls(ctx context.Context, link string, client tlsclient.HttpClient, profile Profile) (string, string, []string, int, error) {
-	var lastErr error
-	for attempt := 1; attempt <= vkCallsAttempts; attempt++ {
+	flowStarted := time.Now()
+	attempt := 1 // attempts VK had a say in; see vkCallsOwnNetworkBudget
+	for {
+		attemptStarted := time.Now()
 		user, pass, addrs, lifetime, err := vkCallsAttempt(ctx, link, client, profile)
 		if err == nil {
 			return user, pass, addrs, lifetime, nil
 		}
-		lastErr = err
 		// A cancelled context is our own teardown, and a non-transient error is a
 		// verdict — captcha gate, dead call, malformed link. Neither is worth a
 		// second identical trip to VK.
-		if ctx.Err() != nil || !isTransientVKCalls(err) || attempt == vkCallsAttempts {
-			break
+		if ctx.Err() != nil || !isTransientVKCalls(err) {
+			return "", "", nil, 0, err
 		}
-		delay := time.Duration(attempt)*vkCallsRetryDelay + time.Duration(rand.Intn(300))*time.Millisecond
-		turnLog("[VKCalls] attempt %d/%d failed (%v) — retrying in %v", attempt, vkCallsAttempts, err, delay.Round(time.Millisecond))
+
+		var delay time.Duration
+		if ownNetworkFailure(err, attemptStarted) {
+			if time.Since(flowStarted) >= vkCallsOwnNetworkBudget {
+				return "", "", nil, 0, fmt.Errorf("%w: %w", errVKCallsOwnNetwork, err)
+			}
+			delay = vkCallsOwnNetworkRetryDelay + time.Duration(rand.Int63n(int64(vkCallsOwnNetworkRetryDelay)/4+1))
+			turnLog("[VKCalls] attempt did not reach VK (%v) — our network, not counted; retrying in %v (%v of %v spent)",
+				err, delay.Round(time.Millisecond), time.Since(flowStarted).Round(time.Second), vkCallsOwnNetworkBudget)
+		} else {
+			if attempt == vkCallsAttempts {
+				return "", "", nil, 0, err
+			}
+			delay = time.Duration(attempt)*vkCallsRetryDelay + time.Duration(rand.Intn(300))*time.Millisecond
+			turnLog("[VKCalls] attempt %d/%d failed (%v) — retrying in %v", attempt, vkCallsAttempts, err, delay.Round(time.Millisecond))
+			attempt++
+		}
 		select {
 		case <-time.After(delay):
 		case <-ctx.Done():
 			return "", "", nil, 0, ctx.Err()
 		}
 	}
-	return "", "", nil, 0, lastErr
 }
 
 // vkCallsAttempt runs the 5-step VK Calls anonymous flow once. It reuses the
@@ -172,7 +250,7 @@ func vkCallsAttempt(ctx context.Context, link string, client tlsclient.HttpClien
 
 		httpResp, err := client.Do(req)
 		if err != nil {
-			return nil, transientVKCallsf("%s: request failed: %w", step, withoutRequestURL(err))
+			return nil, transientVKCallsf("%s: %w: %w", step, errVKCallsNoResponse, withoutRequestURL(err))
 		}
 		defer func() { _ = httpResp.Body.Close() }()
 
@@ -368,7 +446,15 @@ func vkCallsAPIError(step string, resp map[string]interface{}) error {
 		return callUnavailablef("%s: VK call unavailable (error_code %d): %s", step, int(code), msg)
 	}
 	if int(code) == 14 {
-		return fmt.Errorf("%s: VK captcha gate (error_code 14): %s", step, msg)
+		return fmt.Errorf("%s: %w (error_code 14): %s", step, errVKCallsCaptchaGate, msg)
+	}
+	// 9005 is the legacy call domain's "anonymous joins refused" (getTokenChain
+	// maps it to CALL_REQUIRES_AUTH there); whether the messages.* endpoints
+	// use the same code is undocumented, so the type is only advisory here:
+	// fetchVkCreds still falls back to the legacy chain for the verdict, and
+	// only the link check acts on it directly.
+	if int(code) == 9005 {
+		return fmt.Errorf("%w: %s: VK API error_code=%d: %s", errCallRequiresAuth, step, int(code), msg)
 	}
 	if isRetryableVKCode(int(code)) {
 		return transientVKCallsf("%s: VK API error_code=%d: %s", step, int(code), msg)
