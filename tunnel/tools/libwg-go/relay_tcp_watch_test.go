@@ -426,3 +426,362 @@ func TestLeavingWatcherLeavesTheWakeUpBehind(t *testing.T) {
 		}
 	}
 }
+
+// newShrinkHarness is a watchHarness with ready streams of these ids, whose
+// replacements are recorded instead of ending sessions.
+func newShrinkHarness(ids ...int) (*watchHarness, *[]int) {
+	h := newWatchHarness()
+	replaced := &[]int{}
+	h.w.replace = func(s *watchedRelaySocket) bool {
+		*replaced = append(*replaced, s.stream)
+		return true
+	}
+	for _, id := range ids {
+		st := &stream{id: id}
+		st.ready.Store(true)
+		h.streams = append(h.streams, st)
+	}
+	return h, replaced
+}
+
+// redialLines are the lines that announced a replacement.
+func (h *watchHarness) redialLines() []string {
+	var out []string
+	for _, l := range h.lines {
+		if strings.Contains(l, "redialing") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// calmTicks is how many samples a socket has to be quiet for to count as calm.
+var calmTicks = int(relayShrunkCalm / relaySocketSampleInterval)
+
+// The 17.10 field log: a stall all sockets lived through left them at 512, 256,
+// 128 and 64 bytes a segment where they began with 1228, and there they stayed.
+// A connection cut to half its size or less is redialed — once the path has
+// been calm long enough that the redial is not a dial into the same stall.
+func TestShrunkRelaySocketIsReplacedOnceThePathIsCalm(t *testing.T) {
+	h, replaced := newShrinkHarness(0, 1)
+	cut := h.socket(0, "95.163.34.168:19302")
+	other := h.socket(1, "90.156.234.252:19302")
+	h.set(cut, relaySocketSample{sndMSS: 1228})
+	h.set(other, relaySocketSample{sndMSS: 1228})
+	h.tick()
+
+	// A stall: the head segment keeps timing out and the kernel halves the
+	// segments at each timeout.
+	for i, mss := range []int{1024, 512, 256, 128} {
+		h.set(cut, relaySocketSample{timeouts: i + 1, sndMSS: mss})
+		h.tick()
+	}
+	h.set(cut, relaySocketSample{sndMSS: 128})
+	h.ticks(calmTicks - 1)
+	if len(*replaced) != 0 {
+		t.Fatalf("replaced %v before the path had been calm for %v", *replaced, relayShrunkCalm)
+	}
+	h.tick()
+	if len(*replaced) != 1 || (*replaced)[0] != 0 {
+		t.Fatalf("replaced %v, want stream 0", *replaced)
+	}
+	lines := h.redialLines()
+	if len(lines) != 1 {
+		t.Fatalf("%d replacement line(s):\n%s", len(lines), strings.Join(h.lines, "\n"))
+	}
+	wantParts(t, lines[0], "[TCP] stream 0 (95.163.34.168:19302): the kernel cut its segments to 128 bytes from 1228")
+
+	// Its session is on its way out: until it has let go of the socket, the
+	// socket is not picked again.
+	h.ticks(3 * int(relayShrunkGap/relaySocketSampleInterval))
+	if len(*replaced) != 1 {
+		t.Fatalf("the socket already being replaced was replaced again: %v", *replaced)
+	}
+}
+
+// The first cut, to tcp_base_mss, still carries a tunnel packet in two
+// segments, as the full size does: not worth a reconnect.
+func TestRelaySocketAtTheFirstCutIsKept(t *testing.T) {
+	h, replaced := newShrinkHarness(0, 1)
+	c := h.socket(0, "relay-a")
+	h.set(c, relaySocketSample{sndMSS: 1228})
+	h.tick()
+	h.set(c, relaySocketSample{timeouts: 3, sndMSS: 1024})
+	h.tick()
+	h.set(c, relaySocketSample{sndMSS: 1024})
+	h.ticks(10 * calmTicks)
+	if len(*replaced) != 0 {
+		t.Fatalf("a socket cut only to 1024 from 1228 was replaced: %v", *replaced)
+	}
+}
+
+// One stall cuts every socket that lived through it. They are replaced one at
+// a time, the most cut first, relayShrunkGap apart — not all at once, which
+// would take the tunnel down for the length of a reconnect.
+func TestShrunkRelaySocketsAreReplacedOneAtATime(t *testing.T) {
+	h, replaced := newShrinkHarness(0, 1, 2, 3)
+	cutTo := map[int]int{0: 256, 1: 64, 2: 512, 3: 1228}
+	socks := map[int]*net.TCPConn{}
+	for id := 0; id <= 3; id++ {
+		socks[id] = h.socket(id, "relay-a")
+		h.set(socks[id], relaySocketSample{sndMSS: 1228})
+	}
+	h.tick()
+	for id, c := range socks {
+		h.set(c, relaySocketSample{timeouts: 4, sndMSS: cutTo[id]})
+	}
+	h.tick()
+	for id, c := range socks {
+		h.set(c, relaySocketSample{sndMSS: cutTo[id]})
+	}
+
+	var at []time.Time
+	for i := 0; i < 6*calmTicks; i++ {
+		n := len(*replaced)
+		h.tick()
+		if len(*replaced) > n {
+			at = append(at, h.now)
+		}
+	}
+	if want := []int{1, 0, 2}; fmt.Sprint(*replaced) != fmt.Sprint(want) {
+		t.Fatalf("replaced %v, want %v: the most cut first, the uncut one never", *replaced, want)
+	}
+	for i := 1; i < len(at); i++ {
+		if gap := at[i].Sub(at[i-1]); gap != relayShrunkGap {
+			t.Fatalf("replacements %d and %d came %v apart, want %v", i-1, i, gap, relayShrunkGap)
+		}
+	}
+}
+
+// A replacement is planned, so it waits for another stream to carry the
+// traffic meanwhile: not while the only other stream is reconnecting, nor
+// while its socket is stalled.
+func TestShrunkRelaySocketWaitsForASiblingThatCarries(t *testing.T) {
+	h, replaced := newShrinkHarness(0, 1)
+	sibling := h.streams[1]
+	sibling.ready.Store(false)
+	c := h.socket(0, "relay-a")
+	h.set(c, relaySocketSample{sndMSS: 1228})
+	h.tick()
+	h.set(c, relaySocketSample{timeouts: 5, sndMSS: 64})
+	h.tick()
+	h.set(c, relaySocketSample{sndMSS: 64})
+	h.ticks(2 * calmTicks)
+	if len(*replaced) != 0 {
+		t.Fatalf("replaced %v with no other stream ready", *replaced)
+	}
+
+	sibling.ready.Store(true)
+	sibling.sendStalled.Store(true)
+	h.ticks(2)
+	if len(*replaced) != 0 {
+		t.Fatalf("replaced %v with the only other stream stalled", *replaced)
+	}
+
+	sibling.sendStalled.Store(false)
+	h.tick()
+	if len(*replaced) != 1 {
+		t.Fatalf("replaced %v once a sibling carried, want stream 0", *replaced)
+	}
+}
+
+// A path that keeps stalling is never calm long enough: the socket is left
+// alone, and the kernel's 30s limit or the dead-stream detector deal with it.
+func TestShrunkRelaySocketOnAPathThatKeepsStallingIsKept(t *testing.T) {
+	h, replaced := newShrinkHarness(0, 1)
+	c := h.socket(0, "relay-a")
+	h.set(c, relaySocketSample{sndMSS: 1228})
+	h.tick()
+	for i := 0; i < 8*calmTicks; i++ {
+		s := relaySocketSample{sndMSS: 128}
+		if i%(calmTicks-2) == 0 {
+			s.timeouts = 3
+		}
+		h.set(c, s)
+		h.tick()
+	}
+	if len(*replaced) != 0 {
+		t.Fatalf("replaced %v on a path that stalled every %d samples", *replaced, calmTicks-2)
+	}
+}
+
+// A session that could not be ended (its attempt already over) costs no
+// spacing and no line: the next sample tries again.
+func TestFailedReplacementIsNotBooked(t *testing.T) {
+	h, replaced := newShrinkHarness(0, 1)
+	refuse := true
+	h.w.replace = func(s *watchedRelaySocket) bool {
+		if refuse {
+			refuse = false
+			return false
+		}
+		*replaced = append(*replaced, s.stream)
+		return true
+	}
+	c := h.socket(0, "relay-a")
+	h.set(c, relaySocketSample{sndMSS: 1228})
+	h.tick()
+	h.set(c, relaySocketSample{timeouts: 4, sndMSS: 256})
+	h.tick()
+	h.set(c, relaySocketSample{sndMSS: 256})
+	h.ticks(calmTicks)
+	if len(*replaced) != 0 || len(h.redialLines()) != 0 {
+		t.Fatalf("a refused replacement was booked: %v\n%s", *replaced, strings.Join(h.lines, "\n"))
+	}
+	h.tick()
+	if len(*replaced) != 1 || len(h.redialLines()) != 1 {
+		t.Fatalf("the next sample did not replace it: %v\n%s", *replaced, strings.Join(h.lines, "\n"))
+	}
+}
+
+// The replacement ends the attempt the way a network move does, so its worker
+// reconnects at once and counts no failure.
+func TestReplaceSocketSessionRecyclesItsAttempt(t *testing.T) {
+	if replaceSocketSession(&watchedRelaySocket{}) {
+		t.Fatalf("a socket registered with no attempt reported its session ended")
+	}
+	h := beginAttempt(context.Background(), WorkerGroupConfig{})
+	defer h.end()
+	if !replaceSocketSession(&watchedRelaySocket{attempt: h.a}) {
+		t.Fatalf("the attempt was not recycled")
+	}
+	select {
+	case <-h.ctx.Done():
+	default:
+		t.Fatalf("the attempt's context is still live")
+	}
+	if !h.moved() {
+		t.Fatalf("the attempt was not marked moved: its worker would count a failure and back off")
+	}
+}
+
+// Codex review, 18.10: the attempt ended is the one whose session registered
+// the socket, not whatever the stream runs by the time the replacement comes.
+// The stream's attempt can already be the next one — the session ended and its
+// worker began again, or sits in the wait after it — and recycling that would
+// cut the wait short or kill a healthy new session.
+func TestShrunkReplacementEndsTheAttemptThatOwnsTheSocket(t *testing.T) {
+	owner := beginAttempt(context.Background(), WorkerGroupConfig{})
+	defer owner.end()
+	next := beginAttempt(context.Background(), WorkerGroupConfig{})
+	defer next.end()
+
+	h := newWatchHarness()
+	h.w.replace = replaceSocketSession
+	cut, sibling := &stream{id: 0}, &stream{id: 1}
+	cut.ready.Store(true)
+	sibling.ready.Store(true)
+	h.streams = []*stream{cut, sibling}
+	cut.attempt.Store(owner.a)
+	c := h.socket(0, "relay-a")
+	cut.attempt.Store(next.a) // the stream has moved on; the socket's session has not let go yet
+
+	h.set(c, relaySocketSample{sndMSS: 1228})
+	h.tick()
+	h.set(c, relaySocketSample{timeouts: 4, sndMSS: 128})
+	h.tick()
+	h.set(c, relaySocketSample{sndMSS: 128})
+	h.ticks(calmTicks)
+
+	if !owner.moved() {
+		t.Fatalf("the attempt that owns the cut socket was not recycled")
+	}
+	if next.moved() {
+		t.Fatalf("the stream's next attempt was recycled for a socket it never had")
+	}
+}
+
+// End to end over a real TURN server on TCP, with only the kernel's view of the
+// sockets made up: the replacement ends the session of the stream it names and
+// no other, releases its allocation, and the worker dials a new connection at
+// once — no failure, no backoff — and is back up on it.
+func TestShrunkRelaySocketIsRedialedEndToEnd(t *testing.T) {
+	relay := startTCPTestRelay(t, listenTCPRelay(t))
+	overTCP(t)
+	h := runWorkersAgainst(t, 119, 2, []string{relay.addr})
+	waitFor(t, "two streams over TCP", 5*time.Second, func() bool { return h.ready() == 2 })
+	accepted := relay.ln.accepted.Load()
+
+	socketsOf := func(id int) []*net.TCPConn {
+		relaySockets.mu.Lock()
+		defer relaySockets.mu.Unlock()
+		var out []*net.TCPConn
+		for c, s := range relaySockets.socks {
+			if s.stream == id {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	cut, sibling := socketsOf(0), socketsOf(1)
+	if len(cut) != 1 || len(sibling) != 1 {
+		t.Fatalf("watched sockets: stream 0 has %d, stream 1 has %d, want one each", len(cut), len(sibling))
+	}
+
+	var shrunk atomic.Bool
+	var mu sync.Mutex
+	var lines []string
+	prevSample, prevLog := relaySockets.sample, relaySockets.logf
+	relaySockets.mu.Lock()
+	relaySockets.lastReplaced = time.Time{}
+	relaySockets.sample = func(c *net.TCPConn) (relaySocketSample, bool) {
+		if c == cut[0] && shrunk.Load() {
+			return relaySocketSample{sndMSS: 64}, true
+		}
+		return relaySocketSample{sndMSS: 1228}, true
+	}
+	relaySockets.logf = func(format string, args ...interface{}) {
+		mu.Lock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+	relaySockets.mu.Unlock()
+	t.Cleanup(func() {
+		relaySockets.mu.Lock()
+		relaySockets.sample, relaySockets.logf = prevSample, prevLog
+		relaySockets.lastReplaced = time.Time{}
+		relaySockets.mu.Unlock()
+	})
+
+	now := time.Now()
+	relaySockets.observe(h.streams, now)
+	shrunk.Store(true)
+	relaySockets.observe(h.streams, now.Add(time.Second))
+	if got := relay.ln.accepted.Load(); got != accepted {
+		t.Fatalf("a socket that had not been calm for %v was redialed", relayShrunkCalm)
+	}
+	replacedAt := time.Now()
+	relaySockets.observe(h.streams, now.Add(relayShrunkCalm+time.Second))
+
+	waitFor(t, "stream 0 on a new connection", 5*time.Second, func() bool {
+		s := socketsOf(0)
+		return len(s) == 1 && s[0] != cut[0] && h.streams[0].ready.Load()
+	})
+	if took := time.Since(replacedAt); took > 3*time.Second {
+		t.Fatalf("the redial took %v: the worker waited out a backoff", took)
+	}
+	if got := relay.ln.accepted.Load(); got != accepted+1 {
+		t.Fatalf("the relay took %d new connection(s), want 1: only the cut stream redials", got-accepted)
+	}
+	if s := socketsOf(1); len(s) != 1 || s[0] != sibling[0] {
+		t.Fatalf("the sibling's connection was replaced too")
+	}
+	allocationBook.Lock()
+	key := relayIdentity{user: t.Name(), relay: relay.addr}
+	orphans, releasedAt := len(allocationBook.orphanedTill), allocationBook.releasedAt[key]
+	allocationBook.Unlock()
+	if orphans != 0 || releasedAt.Before(replacedAt) {
+		t.Fatalf("the replaced session's allocation was not released: %d orphaned, last release at %v, replaced at %v", orphans, releasedAt, replacedAt)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, l := range lines {
+		if strings.Contains(l, "stream 0") && strings.Contains(l, "cut its segments to 64 bytes from 1228") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no line said why stream 0 was redialed:\n%s", strings.Join(lines, "\n"))
+	}
+}

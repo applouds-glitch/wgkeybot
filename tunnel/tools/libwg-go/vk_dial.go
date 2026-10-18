@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -169,8 +170,8 @@ type heardConn struct {
 
 func (c *heardConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
-	if n > 0 {
-		c.heard.Store(true)
+	if n > 0 && !c.heard.Swap(true) {
+		vkConnsHeard.Add(1)
 	}
 	return n, err
 }
@@ -182,6 +183,83 @@ func (c *heardConn) Close() error {
 		}
 	})
 	return c.Conn.Close()
+}
+
+// vkHandshakeTimeout bounds the TLS handshake over a fresh VK connection
+// (guardHandshake). net/http's own default is 10s; this is a little longer for
+// a cellular path that loses a flight or two. A var so a test can shrink it.
+var vkHandshakeTimeout = 15 * time.Second
+
+// handshakeGuardConn holds a deadline on a fresh connection until the TLS
+// handshake over it is over. tls-client does not always bound it: a dial for
+// its HTTP/2 pool runs under context.Background() (roundTripper.dialTLSHTTP2),
+// so HandshakeContext has nothing to cancel it, and every request waiting on
+// that dial waits on it too, its own timeout unseen (fhttp's connection pool).
+// Behind an L7 filter that lets the SYN through and cuts the ClientHello —
+// exactly what heardConn is there for — the handshake waited forever: a link
+// check past its 45s, a credential fetch holding its vkSemaphore slot and the
+// cache's lock (audit 2026-10-16, reproduced by codex). With the deadline the
+// silent read times out, the handshake fails, and heardConn sets the address
+// aside on the close.
+type handshakeGuardConn struct {
+	net.Conn
+	guarded atomic.Bool // the deadline is still set
+}
+
+// guardHandshake sets the deadline and hands back the guarded connection; a
+// connection that takes no deadline is handed back as it is.
+func guardHandshake(conn net.Conn, timeout time.Duration) net.Conn {
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return conn
+	}
+	c := &handshakeGuardConn{Conn: conn}
+	c.guarded.Store(true)
+	return c
+}
+
+// Write lifts the deadline at the client's first application_data record. In
+// TLS 1.3 that is its encrypted Finished: utls buffers everything it writes
+// from the ServerHello on and flushes it once the server's Finished is in
+// (handshake_client_tls13.go). In TLS 1.2 it is the first request, which
+// waits for the server's Finished too. A HelloRetryRequest's ChangeCipherSpec
+// and second ClientHello carry none — "the first write after the peer has
+// spoken" lifted it there, and in TLS 1.2 at the client's second flight, and
+// left the rest of the handshake unbounded (codex review). What follows — the
+// HTTP/2 preface, the requests, a pooled connection sitting idle — runs on no
+// deadline.
+func (c *handshakeGuardConn) Write(p []byte) (int, error) {
+	if c.guarded.Load() && endsHandshake(p) && c.guarded.CompareAndSwap(true, false) {
+		c.Conn.SetDeadline(time.Time{})
+	}
+	return c.Conn.Write(p)
+}
+
+// TLS record content types (RFC 8446 §5.1).
+const (
+	tlsRecordChangeCipherSpec = 20
+	tlsRecordApplicationData  = 23
+)
+
+// endsHandshake: does p, one write of a TLS client, hold an application_data
+// record? crypto/tls (and utls) write whole records — one per write, or a
+// flushed run of them — so p starts on a record header. A write that does not
+// read as TLS records ends the guard as well: it is there for a TLS handshake,
+// and must never cut a connection that is something else.
+func endsHandshake(p []byte) bool {
+	for len(p) >= 5 {
+		switch typ := p[0]; {
+		case typ < tlsRecordChangeCipherSpec || typ > tlsRecordApplicationData:
+			return true
+		case typ == tlsRecordApplicationData:
+			return true
+		}
+		n := 5 + int(binary.BigEndian.Uint16(p[3:5]))
+		if n > len(p) {
+			return false
+		}
+		p = p[n:]
+	}
+	return false
 }
 
 // dialVKHost is the VK HTTP client's DialContext: host resolved through cache,

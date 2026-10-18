@@ -86,6 +86,11 @@ type relayLoss struct {
 
 	receiver uint32
 	have     bool
+	// left is the receiver index of the keypair before this one, and hasLeft
+	// whether there has been one since the reset: its stragglers are told by
+	// the index, not the counter (see observe).
+	left     uint32
+	hasLeft  bool
 	base     uint64 // next counter to finalize
 	top      uint64 // one past the highest counter seen
 	seen     [relayLossRing]uint64
@@ -116,6 +121,7 @@ func (t *relayLoss) reset() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.receiver, t.have, t.base, t.top, t.last = 0, false, 0, 0, 0
+	t.left, t.hasLeft = 0, false
 	t.lastOK, t.gap, t.unplaced = false, 0, 0
 	t.seen = [relayLossRing]uint64{}
 	t.lastAt = time.Time{}
@@ -136,11 +142,21 @@ func (t *relayLoss) observe(pkt []byte, relay string, now time.Time) {
 	defer t.mu.Unlock()
 	t.lastAt = now
 	if !t.have || receiver != t.receiver {
-		if t.have && ctr >= relayLossNewKeypair {
-			return // a straggler of a keypair we have already left
+		// A straggler of a keypair we have already left. The counter alone
+		// does not tell one: a keypair that carried fewer than
+		// relayLossNewKeypair packets — an idle tunnel's — has stragglers as
+		// low as a new keypair's first packets. Taken for a new keypair, one
+		// such straggler switched the book back to the old keypair, and every
+		// packet of the current one after it read as a straggler until the
+		// next rekey (iOS review, 2026-10-11).
+		if t.have && (ctr >= relayLossNewKeypair || (t.hasLeft && receiver == t.left)) {
+			return
 		}
 		// A new keypair: what the old one still owed is final now.
 		t.finalizeLocked(t.top)
+		if t.have {
+			t.left, t.hasLeft = t.receiver, true
+		}
 		t.receiver, t.have = receiver, true
 		t.base, t.top = 0, 0
 		t.seen = [relayLossRing]uint64{}

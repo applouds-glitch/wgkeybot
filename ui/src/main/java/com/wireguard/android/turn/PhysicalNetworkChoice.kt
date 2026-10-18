@@ -44,6 +44,18 @@ package com.wireguard.android.turn
  * Before the tunnel is up that is the default network, the one every app uses.
  * Once it is up, the app rides its own tunnel and the default is the VPN, so the
  * network in use stands for as long as Android still knows it.
+ *
+ * Not at once, though. "Cannot be stale" held for the minutes-long "none" it was
+ * written for, and not for the "none" of a network going away: for a second or
+ * two after the callback's onLost, the direct question still names the lost
+ * network. Field log 2026-10-12 (Xiaomi, HyperOS, Android 16, cellular that
+ * reconnects every 10-15s): eight stand-ins in half an hour, every one of them a
+ * network already gone — no link properties, no DNS servers, every bind refused
+ * ("bindSocket exception") — and every time a new network came 1-3s later. The
+ * workers were never parked and dialed into the dead network meanwhile. Across
+ * that log and the one before it, the new network followed "none" within 2.8s at
+ * most, so a "none" is believed for [STALE_NONE_AFTER_MS] first; the re-asking
+ * that comes after it (every 10s) is the first time the stand-in can apply.
  */
 internal object PhysicalNetworkChoice {
     enum class Transport { WIFI, CELLULAR, OTHER }
@@ -58,13 +70,26 @@ internal object PhysicalNetworkChoice {
      * the platform has not told us its pick; once it has, that is the answer.
      * Its "none" is not taken from [candidates], which are stale by then, but
      * from [systemDefault]: the physical network the platform has for this app
-     * when asked directly, if any.
+     * when asked directly, if any — once the "none" has lasted [noneForMs] of at
+     * least [STALE_NONE_AFTER_MS].
      */
-    fun <T> pick(system: SystemPick<T>?, candidates: List<Candidate<T>>, systemDefault: T? = null): T? {
+    fun <T> pick(
+        system: SystemPick<T>?,
+        candidates: List<Candidate<T>>,
+        systemDefault: T? = null,
+        noneForMs: Long = Long.MAX_VALUE,
+    ): T? {
         system?.network?.let { return it }
-        if (system == null) byTransport(candidates).firstOrNull()?.let { return it }
-        return systemDefault
+        if (system == null) return byTransport(candidates).firstOrNull() ?: systemDefault
+        return systemDefault.takeIf { noneForMs >= STALE_NONE_AFTER_MS }
     }
+
+    /**
+     * How long Android's "no network" is believed before [pick] checks it against
+     * the default network: longer than a lost network takes to be replaced
+     * (2.8s at most in the field), far shorter than the stale "none" (minutes).
+     */
+    const val STALE_NONE_AFTER_MS = 5_000L
 
     /**
      * The networks to try binding something else of ours to, best first: the one

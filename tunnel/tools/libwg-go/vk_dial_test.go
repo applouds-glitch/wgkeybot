@@ -6,15 +6,25 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	fhttp "github.com/bogdanfinn/fhttp"
+	tlsclient "github.com/kiper292/tls-client"
+	"github.com/kiper292/tls-client/profiles"
 )
 
 // dnsAnswerWithCNAME builds a response to an A query for name: a CNAME first, the way
@@ -371,5 +381,360 @@ func TestResolveReturnsThePreferredAddress(t *testing.T) {
 	}
 	if got := cache.snapshot("relay.example"); len(got) != 2 {
 		t.Fatalf("an unknown address was added: %v", got)
+	}
+}
+
+func shrinkHandshakeTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := vkHandshakeTimeout
+	vkHandshakeTimeout = d
+	t.Cleanup(func() { vkHandshakeTimeout = prev })
+}
+
+// Audit 2026-10-16: tls-client dials its HTTP/2 pool under
+// context.Background(), and a ClientHello answered by nothing — an L7 filter
+// that lets the SYN through — held the handshake, and every request waiting on
+// it, forever. The guard's deadline ends it.
+func TestAHandshakeAnsweredByNothingIsBounded(t *testing.T) {
+	shrinkHandshakeTimeout(t, 200*time.Millisecond)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	held := make(chan net.Conn, 1)
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			held <- c // taken, and never a word back
+		}
+	}()
+	defer func() {
+		select {
+		case c := <-held:
+			c.Close()
+		default:
+		}
+	}()
+
+	conn, err := getCustomDialContext(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- tls.Client(conn, &tls.Config{ServerName: "api.vk.ru"}).HandshakeContext(context.Background())
+	}()
+	select {
+	case err := <-done:
+		var ne net.Error
+		if !errors.As(err, &ne) || !ne.Timeout() {
+			t.Fatalf("the handshake ended with %v, want the guard's timeout", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a handshake answered by nothing is still waiting")
+	}
+}
+
+// Once the handshake is over the deadline is gone: a pooled connection may sit
+// idle for longer than any handshake takes, and then carry a request — over
+// TLS 1.3, where the client's Finished lifts it, and over TLS 1.2, where its
+// first request does.
+func TestTheHandshakeGuardIsLiftedOnceTheHandshakeIsOver(t *testing.T) {
+	shrinkHandshakeTimeout(t, 200*time.Millisecond)
+	for _, version := range []uint16{tls.VersionTLS13, tls.VersionTLS12} {
+		t.Run(tls.VersionName(version), func(t *testing.T) {
+			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, "ok")
+			}))
+			srv.TLS = &tls.Config{MinVersion: version, MaxVersion: version}
+			srv.StartTLS()
+			defer srv.Close()
+
+			conn, err := getCustomDialContext(context.Background(), "tcp", srv.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc := tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
+			defer tc.Close()
+			if err := tc.HandshakeContext(context.Background()); err != nil {
+				t.Fatalf("handshake: %v", err)
+			}
+			time.Sleep(400 * time.Millisecond) // twice the guard's deadline, idle
+			if _, err := fmt.Fprint(tc, "GET / HTTP/1.1\r\nHost: vk\r\nConnection: close\r\n\r\n"); err != nil {
+				t.Fatalf("a request after the handshake: %v", err)
+			}
+			resp, err := http.ReadResponse(bufio.NewReader(tc), nil)
+			if err != nil {
+				t.Fatalf("its answer: %v", err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
+// stallAfterFirstFlight is a TCP relay to upstream that passes the client's
+// ClientHello and the server's answer to it, and from the client's next byte
+// on lets nothing more come back: the server's side of the handshake stops
+// mid-way, after the client has heard it once.
+func stallAfterFirstFlight(t *testing.T, upstream string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			server, err := net.Dial("tcp", upstream)
+			if err != nil {
+				client.Close()
+				return
+			}
+			t.Cleanup(func() { client.Close(); server.Close() })
+			var stalled atomic.Bool
+			go func() { // client → server
+				hdr := make([]byte, 5)
+				if _, err := io.ReadFull(client, hdr); err != nil {
+					return
+				}
+				hello := make([]byte, binary.BigEndian.Uint16(hdr[3:5]))
+				if _, err := io.ReadFull(client, hello); err != nil {
+					return
+				}
+				server.Write(append(hdr, hello...))
+				buf := make([]byte, 4096)
+				for {
+					n, err := client.Read(buf)
+					if n > 0 {
+						stalled.Store(true) // before the server can answer it
+						server.Write(buf[:n])
+					}
+					if err != nil {
+						return
+					}
+				}
+			}()
+			go func() { // server → client
+				buf := make([]byte, 16384)
+				for {
+					n, err := server.Read(buf)
+					if n > 0 && !stalled.Load() {
+						client.Write(buf[:n])
+					}
+					if err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// stalledHandshake runs a TLS handshake through the guard and a relay that
+// stalls it after the server's first flight, and wants the guard's timeout.
+func stalledHandshake(t *testing.T, server *tls.Config) {
+	t.Helper()
+	shrinkHandshakeTimeout(t, 300*time.Millisecond)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.TLS = server
+	srv.StartTLS()
+	defer srv.Close()
+
+	conn, err := getCustomDialContext(context.Background(), "tcp", stallAfterFirstFlight(t, srv.Listener.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- tls.Client(conn, &tls.Config{InsecureSkipVerify: true}).HandshakeContext(context.Background())
+	}()
+	select {
+	case err := <-done:
+		var ne net.Error
+		if !errors.As(err, &ne) || !ne.Timeout() {
+			t.Fatalf("the handshake ended with %v, want the guard's timeout", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a handshake stalled after the server's first flight is still waiting")
+	}
+}
+
+// Codex review: a server that wants another key share answers the ClientHello
+// with a HelloRetryRequest, and the client's ChangeCipherSpec and second
+// ClientHello went out as "a write after the peer had spoken" — the guard was
+// lifted with the handshake barely begun, and a server silent from there held
+// it forever. The go client offers X25519 and X25519MLKEM768 shares; a P-256
+// server asks again.
+func TestAHandshakeStalledAfterAHelloRetryIsBounded(t *testing.T) {
+	stalledHandshake(t, &tls.Config{MinVersion: tls.VersionTLS13, CurvePreferences: []tls.CurveID{tls.CurveP256}})
+}
+
+// The same in TLS 1.2: the client's second flight comes before the server's
+// Finished, which a stalled server never sends.
+func TestATLS12HandshakeStalledBeforeTheServersFinishedIsBounded(t *testing.T) {
+	stalledHandshake(t, &tls.Config{MaxVersion: tls.VersionTLS12})
+}
+
+// The audit's reproduction end to end, through tls-client itself: the HTTP/2
+// connection is gone, the pool's redial lands on a socket that takes the
+// ClientHello and never answers, and the request waiting on it — its own
+// context long expired — was released only by closing that socket by hand.
+// Guarded, the redial fails on its deadline and lets the request go.
+func TestAStalledHTTP2RedialReleasesItsRequest(t *testing.T) {
+	shrinkHandshakeTimeout(t, 300*time.Millisecond)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	var held []net.Conn
+	var heldMu sync.Mutex
+	hello := make(chan byte, 1) // the first byte the silent server is sent
+	go func() {
+		for {
+			c, err := silent.Accept()
+			if err != nil {
+				return
+			}
+			heldMu.Lock()
+			held = append(held, c)
+			heldMu.Unlock()
+			go func() {
+				b := make([]byte, 1)
+				if _, err := io.ReadFull(c, b); err == nil {
+					select {
+					case hello <- b[0]:
+					default:
+					}
+				}
+			}()
+		}
+	}()
+	defer func() {
+		heldMu.Lock()
+		for _, c := range held {
+			c.Close()
+		}
+		heldMu.Unlock()
+	}()
+
+	var dials atomic.Int32
+	client, err := tlsclient.NewHttpClient(tlsclient.NewNoopLogger(),
+		tlsclient.WithTimeoutSeconds(1),
+		tlsclient.WithClientProfile(profiles.Chrome_131),
+		tlsclient.WithInsecureSkipVerify(),
+		tlsclient.WithDialContext(func(ctx context.Context, network, _ string) (net.Conn, error) {
+			to := silent.Addr().String()
+			if dials.Add(1) == 1 {
+				to = srv.Listener.Addr().String()
+			}
+			conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, network, to)
+			if err != nil {
+				return nil, err
+			}
+			return guardHandshake(conn, vkHandshakeTimeout), nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+
+	req, _ := fhttp.NewRequest("GET", srv.URL, nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.ProtoMajor != 2 {
+		t.Fatalf("first request went over %s, want HTTP/2 for the pool's redial", resp.Proto)
+	}
+	client.CloseIdleConnections()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	req, _ = fhttp.NewRequestWithContext(ctx, "GET", srv.URL, nil)
+	done := make(chan error, 1)
+	started := time.Now() // before the request: a late stamp would make the guard look early
+	go func() {
+		r, err := client.Do(req)
+		if r != nil {
+			r.Body.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the request over a silent redial succeeded")
+		}
+		if el := time.Since(started); el < vkHandshakeTimeout-50*time.Millisecond {
+			t.Fatalf("released after %v with %v — before the guard's %v: not the guard", el, err, vkHandshakeTimeout)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the request is still held by a redial whose handshake nothing answers")
+	}
+	if n := dials.Load(); n != 2 {
+		t.Fatalf("%d dials, want the first and the pool's redial", n)
+	}
+	select {
+	case b := <-hello:
+		if b != 22 {
+			t.Fatalf("the redial sent %#x first, want a TLS handshake record", b)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the redial never sent the silent server its ClientHello")
+	}
+}
+
+// endsHandshake reads one write of a TLS client: only an application_data
+// record ends the guard — or a write that is no TLS at all.
+func TestEndsHandshakeReadsTheRecords(t *testing.T) {
+	rec := func(typ byte, body int) []byte {
+		b := []byte{typ, 3, 3, byte(body >> 8), byte(body)}
+		return append(b, make([]byte, body)...)
+	}
+	join := func(rs ...[]byte) []byte {
+		var out []byte
+		for _, r := range rs {
+			out = append(out, r...)
+		}
+		return out
+	}
+	cases := []struct {
+		name string
+		p    []byte
+		want bool
+	}{
+		{"ClientHello", rec(22, 512), false},
+		{"HelloRetryRequest's ChangeCipherSpec", rec(20, 1), false},
+		{"TLS 1.2 second flight", join(rec(22, 70), rec(20, 1), rec(22, 40)), false},
+		{"TLS 1.3 last flight", join(rec(20, 1), rec(23, 53)), true},
+		{"a request", rec(23, 300), true},
+		{"no TLS at all", []byte("GET / HTTP/1.1\r\n\r\n"), true},
+		{"a header cut short", []byte{22, 3, 3}, false},
+		{"a record cut short", rec(22, 512)[:100], false},
+		{"nothing", nil, false},
+	}
+	for _, tc := range cases {
+		if got := endsHandshake(tc.p); got != tc.want {
+			t.Errorf("%s: endsHandshake = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

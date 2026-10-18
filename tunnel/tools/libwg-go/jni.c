@@ -309,6 +309,18 @@ int wgProtectSocket(int fd)
 	return protect_and_bind(fd, "wgProtectSocket", 0);
 }
 
+// wgVpnServiceRegistered: is there a VpnService for wgProtectSocket to ask
+// (wgSetVpnService)? Silent, unlike protect_and_bind's refusal: the link check
+// asks before each socket whether to protect it at all (withProtectIfService in
+// turn-client.go), and with the tunnel down the answer is "no" every time.
+int wgVpnServiceRegistered(void)
+{
+	pthread_mutex_lock(&jni_globals_mutex);
+	int registered = vpn_service_global != NULL && protect_method != NULL;
+	pthread_mutex_unlock(&jni_globals_mutex);
+	return registered;
+}
+
 // wgProtectSocketDirect is wgProtectSocket for the sharing proxy's direct
 // route (tether_route.go): a tethered client's connection that the routing
 // profile sends past the tunnel. Same protect, same bind to the physical

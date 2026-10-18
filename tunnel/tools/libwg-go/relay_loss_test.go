@@ -161,6 +161,31 @@ func TestRelayLossNewKeypairStartsOver(t *testing.T) {
 	}
 }
 
+// A keypair that carried only a few packets — an idle tunnel's — has
+// stragglers with counters as low as a new keypair's. One arriving after the
+// rekey must not switch the book back to the keypair left, or every packet of
+// the current one reads as a straggler until the next rekey.
+func TestRelayLossIgnoresALowStragglerOfTheKeypairLeft(t *testing.T) {
+	tr := newRelayLoss()
+	now := time.Now()
+	for ctr := uint64(0); ctr < 32; ctr++ {
+		tr.observe(wgTransport(1, ctr), "A", now)
+	}
+	for ctr := uint64(0); ctr < 3000; ctr++ {
+		tr.observe(wgTransport(2, ctr), "B", now)
+		if ctr == 2048 {
+			tr.observe(wgTransport(1, 31), "A", now) // late, through the slower relay
+		}
+	}
+	got := samplesOf(tr.take(now.Add(time.Second)))
+	if b := lossOf(got, "B"); b.rx != 3000 || b.lost != 0 {
+		t.Fatalf("B = %+v, want all 3000 of the current keypair and nothing lost", b)
+	}
+	if a := lossOf(got, "A"); a.rx != 32 || a.lost != 0 {
+		t.Fatalf("A = %+v, want the 32 of the old keypair counted once", a)
+	}
+}
+
 func TestRelayLossIgnoresAllButTransportMessages(t *testing.T) {
 	tr := newRelayLoss()
 	now := time.Now()

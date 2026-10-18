@@ -92,20 +92,9 @@ func tcpAttemptFailureIsIsolated(addr string, s *stream, err error) bool {
 		return false
 	}
 	if !isTransportError(err) && !errors.Is(err, io.EOF) &&
-		!errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
-		// Pion v5.0.13 wraps these private sentinels without a net.Error;
-		// the retransmit write failure also discards the underlying socket
-		// error. Match only the unwrapped sentinel, not response text, IPs,
-		// transaction IDs or unrelated protocol errors.
-		cause := err
-		for errors.Unwrap(cause) != nil {
-			cause = errors.Unwrap(cause)
-		}
-		switch cause.Error() {
-		case "all retransmissions failed for", "turn: failed to retransmit transaction":
-		default:
-			return false
-		}
+		!errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) &&
+		!pionTransactionLost(err) {
+		return false
 	}
 	if !relayHeardByOthers(addr, s, time.Now()) {
 		return false

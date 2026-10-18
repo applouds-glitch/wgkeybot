@@ -11,6 +11,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.util.Log
 import android.widget.Toast
@@ -101,6 +103,16 @@ class TunnelManager(
      * a single tunnel.
      */
     private var stopGeneration = 0
+
+    // The system started the service as the always-on VPN before the tunnel list
+    // was loaded (restoreState); on the main thread, like haveLoaded.
+    private var alwaysOnPending = false
+
+    // Restores under way, on the main thread too. The last one to finish stops the
+    // service if nothing came up (stopIdleVpnService): one that declines while
+    // another is still bringing the tunnel up — the boot broadcast's and the
+    // always-on start's, side by side — must not stop the service under it.
+    private var restoresInFlight = 0
 
     /** Set when a queued request wants the in-flight connect to stop waiting. */
     @Volatile private var abortConnect = false
@@ -314,7 +326,9 @@ class TunnelManager(
             // runningTunnelNames, so they are accurate as of now; restoreState() repairs
             // tunnels the backend lost, it is not what makes the list valid.
             tunnels.complete(tunnelMap)
-            restoreState(true)
+            val systemAlwaysOn = alwaysOnPending
+            alwaysOnPending = false
+            restoreState(true, systemAlwaysOn)
         }
     }
 
@@ -330,11 +344,55 @@ class TunnelManager(
         }
     }
 
-    suspend fun restoreState(force: Boolean) {
-        if (!haveLoaded || (!force && !UserKnobs.restoreOnBoot.first()))
+    /**
+     * Brings back the tunnels that were up when the process last ran.
+     *
+     * [systemAlwaysOn]: the system started the service because this app is the
+     * always-on VPN (GoBackend: the start intent carries VpnService.SERVICE_INTERFACE). That is the user's choice of this app made in Settings, and
+     * it stands even when the running set is empty — after a revoke cleared it
+     * (onVpnRevoked), or a disconnect — so the primary tunnel comes up; under
+     * lockdown nothing else would give the phone a network.
+     */
+    suspend fun restoreState(force: Boolean, systemAlwaysOn: Boolean = false) {
+        if (!haveLoaded) {
+            // A cold always-on start reaches here before the list is loaded; the
+            // restore onTunnelsLoaded runs then must still know who started it.
+            if (systemAlwaysOn) alwaysOnPending = true
             return
-        val previouslyRunning = UserKnobs.runningTunnels.first()
+        }
+        restoresInFlight++
+        try {
+            restoreSaved(force, systemAlwaysOn)
+        } finally {
+            withContext(NonCancellable) {
+                if (--restoresInFlight == 0) stopIdleVpnService()
+            }
+        }
+    }
+
+    private suspend fun restoreSaved(force: Boolean, systemAlwaysOn: Boolean) {
+        if (!force && !UserKnobs.restoreOnBoot.first())
+            return
+        val saved = UserKnobs.runningTunnels.first()
+        val previouslyRunning =
+            if (saved.isEmpty() && systemAlwaysOn) setOfNotNull(primaryTunnelOrNull()?.name) else saved
         if (previouslyRunning.isEmpty()) return
+        // Another VPN is the phone's network: the user gave the VPN to another app
+        // while this process was gone. A restore would take it back without asking —
+        // for an app the user has once consented to, VpnService.prepare() (which the
+        // backend calls) silently hands it the VPN, so that is no way to check. And
+        // the connect it starts runs TURN before that point: field log 2026-10-12,
+        // an hour after another VPN took over, the next process start brought the
+        // tunnel up by itself and every socket failed protect() for 78s. The always-on
+        // start is the system's own, with no other VPN to displace.
+        // Our own tunnel already up (a boot restore after the process-start one) is
+        // a VPN too, and would read as someone else's: a restore is a no-op then.
+        val oursUp = withContext(Dispatchers.IO) { getBackend().runningTunnelNames }.isNotEmpty()
+        if (!systemAlwaysOn && !oursUp && anotherVpnIsActive()) {
+            Log.w(TAG, "Not restoring ${previouslyRunning.joinToString()}: another VPN is active")
+            UserKnobs.setRunningTunnels(emptySet())
+            return
+        }
         withContext(Dispatchers.IO) {
             try {
                 tunnelMap.filter { previouslyRunning.contains(it.name) }.map { async(Dispatchers.IO + SupervisorJob()) { setTunnelState(it, Tunnel.State.UP, restore = true) } }
@@ -342,6 +400,89 @@ class TunnelManager(
             } catch (e: Throwable) {
                 Log.e(TAG, Log.getStackTraceString(e))
             }
+        }
+    }
+
+    /**
+     * Whether the network this app is on is a VPN. Called with no tunnel of ours up,
+     * so it is someone else's. Read-only, unlike VpnService.prepare(). Blind to a
+     * VPN that leaves this app out of its routes — Android gives the app its
+     * physical network then — and in that case the restore goes ahead as before.
+     */
+    private fun anotherVpnIsActive(): Boolean = try {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val active = cm?.activeNetwork
+        active != null && cm.getNetworkCapabilities(active)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+    } catch (e: Exception) {
+        Log.w(TAG, "Could not tell whether another VPN is active: $e")
+        false
+    }
+
+    /**
+     * Stops the VPN service that a restore left running with no tunnel. The
+     * system starts it before any restore decides — a sticky restart after the
+     * process died, the always-on start — and GoBackend.VpnService.onCreate goes
+     * foreground and takes a wakelock, both let go only in onDestroy. So a restore
+     * that brought nothing up (another VPN active, nothing saved, no config) left
+     * the "VPN service running" notification up and the CPU awake until the app
+     * was killed. Since the restore declines a tunnel against another VPN (field
+     * log 2026-10-12), a sticky restart under one ended this way (audit 2026-10-16).
+     *
+     * Under [stateMutex] and only with no connect in flight or asked for, no
+     * restore under way and nothing running: a connect starts the service itself
+     * and must keep it. A service that is not running makes this a no-op.
+     */
+    private suspend fun stopIdleVpnService() = withContext(Dispatchers.Main.immediate) {
+        if (getBackend() !is GoBackend) return@withContext
+        stateMutex.withLock {
+            val running = withContext(Dispatchers.IO) { getBackend().runningTunnelNames }
+            // Checked after the backend query and with nothing suspending from here
+            // to stopService: a tap on the tile or the widget while the query ran
+            // has queued a connect by now (codex review).
+            if (running.isNotEmpty() || connectInFlight != null || userConnects > 0 || restoresInFlight > 0)
+                return@withLock
+            if (!get().stopService(Intent(get(), GoBackend.VpnService::class.java)))
+                return@withLock
+            Log.i(TAG, "Nothing came up — stopped the idle VPN service")
+            // The lock is held until onDestroy has run. Before it, GoBackend still
+            // hands the retiring service to the next connect (setStateInternal), and
+            // its onDestroy then tears that connect's tunnel down.
+            val gone = withTimeoutOrNull(SERVICE_STOP_WAIT_MS) {
+                while (GoBackend.isServiceRunning()) delay(20)
+                true
+            } ?: false
+            if (!gone)
+                Log.w(TAG, "The idle VPN service is still not destroyed after ${SERVICE_STOP_WAIT_MS}ms")
+        }
+    }
+
+    /**
+     * Android took the VPN away (GoBackend.VpnService.onRevoke): another VPN app
+     * was turned on, the user disconnected us in system settings, or always-on was
+     * switched off. Either way the tunnel must stay down until the user brings it
+     * back. The service's teardown marks the tunnel DOWN, but the running set on
+     * disk said UP, and the next process start restored it — field logs
+     * 2026-09-27/30 and 2026-10-12, where it came up against another VPN.
+     *
+     * Through setTunnelState, like a user's disconnect: that drops connects and
+     * restores queued on [stateMutex] before it, aborts one in flight, and takes
+     * down a tunnel a racing restore marked UP after the service was gone. The set
+     * is cleared in the same hold of the lock (thenUnderLock): released in between,
+     * a connect the user started after the revoke could get in, save its UP, and
+     * have it wiped (codex, reproduced with coroutines).
+     */
+    suspend fun onVpnRevoked() = withContext(Dispatchers.Main.immediate) {
+        Log.i(TAG, "VPN revoked by Android — the tunnel will not be restored by itself")
+        val clear: suspend () -> Unit = { UserKnobs.setRunningTunnels(emptySet()) }
+        val tunnel = primaryTunnelOrNull()
+        if (tunnel == null) {
+            stateMutex.withLock { clear() }
+            return@withContext
+        }
+        try {
+            setTunnelState(tunnel, Tunnel.State.DOWN, thenUnderLock = clear)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Teardown after the VPN was revoked failed: $e")
         }
     }
 
@@ -457,6 +598,9 @@ class TunnelManager(
         tunnel: ObservableTunnel,
         state: Tunnel.State,
         restore: Boolean = false,
+        // Runs under stateMutex right after the transition, whatever its outcome:
+        // for a step that must not let another transition in between (onVpnRevoked).
+        thenUnderLock: (suspend () -> Unit)? = null,
     ): Tunnel.State = withContext(Dispatchers.Main.immediate) {
         val requested = if (state != Tunnel.State.TOGGLE) state else resolveToggle(tunnel)
 
@@ -497,6 +641,7 @@ class TunnelManager(
                             scheduleSplitTunnelReapply()
                         }
                     }
+                    if (thenUnderLock != null) withContext(NonCancellable) { thenUnderLock() }
                 }
             }
         } finally {
@@ -570,6 +715,10 @@ class TunnelManager(
                 val overrides = getExpertSettings().overrides() ?: ExpertOverrides.NONE
                 if (!overrides.isEmpty) {
                     Log.i(TAG, "Expert mode: mtu=${overrides.mtu ?: "from config"}, dns=${overrides.dns?.let { ExpertOverrides.formatDns(it) } ?: "from config"}")
+                }
+                val skipped = overrides.dnsNotCarriedBy(configToUse.`interface`.addresses)
+                if (skipped.isNotEmpty()) {
+                    Log.w(TAG, "Expert mode: resolvers ${ExpertOverrides.formatDns(skipped)} skipped — the tunnel has no address of their family")
                 }
                 configToUse = TurnConfigProcessor.modifyConfigForActiveTurn(configToUse, turn, overrides)
 
@@ -951,6 +1100,10 @@ class TunnelManager(
 
     companion object {
         private const val TAG = "WireGuard/TunnelManager"
+
+        // stopIdleVpnService's wait for onDestroy, which the main thread runs in
+        // milliseconds; past this the service is held by something other than us.
+        private const val SERVICE_STOP_WAIT_MS = 2_000L
 
         /**
          * The one tunnel this client ships, created by the import flow under this name.

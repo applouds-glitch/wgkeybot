@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -59,6 +60,12 @@ func joinHash(raw string) string {
 // VK's detector never sees a desktop UA paired with accelerometer readings.
 // Returns the Chrome major with the client so callers can name it in the log.
 func newVKAPIClient() (tlsclient.HttpClient, Profile, int, error) {
+	return newVKAPIClientDialing(getCustomDialContext)
+}
+
+// newVKAPIClientDialing is newVKAPIClient with every connection dialled by
+// dial: tls-client takes a custom dial over its own dialer for all of them.
+func newVKAPIClientDialing(dial func(ctx context.Context, network, addr string) (net.Conn, error)) (tlsclient.HttpClient, Profile, int, error) {
 	profile, chromeMajor := vkSessionIdentity()
 	client, err := tlsclient.NewHttpClient(
 		tlsclient.NewNoopLogger(),
@@ -69,7 +76,7 @@ func newVKAPIClient() (tlsclient.HttpClient, Profile, int, error) {
 		tlsclient.WithRandomTLSExtensionOrder(),
 		tlsclient.WithCookieJar(tlsclient.NewCookieJar()),
 		tlsclient.WithDialer(getCustomNetDialer()),
-		tlsclient.WithDialContext(getCustomDialContext),
+		tlsclient.WithDialContext(dial),
 		// Additive trust: system CAs + bundled Минцифры chain, in case VK/OK
 		// migrate onto Russian roots.
 		tlsclient.WithTransportOptions(&tlsclient.TransportOptions{RootCAs: vkRootCAPool()}),
@@ -78,6 +85,14 @@ func newVKAPIClient() (tlsclient.HttpClient, Profile, int, error) {
 		return nil, Profile{}, 0, fmt.Errorf("failed to create tlsclient: %w", err)
 	}
 	return client, profile, chromeMajor, nil
+}
+
+// linkCheckDial is the link check's dial: getCustomDialContext under
+// withProtectIfService. Marked here as well as on the check's ctx, because
+// tls-client dials an HTTP/2 connection with context.Background()
+// (roundTripper.dialTLSHTTP2), and that ctx carries nothing of ours.
+func linkCheckDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	return getCustomDialContext(withProtectIfService(ctx), network, addr)
 }
 
 // checkVKLink asks VK whether a call still admits anonymous participants, by
@@ -107,10 +122,11 @@ func checkVKLink(ctx context.Context, link string, client tlsclient.HttpClient, 
 // wgTurnCheckVKLink is the settings screen's "check this link": it takes a VK
 // call link or a bare join hash and returns one of the linkCheck* verdicts.
 // Independent of the proxy — its own client, no credential cache, no vkSemaphore
-// slot — so it can run with the tunnel up or down; the sockets still go through
-// protectControl, so with the tunnel up the trip leaves by the physical network
-// like every other VK request. Blocking for up to vkLinkCheckTimeout. The link
-// is never logged: the journal is exported, and a join link admits anyone.
+// slot — so it can run with the tunnel up or down. With a VpnService registered
+// the sockets are protected and bound like every other VK request's, so with the
+// tunnel up the trip leaves by the physical network; with none registered — as
+// a rule, the tunnel down — they go out as they are (withProtectIfService). Blocking for up to vkLinkCheckTimeout. The link is
+// never logged: the journal is exported, and a join link admits anyone.
 //
 //export wgTurnCheckVKLink
 func wgTurnCheckVKLink(linkC *C.char) int32 {
@@ -118,17 +134,23 @@ func wgTurnCheckVKLink(linkC *C.char) int32 {
 	if link == "" {
 		return linkCheckUnavailable
 	}
-	client, profile, chromeMajor, err := newVKAPIClient()
+	client, profile, chromeMajor, err := newVKAPIClientDialing(linkCheckDial)
 	if err != nil {
 		turnErrorLog("[LinkCheck] cannot build the VK client: %v", err)
 		return linkCheckTemporary
 	}
 	defer client.CloseIdleConnections()
 
-	ctx, cancel := context.WithTimeout(context.Background(), vkLinkCheckTimeout)
+	ctx, cancel := context.WithTimeout(withProtectIfService(context.Background()), vkLinkCheckTimeout)
 	defer cancel()
+	// As things stood when the check began: a tunnel coming up or going down
+	// meanwhile changes the answer for the dials after it.
+	path := "VpnService registered at the start: protected, over the physical network"
+	if !vpnServiceRegistered() {
+		path = "no VpnService at the start: unprotected, over the default network"
+	}
 	started := time.Now()
 	code := checkVKLink(ctx, link, client, profile)
-	turnLog("[LinkCheck] verdict %d after %v (Chrome/%d identity)", code, time.Since(started).Round(time.Millisecond), chromeMajor)
+	turnLog("[LinkCheck] verdict %d after %v (Chrome/%d identity, %s)", code, time.Since(started).Round(time.Millisecond), chromeMajor, path)
 	return code
 }

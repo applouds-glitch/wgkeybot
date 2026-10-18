@@ -30,7 +30,7 @@ import (
 //
 // So the sockets are asked directly. Once a second the kernel's own view of
 // every relay connection is read (TCP_INFO; one getsockopt each, nothing on the
-// packet path), and three things come out of it:
+// packet path), and four things come out of it:
 //
 //   - stream.sendStalled on a stream whose socket has its head segment timing
 //     out (relayStallSkipTimeouts in a row): the dispatcher takes traffic past
@@ -45,7 +45,9 @@ import (
 //     stalled: bytes each way, retransmissions, the rtt spread across the pool,
 //     the deepest socket backlog and stream queue, how much of the sending time
 //     went on waiting for the relay's window or for our own send buffer, and
-//     how many packets the dispatcher steered past stalled sockets.
+//     how many packets the dispatcher steered past stalled sockets;
+//   - a connection whose segments the kernel has cut and left cut (see
+//     relayShrunkMSS) is redialed, one at a time, once the path is calm again.
 //
 // An idle tunnel — keepalives and nothing else — stays silent. The watcher does
 // not tick at all while no stream is on TCP.
@@ -83,7 +85,71 @@ const (
 	// window probes with the window still closed resets the count: that flow is
 	// slow, not gone, and is not marked.
 	relayStallSkipTimeouts = 2
+
+	// relayShrunkCalm is how long a connection whose segments were cut has to
+	// have gone without a retransmission timeout before it is replaced: the
+	// path is back, so the redial is not a dial into the same darkness, which
+	// would fail and cost the stream its slot for a backoff.
+	relayShrunkCalm = 10 * time.Second
+
+	// relayShrunkGap spaces the replacements over the pool. One stall cuts every
+	// socket that lived through it, and redialing them all at once would take
+	// the tunnel down for the length of a reconnect and fire six Allocates at
+	// the relays together; one at a time, the siblings carry the traffic.
+	relayShrunkGap = 15 * time.Second
 )
+
+// relayShrunkMSS says whether a connection to a relay has had its segments cut
+// to half the size it began with or less, which is when it is replaced.
+//
+// The kernel does that by itself. A connection whose head segment keeps timing
+// out past tcp_retries1 is taken for one into a path-MTU black hole: with
+// tcp_mtu_probing on, the segment size drops to tcp_base_mss, 1024, and halves
+// again at each timeout after that. Stock Android leaves it off (a Pixel 6a on
+// Android 17 reads 0), and there this never fires; the Xiaomi of the 17.10
+// field log (HyperOS, Rostelecom, TCP) has it on and did it in every stall:
+// the streams that went silent had 512, 256, 128, 80 and 64 bytes a segment
+// where they began with 1228. A stall on
+// these paths is the whole radio going dark (both relays, every socket, fresh
+// dials too), not big segments being dropped, so the cut buys nothing. And it
+// stays: the kernel grows the size back only by MTU probes, which it sends only
+// with a deep queue of unsent data and a congestion window of eleven segments
+// or more — a long upload, not a tunnel whose way up is mostly the
+// acknowledgements of a download. In the log, streams went into a stall
+// already at 128 or 64 bytes after three to five timeouts, too few to get
+// there from 1228 within it: the cut of a stall minutes before was still in
+// place.
+//
+// What that costs is the way up. A full packet of the tunnel, ~1.3 KB on this
+// leg, goes to the relay as ~20 segments of 64 bytes instead of two, with 52
+// bytes of headers on each; the congestion window counts segments, so an
+// upload crawls at a few kilobytes per round trip; and a segment lost anywhere
+// holds the whole packet, and every one behind it in the stream. A new
+// connection starts at full size.
+//
+// Half, not any cut: the first one, to 1024, still moves a packet in two
+// segments, the same as 1228, and is not worth a reconnect.
+func relayShrunkMSS(peak, now int) bool {
+	return peak > 0 && now > 0 && 2*now <= peak
+}
+
+// replaceSocketSession ends the session that carries s the way a network move
+// ends it: its worker reconnects at once and counts no failure
+// (network_switch.go). The session closes its relay on the way out, which
+// releases the allocation — the socket is moving, so the release goes out.
+//
+// The attempt is the one the session was running when it registered the socket,
+// not the stream's attempt of the moment. Read at the time of the replacement,
+// that could already be the next one: the session ended, and its worker began
+// another attempt or sat in the wait after this one, which a recycle would cut
+// short with the streak cleared (Codex review, 18.10).
+func replaceSocketSession(s *watchedRelaySocket) bool {
+	if s.attempt == nil {
+		return false
+	}
+	recycleAttempt(s.attempt)
+	return true
+}
 
 // relaySocketSample is one look at a relay connection. The counters are
 // cumulative since the connection opened; a kernel that does not keep one
@@ -130,6 +196,17 @@ type watchedRelaySocket struct {
 
 	last relaySocketSample // zero until first sampled: a new socket counts from zero
 
+	// attempt is the worker attempt whose session registered the socket: the one
+	// replaceSocketSession ends.
+	attempt *networkAttempt
+
+	// For relayShrunkMSS: the largest segment size the connection has had, and
+	// the last sample that found its head segment timing out (the first sample
+	// until one does). replaced is set once its session has been told to go.
+	peakMSS     int
+	lastTimeout time.Time
+	replaced    bool
+
 	stalledSince  time.Time // zero while moving
 	stallTimeouts int
 	stallBacklog  int
@@ -168,9 +245,15 @@ type relaySocketWatch struct {
 	// they moved by.
 	lastDrops, lastSteered, lastIntoStalled uint64
 
-	// Seams for the host tests: the platform sampler and the log.
-	sample func(*net.TCPConn) (relaySocketSample, bool)
-	logf   func(format string, args ...interface{})
+	// lastReplaced is when a connection was last replaced for its cut segments
+	// (relayShrunkGap).
+	lastReplaced time.Time
+
+	// Seams for the host tests: the platform sampler, the log, and what ends a
+	// session.
+	sample  func(*net.TCPConn) (relaySocketSample, bool)
+	logf    func(format string, args ...interface{})
+	replace func(*watchedRelaySocket) bool
 }
 
 // newRelaySocketWatch counts the dispatcher's counters from now; run does the
@@ -181,6 +264,7 @@ func newRelaySocketWatch() *relaySocketWatch {
 		arrived:         make(chan struct{}, 1),
 		sample:          readRelaySocket,
 		logf:            turnLog,
+		replace:         replaceSocketSession,
 		lastDrops:       dispatchDropCount.Load(),
 		lastSteered:     dispatchSteeredCount.Load(),
 		lastIntoStalled: dispatchIntoStalledCount.Load(),
@@ -209,7 +293,7 @@ func (w *relaySocketWatch) register(st *stream, relay string, conn *net.TCPConn)
 		return
 	}
 	w.mu.Lock()
-	w.socks[conn] = &watchedRelaySocket{stream: st.id, relay: relay, conn: conn, st: st}
+	w.socks[conn] = &watchedRelaySocket{stream: st.id, relay: relay, conn: conn, st: st, attempt: st.attempt.Load()}
 	w.mu.Unlock()
 	w.nudge()
 }
@@ -331,11 +415,66 @@ func (w *relaySocketWatch) run(ctx context.Context, streams []*stream) {
 }
 
 // observe takes one sample of every watched socket and of the stream queues,
-// and prints the summary when a window is over.
+// prints the summary when a window is over, and replaces a connection whose
+// segments the kernel has cut.
 func (w *relaySocketWatch) observe(streams []*stream, now time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.observeLocked(streams, now)
 
+	// Picked and ended under the lock: while the socket is in the map, the
+	// session that registered it is still running — it lets go of the socket
+	// first thing on its way out — so the attempt it carries is still that
+	// session's. Ending it only cancels a context; the session unregisters
+	// later, on its own goroutine. (The lock order is this one then the
+	// network switch's, which never calls in here.)
+	shrunk := w.pickShrunkLocked(streams, now)
+	if shrunk == nil || !w.replace(shrunk) {
+		return
+	}
+	shrunk.replaced = true
+	w.lastReplaced = now
+	w.logf("[TCP] stream %d (%s): the kernel cut its segments to %d bytes from %d in a stall and has not grown them back — redialing it for a connection at full size",
+		shrunk.stream, shrunk.relay, shrunk.last.sndMSS, shrunk.peakMSS)
+}
+
+// pickShrunkLocked chooses the connection to replace for its cut segments now,
+// if any; the caller ends its session. The most cut goes first. None goes
+// while another went less than relayShrunkGap ago, or while no other stream
+// could take the traffic: the replacement is a planned one, and a stream lost
+// to a reconnect with nothing beside it is the tunnel lost to it.
+func (w *relaySocketWatch) pickShrunkLocked(streams []*stream, now time.Time) *watchedRelaySocket {
+	if !w.lastReplaced.IsZero() && now.Sub(w.lastReplaced) < relayShrunkGap {
+		return nil
+	}
+	var pick *watchedRelaySocket
+	for _, s := range w.socks {
+		if s.replaced || !relayShrunkMSS(s.peakMSS, s.last.sndMSS) || now.Sub(s.lastTimeout) < relayShrunkCalm {
+			continue
+		}
+		if pick == nil || s.last.sndMSS < pick.last.sndMSS ||
+			(s.last.sndMSS == pick.last.sndMSS && s.stream < pick.stream) {
+			pick = s
+		}
+	}
+	if pick == nil || !anotherStreamCarries(streams, pick.st) {
+		return nil
+	}
+	return pick
+}
+
+// anotherStreamCarries reports whether a stream other than st is ready and
+// taking what is sent to it.
+func anotherStreamCarries(streams []*stream, st *stream) bool {
+	for _, o := range streams {
+		if o != st && o.ready.Load() && !o.sendStalled.Load() {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *relaySocketWatch) observeLocked(streams []*stream, now time.Time) {
 	if w.window.start.IsZero() {
 		w.window.start = now
 	}
@@ -355,6 +494,12 @@ func (w *relaySocketWatch) observe(streams []*stream, now time.Time) {
 			w.window.backlogPeak, w.window.backlogStream = cur.backlog, s.stream
 		}
 		s.last = cur
+		if cur.sndMSS > s.peakMSS {
+			s.peakMSS = cur.sndMSS
+		}
+		if cur.timeouts > 0 || s.lastTimeout.IsZero() {
+			s.lastTimeout = now
+		}
 
 		s.st.sendStalled.Store(cur.timeouts >= relayStallSkipTimeouts)
 

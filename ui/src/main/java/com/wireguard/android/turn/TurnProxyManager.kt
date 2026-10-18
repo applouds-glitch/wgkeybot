@@ -209,6 +209,11 @@ class TurnProxyManager(private val context: Context) {
         } catch (e: TurnStartFatal) {
             endSession()
             Rebuild.Fatal(e.code, e.message.orEmpty())
+        } catch (e: TurnVkUnreachable) {
+            // Under a tunnel that is up the network may well come back; the
+            // watchdog's next step decides, as for any start that did not work.
+            Log.w(TAG, "TURN rebuild did not start — VK unreachable from this network")
+            Rebuild.Done
         } catch (e: Exception) {
             Log.w(TAG, "TURN rebuild failed", e)
             Rebuild.Done
@@ -405,6 +410,17 @@ class TurnProxyManager(private val context: Context) {
                         throw TurnStartFatal(ret, msg)
                     }
 
+                    if (ret == START_VK_UNREACHABLE) {
+                        // No credentials, and VK never sent a byte back over this
+                        // network: no internet, no balance, or a filter in front of
+                        // VK. Another stream count is the same 30s over again — the
+                        // count is irrelevant before there are credentials to use it.
+                        val msg = context.getString(R.string.turn_vk_unreachable)
+                        Log.e(TAG, "TURN: VK unreachable from this network — not retrying other stream counts")
+                        appendLogLine(tunnelName, "VK unreachable from this network — not retrying other stream counts")
+                        throw TurnVkUnreachable(msg)
+                    }
+
                     if (ret == -3) {
                         // Captcha lockout: every credential pre-fetch failed because the
                         // captcha could not be solved. Stream count is irrelevant to a
@@ -567,6 +583,13 @@ class TurnProxyManager(private val context: Context) {
 
         /** wgTurnProxyStart: the call has ended or the link is wrong. */
         const val START_CALL_UNAVAILABLE = -4
+
+        /**
+         * wgTurnProxyStart: no credentials, and VK never answered over this network
+         * (start_outcome.go). Not fatal — the network may come back — but no other
+         * stream count can do better.
+         */
+        const val START_VK_UNREACHABLE = -5
     }
 }
 
@@ -575,3 +598,11 @@ class TurnProxyManager(private val context: Context) {
  * or [TurnProxyManager.START_CALL_UNAVAILABLE]. The message is the user-facing text.
  */
 class TurnStartFatal(val code: Int, message: String) : Exception(message)
+
+/**
+ * A TURN start that got no credentials because VK never answered over the
+ * current network ([TurnProxyManager.START_VK_UNREACHABLE]). Unlike
+ * [TurnStartFatal] it says nothing about the config: the next try on a working
+ * network can succeed. The message is the user-facing text.
+ */
+class TurnVkUnreachable(message: String) : Exception(message)

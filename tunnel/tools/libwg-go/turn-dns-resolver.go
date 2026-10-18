@@ -217,6 +217,22 @@ func (c *DnsCache) ResolveAll(ctx context.Context, domain string) ([]string, err
 	}
 }
 
+// Refresh resolves domain afresh, whatever the cache holds: an answer replaces
+// the cached one, a failure leaves the cache as it was. For the caller that
+// must know whether the name resolves NOW — the cache keeps an answer for as
+// long as the network lasts (ClearCache), and one from before the resolvers
+// went silent says nothing about them (vkLegacyHostResolves).
+func (c *DnsCache) Refresh(ctx context.Context, domain string) ([]string, error) {
+	ips, err := resolveWithOrderedServers(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	c.ips[domain] = ips
+	c.mu.Unlock()
+	return append([]string(nil), ips...), nil
+}
+
 // SetAside moves ip to the tail of domain's addresses: it refused, timed out,
 // was outrun by an address started after it, or took a connection and never
 // said a word. It stays in the list — a wrong call here costs the address its
@@ -447,13 +463,14 @@ func resolveUDPWithServer(ctx context.Context, domain string, serverIP string) (
 		return nil, err
 	}
 
-	// Use DialContext with protectControl (same as old protectedResolver).
+	// Use DialContext with protectControlContext (same as old protectedResolver;
+	// strict unless the lookup is the link check's, withProtectIfService).
 	// JoinHostPort brackets IPv6 (incl. link-local with a %zone, e.g. a
 	// hotspot-supplied fe80::…%wlan0), avoiding "too many colons in address".
 	addr := net.JoinHostPort(serverIP, "53")
 	dialer := &net.Dialer{
-		Timeout: dnsTimeout,
-		Control: protectControl,
+		Timeout:        dnsTimeout,
+		ControlContext: protectControlContext,
 	}
 	conn, err := dialer.DialContext(ctx, "udp", addr)
 	if err != nil {
@@ -732,9 +749,9 @@ func parseDNSResponse(response []byte, domain string) ([]string, error) {
 // protectAndDial creates TCP connection and protects it via Control callback
 func protectAndDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	dialer := &net.Dialer{
-		Timeout:   5 * time.Second,
-		KeepAlive: 30 * time.Second,
-		Control:   protectControl, // Protects socket before connect()
+		Timeout:        5 * time.Second,
+		KeepAlive:      30 * time.Second,
+		ControlContext: protectControlContext, // Protects socket before connect()
 	}
 
 	conn, err := dialer.DialContext(ctx, network, addr)

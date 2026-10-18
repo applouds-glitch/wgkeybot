@@ -149,6 +149,17 @@ class PhysicalNetworkMonitor(context: Context) {
     private var reasks = 0
     private var lastReaskAt = 0L
 
+    // Under the monitor's lock: when Android's pick turned "no network", 0 while
+    // it names one (PhysicalNetworkChoice.STALE_NONE_AFTER_MS).
+    private var noneSince = 0L
+
+    // Under the monitor's lock: the last network published, kept through the
+    // "none" that follows it. With the tunnel up the default network is the VPN,
+    // and this is what physicalDefault checks instead; the published path is
+    // null for the length of the wait, and taking it from there would leave
+    // nothing to check once the wait is over — the workers parked for good.
+    private var lastPhysical: Network? = null
+
     private val reaskTick = Runnable {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) reask()
     }
@@ -352,17 +363,24 @@ class PhysicalNetworkMonitor(context: Context) {
         }
         val pick = systemPick
         // While Android's pick says "no network" — or has not been given — its
-        // answer may be stale: check it against what Android says when asked
+        // answer may be stale: once it has lasted (STALE_NONE_AFTER_MS — a fresh
+        // one is a network going away, and asked directly Android still names it
+        // for a second or two), check it against what Android says when asked
         // directly, and keep re-asking (reask). Only where the platform reports
         // its pick at all.
         val handler = systemHandler
         val unsure = pick?.network == null
-        val systemDefault = if (handler != null && unsure) physicalDefault(_bestPath.value?.network) else null
-        val best = PhysicalNetworkChoice.pick(pick, candidates, systemDefault)
+        val systemDefault = if (handler != null && unsure) physicalDefault(lastPhysical) else null
+        val saysNone = pick != null && pick.network == null
+        val now = SystemClock.elapsedRealtime()
+        if (!saysNone) noneSince = 0L else if (noneSince == 0L) noneSince = now
+        val best = PhysicalNetworkChoice.pick(pick, candidates, systemDefault, now - noneSince)
+        if (best != null) lastPhysical = best
 
         // Logged only against an actual "none": before the first report the
-        // default stands in silently, as the ranking does.
-        val standIn = if (pick != null && pick.network == null) systemDefault else null
+        // default stands in silently, as the ranking does. Against a "none" the
+        // only network pick can return is the default.
+        val standIn = if (saysNone) best else null
         if (standIn != announcedDefault) {
             if (standIn != null) {
                 Log.w(TAG, "Android's pick says no physical network, but asked directly it has $standIn — following that")
@@ -470,6 +488,8 @@ class PhysicalNetworkMonitor(context: Context) {
         synchronized(this) {
             announcedDefault = null
             reasks = 0
+            noneSince = 0L
+            lastPhysical = null
         }
         _bestPath.value = null
         _validated.value = false

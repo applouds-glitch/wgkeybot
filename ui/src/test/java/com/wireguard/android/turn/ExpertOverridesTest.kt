@@ -2,6 +2,8 @@
 
 package com.wireguard.android.turn
 
+import com.wireguard.config.InetNetwork
+import java.net.Inet6Address
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -41,6 +43,38 @@ class ExpertOverridesTest {
         assertNull(ExpertOverrides.parseDns("dns.google"))
         assertNull(ExpertOverrides.parseDns("1.1.1.1, 300.1.1.1"))
         assertNull(ExpertOverrides.parseDns("1.1.1.1:53"))
+    }
+
+    private val v4Tunnel = listOf(InetNetwork.parse("10.10.11.126/32"))
+
+    @Test
+    fun `an IPv6 resolver is left out of an IPv4 tunnel`() {
+        val overrides = ExpertOverrides(dns = ExpertOverrides.parseDns("1.1.1.1, 2606:4700:4700::1111"))
+        assertEquals(listOf("1.1.1.1"), overrides.dnsCarriedBy(v4Tunnel)!!.map { it.hostAddress })
+        val skipped = overrides.dnsNotCarriedBy(v4Tunnel)
+        assertEquals(1, skipped.size)
+        assertTrue(skipped[0] is Inet6Address)
+    }
+
+    @Test
+    fun `only IPv6 resolvers on an IPv4 tunnel leave the config's`() {
+        val overrides = ExpertOverrides(dns = ExpertOverrides.parseDns("2606:4700:4700::1111, 2001:4860:4860::8888"))
+        assertNull(overrides.dnsCarriedBy(v4Tunnel))
+        assertEquals(2, overrides.dnsNotCarriedBy(v4Tunnel).size)
+    }
+
+    @Test
+    fun `an IPv6 resolver stays when the tunnel has an IPv6 address`() {
+        val dualStack = v4Tunnel + InetNetwork.parse("fd00::2/128")
+        val overrides = ExpertOverrides(dns = ExpertOverrides.parseDns("1.1.1.1, 2606:4700:4700::1111"))
+        assertEquals(2, overrides.dnsCarriedBy(dualStack)!!.size)
+        assertEquals(emptyList<Any>(), overrides.dnsNotCarriedBy(dualStack))
+    }
+
+    @Test
+    fun `no resolver override carries nothing and skips nothing`() {
+        assertNull(ExpertOverrides(mtu = 1200).dnsCarriedBy(v4Tunnel))
+        assertEquals(emptyList<Any>(), ExpertOverrides(mtu = 1200).dnsNotCarriedBy(v4Tunnel))
     }
 
     @Test

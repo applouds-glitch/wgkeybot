@@ -502,6 +502,59 @@ func TestASendErrorInsideTheProbeIsRetried(t *testing.T) {
 	}
 }
 
+// Audit 2026-10-16: a probe whose every write failed left its wake pending,
+// and the top of the loop probed again at once — 6 probes and 31 pings in
+// 800ms on one wake, the retry path and the dead-stream detector never
+// reached. The failed probe takes its turn of the throttle: one probe, its
+// wakeProbeSendRetries writes, and the wakes within the throttle are served.
+func TestAProbeThatCannotWriteTakesItsTurnOfTheThrottle(t *testing.T) {
+	shrinkWakeProbe(t)
+	wakeProbeThrottle = time.Second
+	var sent sentPings
+	_, errs, _ := probeLoop(t, time.Minute, func(seq uint64) error {
+		sent.add(seq)
+		return errors.New("write udp: network is unreachable")
+	})
+	broadcastHostWake()
+	sent.waitFor(t, wakeProbeSendRetries)
+	time.Sleep(150 * time.Millisecond)
+	if n := len(sent.all()); n != wakeProbeSendRetries {
+		t.Fatalf("%d pings on one wake, want the one probe's %d", n, wakeProbeSendRetries)
+	}
+	broadcastHostWake() // within the throttle
+	time.Sleep(150 * time.Millisecond)
+	noError(t, errs)
+	if n := len(sent.all()); n != wakeProbeSendRetries {
+		t.Errorf("%d pings after a second wake within the throttle, want still %d", n, wakeProbeSendRetries)
+	}
+}
+
+// The throttle a failed probe takes runs from when it gave up: one that had
+// listened past the throttle before its writes failed, stamped with its start,
+// left the wake pending and the throttle spent, and was asked again at once.
+func TestAFailedProbeIsThrottledFromWhenItGaveUp(t *testing.T) {
+	shrinkWakeProbe(t)
+	// A window far past the probe's ~310ms of listening: a scheduler pause
+	// counts as listening here (the freeze step is 10s), and must not reach it.
+	wakeProbeWindow, wakeProbeThrottle = 3*time.Second, 300*time.Millisecond
+	const answered, failing = 10, 10 + wakeProbeSendRetries // ~310ms listened, then the writes fail
+	var sent sentPings
+	_, errs, _ := probeLoop(t, time.Minute, func(seq uint64) error {
+		sent.add(seq)
+		if seq > answered {
+			return errors.New("write udp: network is unreachable")
+		}
+		return nil // written, never echoed
+	})
+	broadcastHostWake()
+	sent.waitFor(t, failing)
+	time.Sleep(150 * time.Millisecond)
+	noError(t, errs)
+	if n := len(sent.all()); n != failing {
+		t.Errorf("%d pings, want the one probe's %d: the throttle ran from the probe's start", n, failing)
+	}
+}
+
 // An echo names a ping that was sent; a foreign 20-byte STUN message from the
 // relay peer, or a seq beyond the probe's, moves the mark nowhere.
 func TestAForeignStunDoesNotMoveTheMark(t *testing.T) {

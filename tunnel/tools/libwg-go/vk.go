@@ -250,7 +250,8 @@ func getCustomNetDialer() net.Dialer {
 	return net.Dialer{
 		Timeout:   20 * time.Second,
 		KeepAlive: 30 * time.Second,
-		Control:   protectControl,
+		// Strict, unless the dial is the link check's (withProtectIfService).
+		ControlContext: protectControlContext,
 	}
 }
 
@@ -258,7 +259,11 @@ func getCustomNetDialer() net.Dialer {
 // address of the answer — see vk_dial.go.
 func getCustomDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	dialer := getCustomNetDialer()
-	return dialVKHost(ctx, hostCache, network, addr, dialer.DialContext)
+	conn, err := dialVKHost(ctx, hostCache, network, addr, dialer.DialContext)
+	if err != nil {
+		return nil, err
+	}
+	return guardHandshake(conn, vkHandshakeTimeout), nil
 }
 
 // vkLegacyFirstHost is the first host the legacy chain asks (get_anonym_token).
@@ -275,12 +280,16 @@ const vkLegacyHostCheckTimeout = 10 * time.Second
 // is the only way in. If the legacy host resolves now, the chain goes ahead
 // exactly as it did before own-network failures were told apart; if it does not,
 // the chain could only fail on the same DNS — or get through if DNS returned
-// halfway, by the path with the captcha. A success lands in hostCache, so the
-// chain's first dial does not ask again.
+// halfway, by the path with the captcha. Asked afresh, never answered from the
+// cache (DnsCache.Refresh): the cache keeps login.vk.ru for as long as the
+// network lasts, and an answer from before the resolvers went silent passed for
+// a resolver that answers now — the chain went out, captcha and all, over a
+// DNS that answered nobody (audit 2026-10-16). A success lands in hostCache,
+// so the chain's first dial does not ask again.
 func vkLegacyHostResolves(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, vkLegacyHostCheckTimeout)
 	defer cancel()
-	_, err := hostCache.ResolveAll(ctx, vkLegacyFirstHost)
+	_, err := hostCache.Refresh(ctx, vkLegacyFirstHost)
 	return err == nil
 }
 

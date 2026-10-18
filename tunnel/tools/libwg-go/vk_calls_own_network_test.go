@@ -375,3 +375,33 @@ func TestFetchVkCredsKeepsLegacyWhenItsHostResolves(t *testing.T) {
 		t.Fatalf("legacy chain entered %d times although %s resolves (%v)", n, vkLegacyFirstHost, err)
 	}
 }
+
+// Audit 2026-10-16: login.vk.ru cached from earlier on this network passed for
+// a resolver that answers now, and the legacy chain went out — captcha and all
+// — over resolvers that had all gone silent. The legacy host is asked afresh,
+// and the silence leaves the cached answer where it was.
+func TestFetchVkCredsAsksForTheLegacyHostAfresh(t *testing.T) {
+	withOwnNetworkBudget(t, 50*time.Millisecond, 5*time.Millisecond)
+	asked := fakeVKDNS(t, "")
+	hostCache.mu.Lock()
+	hostCache.ips[vkLegacyFirstHost] = []string{"127.0.0.1"}
+	hostCache.mu.Unlock()
+	legacy := stubLegacyChain(t)
+
+	_, _, _, _, err := fetchVkCreds(context.Background(), "link")
+	if !isVKCallsOwnNetwork(err) {
+		t.Fatalf("want an own-network error, got %v", err)
+	}
+	if n := asked(vkLegacyFirstHost); n != 2 {
+		t.Fatalf("%s asked %d times, want one walk of 2 servers past the cached answer", vkLegacyFirstHost, n)
+	}
+	if n := legacy(); n != 0 {
+		t.Fatalf("legacy chain entered %d times on resolvers that answer nobody", n)
+	}
+	hostCache.mu.Lock()
+	cached := hostCache.ips[vkLegacyFirstHost]
+	hostCache.mu.Unlock()
+	if len(cached) != 1 || cached[0] != "127.0.0.1" {
+		t.Errorf("the failed lookup left %v cached, want the earlier answer kept", cached)
+	}
+}

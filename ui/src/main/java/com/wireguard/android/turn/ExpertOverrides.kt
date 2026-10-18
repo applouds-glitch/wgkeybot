@@ -5,7 +5,9 @@
 package com.wireguard.android.turn
 
 import com.wireguard.config.InetAddresses
+import com.wireguard.config.InetNetwork
 import com.wireguard.config.ParseException
+import java.net.Inet4Address
 import java.net.InetAddress
 
 /**
@@ -23,6 +25,27 @@ data class ExpertOverrides(
     val dns: List<InetAddress>? = null,
 ) {
     val isEmpty: Boolean get() = mtu == null && dns == null
+
+    /**
+     * The resolvers of [dns] the tunnel carries: those of a family the interface
+     * has an address in. Null when none is left — the config's own then stand.
+     *
+     * A resolver of any other family is not a setting but a leak.
+     * VpnService.Builder.addDnsServer lets the resolver's family into the VPN,
+     * and GoBackend blocks a family only while nothing has let it in. The bot's
+     * tunnels are IPv4 (one peer, 0.0.0.0/0), so an IPv6 resolver opened IPv6,
+     * and with no IPv6 route in the tunnel every app's IPv6 went out by the
+     * physical network (audit 2026-10-16).
+     */
+    fun dnsCarriedBy(addresses: Collection<InetNetwork>): List<InetAddress>? =
+        dns?.filter { carries(addresses, it) }?.takeIf { it.isNotEmpty() }
+
+    /** The resolvers [dnsCarriedBy] leaves out, for the journal. */
+    fun dnsNotCarriedBy(addresses: Collection<InetNetwork>): List<InetAddress> =
+        dns.orEmpty().filterNot { carries(addresses, it) }
+
+    private fun carries(addresses: Collection<InetNetwork>, resolver: InetAddress): Boolean =
+        addresses.any { (it.address is Inet4Address) == (resolver is Inet4Address) }
 
     companion object {
         val NONE = ExpertOverrides()

@@ -50,6 +50,14 @@ int wgProtectSocketDirect(int fd)
 	return 0;
 }
 
+/* Reads as registered, so that wgProtectSocket is asked and the dial
+ * paths under test stay on their normal course; a test of the path with no
+ * VpnService replaces vpnServiceRegistered at the Go level. */
+int wgVpnServiceRegistered(void)
+{
+	return 1;
+}
+
 /* NULL reads as "the platform told us nothing", which every caller of these
  * already handles: no captcha token, no device profile. */
 const char *requestCaptcha(const char *redirect_uri, int visible)

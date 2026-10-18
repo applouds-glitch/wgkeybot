@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -204,5 +205,76 @@ func TestRelayRestDoublesForARelapse(t *testing.T) {
 	relayResting(relay, now)
 	if got := noteRelayResting(relay, now); got != relayRestFor {
 		t.Fatalf("after a quiet spell: rest %v, want %v", got, relayRestFor)
+	}
+}
+
+// sessionOn puts a live session of a stream on relay, dialed from link, the way
+// attemptOnce and runSession register it, and returns its attempt.
+func sessionOn(t *testing.T, relay string, link []string) *attemptHandle {
+	t.Helper()
+	h := beginAttempt(context.Background(), WorkerGroupConfig{UseUDP: true})
+	s := &stream{}
+	s.attempt.Store(h.a)
+	s.relays.Store(&link)
+	untrack := trackLiveSession(relay, s)
+	t.Cleanup(func() {
+		untrack()
+		h.end()
+	})
+	return h
+}
+
+func withCleanRelayRest(t *testing.T) {
+	t.Helper()
+	resetServerHealth()
+	clearRelayRest()
+	setRelayRestPeer("server:1")
+	t.Cleanup(func() {
+		resetServerHealth()
+		clearRelayRest()
+	})
+}
+
+// A relay judged bad moves the sessions on it when their link has another
+// relay to go to.
+func TestRestJudgedRelaysMovesTheSessionsOff(t *testing.T) {
+	withCleanRelayRest(t)
+	h := sessionOn(t, "10.0.0.1:3478", []string{"10.0.0.1:3478", "10.0.0.2:3478"})
+
+	restJudgedRelays(context.Background(), []relayVerdict{{relay: "10.0.0.1:3478", rate: 0.1}}, time.Now())
+
+	select {
+	case <-h.ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the session stayed on the rested relay with another relay of its link usable")
+	}
+	if !relayResting("10.0.0.1:3478", time.Now()) {
+		t.Error("the judged relay is not resting")
+	}
+}
+
+// Both relays of a link judged in one window — against a third relay of
+// another link — leave the sessions where they are: rested one at a time, the
+// sessions on the first moved to the second, which was rested next, and
+// redialed straight back onto a resting relay.
+func TestRestJudgedRelaysMovesNoSessionOntoARelayRestedWithIt(t *testing.T) {
+	withCleanRelayRest(t)
+	link := []string{"10.0.0.1:3478", "10.0.0.2:3478"}
+	h := sessionOn(t, link[0], link)
+
+	restJudgedRelays(context.Background(), []relayVerdict{
+		{relay: link[0], rate: 0.08},
+		{relay: link[1], rate: 0.06},
+	}, time.Now())
+
+	select {
+	case <-h.ctx.Done():
+		t.Fatal("the session was moved although every relay of its link is resting")
+	case <-time.After(200 * time.Millisecond):
+	}
+	for _, r := range link {
+		if !relayResting(r, time.Now()) {
+			t.Errorf("%s is not resting", r)
+		}
 	}
 }

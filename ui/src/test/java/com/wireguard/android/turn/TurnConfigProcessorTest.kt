@@ -99,6 +99,19 @@ class TurnConfigProcessorTest {
     }
 
     @Test
+    fun `an expert IPv6 resolver does not reach an IPv4 tunnel`() {
+        // GoBackend's addDnsServer would let IPv6 into the VPN, and the tunnel has
+        // no IPv6 route: every app's IPv6 would leave by the physical network.
+        val mixed = ExpertOverrides(dns = ExpertOverrides.parseDns("1.1.1.1, 2606:4700:4700::1111"))
+        val modified = TurnConfigProcessor.modifyConfigForActiveTurn(configWithDns("8.8.8.8, 8.8.4.4"), settings, mixed)
+        assertEquals(listOf("1.1.1.1"), modified.`interface`.dnsServers.map { it.hostAddress })
+
+        val v6Only = ExpertOverrides(dns = ExpertOverrides.parseDns("2606:4700:4700::1111"))
+        val fallback = TurnConfigProcessor.modifyConfigForActiveTurn(configWithDns("8.8.8.8, 8.8.4.4"), settings, v6Only)
+        assertEquals(listOf("8.8.8.8", "8.8.4.4"), fallback.`interface`.dnsServers.map { it.hostAddress })
+    }
+
+    @Test
     fun `no overrides leaves the config's resolvers and MTU alone`() {
         val modified = TurnConfigProcessor.modifyConfigForActiveTurn(configWithDns("8.8.8.8, 8.8.4.4"), settings, ExpertOverrides.NONE)
         assertEquals(listOf("8.8.8.8", "8.8.4.4"), modified.`interface`.dnsServers.map { it.hostAddress })

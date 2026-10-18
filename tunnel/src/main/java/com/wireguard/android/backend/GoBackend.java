@@ -55,6 +55,7 @@ public final class GoBackend implements Backend {
     private static final int VPN_NOTIFICATION_ID = 1;
 
     @Nullable private static AlwaysOnCallback alwaysOnCallback;
+    @Nullable private static RevokeCallback revokeCallback;
 
     private static final AtomicReference<CompletableFuture<VpnService>> vpnServiceRef =
             new AtomicReference<>(new CompletableFuture<>());
@@ -71,6 +72,19 @@ public final class GoBackend implements Backend {
 
     public static void setAlwaysOnCallback(final AlwaysOnCallback cb) {
         alwaysOnCallback = cb;
+    }
+
+    public static void setRevokeCallback(final RevokeCallback cb) {
+        revokeCallback = cb;
+    }
+
+    /**
+     * Whether the VPN service is up: created, or started, and not yet destroyed.
+     * Lets the app wait out a stop it asked for — until onDestroy has run,
+     * setStateInternal would take the retiring service for the next connect.
+     */
+    public static boolean isServiceRunning() {
+        return vpnServiceRef.get().isDone();
     }
 
     @Nullable private static native String wgGetConfig(int handle);
@@ -322,7 +336,19 @@ public final class GoBackend implements Backend {
     }
 
     public interface AlwaysOnCallback {
-        void alwaysOnTriggered();
+        /**
+         * @param systemAlwaysOn the system started the service as the always-on VPN:
+         *        its start intent carries {@link android.net.VpnService#SERVICE_INTERFACE}
+         *        (AOSP Vpn.startAlwaysOnVpn). False for a sticky restart (null intent),
+         *        which arrives the same way. Not isAlwaysOn(): before establish() it
+         *        answers false even for the always-on app.
+         */
+        void alwaysOnTriggered(boolean systemAlwaysOn);
+    }
+
+    /** Android took the VPN away from us: another VPN app, or the user in system settings. */
+    public interface RevokeCallback {
+        void vpnRevoked();
     }
 
     public static class VpnService extends android.net.VpnService {
@@ -460,6 +486,11 @@ public final class GoBackend implements Backend {
             // blocking any reconnect from this or another build of the app.
             Log.d(TAG, "VpnService.onRevoke() — stopping TURN proxy and service");
             TurnBackend.wgTurnProxyStop();
+            // The app must not bring the tunnel back by itself after this: the
+            // user gave the VPN to someone else (see TunnelManager.onVpnRevoked).
+            final RevokeCallback cb = revokeCallback;
+            if (cb != null)
+                cb.vpnRevoked();
             super.onRevoke();
         }
 
@@ -525,9 +556,10 @@ public final class GoBackend implements Backend {
             }
             if (intent == null || intent.getComponent() == null
                     || !intent.getComponent().getPackageName().equals(getPackageName())) {
-                Log.d(TAG, "Service started by Always-on VPN feature");
+                final boolean systemAlwaysOn = intent != null && SERVICE_INTERFACE.equals(intent.getAction());
+                Log.d(TAG, "Service started by Always-on VPN feature (system always-on: " + systemAlwaysOn + ")");
                 if (alwaysOnCallback != null)
-                    alwaysOnCallback.alwaysOnTriggered();
+                    alwaysOnCallback.alwaysOnTriggered(systemAlwaysOn);
             }
             return START_STICKY;
         }

@@ -818,9 +818,9 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// one, so the cause is kept in the chain.
 	if flowTimedOut {
 		if err == nil {
-			return fmt.Errorf("TCP flow to the relay timed out: no progress for %v", relayTCPUserTimeout)
+			return fmt.Errorf("%w: no progress for %v", errRelayFlowTimedOut, relayTCPUserTimeout)
 		}
-		return fmt.Errorf("TCP flow to the relay timed out: no progress for %v: %w", relayTCPUserTimeout, err)
+		return fmt.Errorf("%w: no progress for %v: %w", errRelayFlowTimedOut, relayTCPUserTimeout, err)
 	}
 	// And for a reader that stopped: the transport's own error is again only the
 	// relay we closed, or nil. The reader's error is a transport error and stays

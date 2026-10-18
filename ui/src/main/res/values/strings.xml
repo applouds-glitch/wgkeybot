@@ -562,6 +562,7 @@
         <item quantity="other">%d more taps to logs</item>
     </plurals>
     <string name="turn_start_failed">Failed to establish TURN connection</string>
+    <string name="turn_vk_unreachable">VK does not answer over this network, so the connection cannot be set up. Check that you have internet access (mobile data, balance) or try Wi-Fi.</string>
     <string name="turn_call_requires_auth">VKontakte authorization required</string>
     <string name="turn_call_unavailable">Call ended or the link is invalid</string>
     <string name="vpn_alert_channel_name">VPN alerts</string>

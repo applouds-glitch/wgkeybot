@@ -258,10 +258,20 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 	}
 }
 
+// workerWait is a wait a worker goes into before its next attempt.
+type workerWait struct {
+	stream int
+	delay  time.Duration // at most, if parked
+	// wakeable: a move to another network or transport ends it; revivable: so
+	// does another stream's session getting through; parked: it lasts while the
+	// path is dark rather than for delay (path_revival.go).
+	wakeable, revivable, parked bool
+}
+
 // workerWaits is called as a worker goes into the wait before its next attempt.
 // A seam for the tests, which have to know the worker is in that wait and not
 // still on its way there.
-var workerWaits = func(streamID int, delay time.Duration, wakeable bool) {}
+var workerWaits = func(workerWait) {}
 
 // workerBackoff is what one attempt leaves for the next.
 type workerBackoff struct {
@@ -278,7 +288,8 @@ type workerBackoff struct {
 // just while the session runs: a move to another network or to another relay
 // transport recycles it either way, and a worker sitting out a reconnect delay
 // is woken by that the same as one in a session — the delay belonged to a path
-// that is no longer the one in use.
+// that is no longer the one in use. A delay the dark earned also ends when
+// another stream's session gets through (path_revival.go).
 func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, pass string, addrs []string, st *workerBackoff) (stop bool) {
 	// Both transports spread the streams over the relays (assignRelays). Health,
 	// a resting relay and orphaned allocations override that preference. Keep
@@ -304,9 +315,16 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 	// by the length of the wait below.
 	start := time.Now()
 	runCtx, endRun := context.WithCancel(attempt.ctx)
+	proven := nextPathProof(attempt.overTCP)
+	ownProofs := s.pathProofs.Load()
 	runErr := s.runWithCreds(runCtx, user, pass, ordered, attemptCfg)
 	endRun()
 	sessionDur := time.Since(start)
+	if s.pathProofs.Load() != ownProofs {
+		// The session got through: only a proof made after it came down says
+		// the path is back since (path_revival.go).
+		proven = nextPathProof(attempt.overTCP)
+	}
 
 	if ctx.Err() != nil {
 		return true
@@ -439,12 +457,24 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 			wakeable = false
 		}
 	}
+	// Into a path that is dark still, no redial at all until it is back; and
+	// out of one, a delay the dark earned does not outlast it (path_revival.go).
+	if wakeable && parksInTheDark(runErr) && pathLooksDark(activeStreamSet(), time.Now()) {
+		turnErrorLog("[WORKER %d] Error (streak %d): %v → parked: the path to the relays is dark (a socket stalled, no relay heard for %v)",
+			s.id, st.failStreak, runErr, pathDarkQuiet)
+		return s.parkInTheDark(ctx, attempt, st)
+	}
 	turnErrorLog("[WORKER %d] Error (streak %d): %v → retry in %v%s", s.id, st.failStreak, runErr, retryDelay, note)
-	var recycled <-chan struct{}
+	revivable := wakeable && pathWideFailure(runErr)
+	var recycled, revived <-chan struct{}
 	if wakeable {
 		recycled = attempt.ctx.Done()
 	}
-	workerWaits(s.id, retryDelay, wakeable)
+	if revivable {
+		revived = proven
+	}
+	workerWaits(workerWait{stream: s.id, delay: retryDelay, wakeable: wakeable, revivable: revivable})
+	deadline := time.Now().Add(retryDelay)
 	select {
 	case <-time.After(retryDelay):
 	case <-recycled:
@@ -452,6 +482,17 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 			return true
 		}
 		turnLog("[WORKER %d] the network or the relay transport changed — reconnecting now instead of in %v", s.id, retryDelay)
+	case <-revived:
+		// One at a time behind the other workers the same proof woke. A move
+		// meanwhile ends the wait too, and is taken as one below.
+		if !awaitRevivalSlot(attempt.ctx, deadline) && ctx.Err() != nil {
+			return true
+		}
+		st.failStreak = 0
+		if early := time.Until(deadline); early > 0 && !attempt.moved() {
+			turnLog("[WORKER %d] another stream's session got through — the path to the relays is back: reconnecting now, %v early",
+				s.id, early.Round(100*time.Millisecond))
+		}
 	case <-ctx.Done():
 		return true
 	}

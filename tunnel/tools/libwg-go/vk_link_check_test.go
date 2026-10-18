@@ -8,8 +8,10 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"testing"
+	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 )
@@ -102,5 +104,87 @@ func TestCheckVKLinkDeadlineIsTemporary(t *testing.T) {
 	}}
 	if got := checkVKLink(ctx, "hash", client, Profile{}); got != linkCheckTemporary {
 		t.Fatalf("verdict = %d, want %d", got, linkCheckTemporary)
+	}
+}
+
+// refusingProtect makes the host the phone: protect() refuses every socket,
+// with a VpnService registered or — the tunnel down — with none at all.
+func refusingProtect(t *testing.T, registered bool) {
+	t.Helper()
+	p, r := protectFD, vpnServiceRegistered
+	protectFD = func(uintptr) bool { return false }
+	vpnServiceRegistered = func() bool { return registered }
+	t.Cleanup(func() { protectFD, vpnServiceRegistered = p, r })
+}
+
+// localTCP is a listener that takes connections and drops them.
+func localTCP(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// Audit 2026-10-16: with the tunnel down there is no VpnService, protect()
+// refused every socket, and each check came back "VK did not answer" after
+// thirty seconds of own-network retries. The check's own dials — the TLS
+// connection and the lookups under it — now go out as they are; the proxy's
+// stay refused.
+func TestWithNoVpnServiceTheLinkCheckDialsAndTheProxyDoesNot(t *testing.T) {
+	refusingProtect(t, false)
+	addr := localTCP(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	check := withProtectIfService(ctx)
+
+	// The TLS connection — under a bare ctx too: tls-client dials HTTP/2 so.
+	conn, err := linkCheckDial(context.Background(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("the link check's dial: %v", err)
+	}
+	conn.Close()
+	// DoH and DoT under it.
+	if conn, err = protectAndDial(check, "tcp", addr); err != nil {
+		t.Fatalf("the link check's DoH/DoT dial: %v", err)
+	}
+	conn.Close()
+	// Plain DNS: whatever the query comes to, protect() is not what stops it.
+	if _, err := resolveUDPWithServer(check, "link-check.invalid", "127.0.0.1"); errors.Is(err, errSocketNotProtected) {
+		t.Fatalf("the link check's DNS query: %v", err)
+	}
+
+	if _, err := getCustomDialContext(ctx, "tcp", addr); !errors.Is(err, errSocketNotProtected) {
+		t.Errorf("a VK dial of the proxy: %v, want it refused", err)
+	}
+	if _, err := protectAndDial(ctx, "tcp", addr); !errors.Is(err, errSocketNotProtected) {
+		t.Errorf("a DoH/DoT dial of the proxy: %v, want it refused", err)
+	}
+	if _, err := resolveUDPWithServer(ctx, "link-check.invalid", "127.0.0.1"); !errors.Is(err, errSocketNotProtected) {
+		t.Errorf("a DNS query of the proxy: %v, want it refused", err)
+	}
+}
+
+// With a VpnService registered the check's sockets are protected like every
+// other VK request's, and a protect() that refuses still fails them.
+func TestARegisteredVpnServiceIsAlwaysAskedToProtect(t *testing.T) {
+	refusingProtect(t, true)
+	addr := localTCP(t)
+	if _, err := linkCheckDial(context.Background(), "tcp", addr); !errors.Is(err, errSocketNotProtected) {
+		t.Fatalf("the link check's dial: %v, want it refused", err)
+	}
+	if _, err := protectAndDial(withProtectIfService(context.Background()), "tcp", addr); !errors.Is(err, errSocketNotProtected) {
+		t.Fatalf("the link check's DoH/DoT dial: %v, want it refused", err)
 	}
 }

@@ -145,15 +145,7 @@ func runRelayLossJudge(ctx context.Context) {
 			turnLog("[RELAY LOSS] last %v: %s; %d lost on no relay in particular",
 				relayJudgeEvery, formatRelayLoss(samples, streams), unplaced)
 		}
-		for _, v := range judge.step(samples) {
-			if relayResting(v.relay, now) {
-				continue // what still runs there has nowhere else to go
-			}
-			rest := noteRelayResting(v.relay, now)
-			moved, stayed := recycleRelaySessions(ctx, v.relay, now)
-			turnLog("[RELAY LOSS] %s lost %.1f%% of the downlink against %.1f%% through the best relay, %d windows running — resting it for %v, %d session(s) moved off, %d left on it with no other relay of their link to go to",
-				v.relay, 100*v.rate, 100*v.best, relayJudgeStrikes, rest, moved, stayed)
-		}
+		restJudgedRelays(ctx, judge.step(samples), now)
 		for _, relay := range collapse.step(samples, streams, relayJudgeEvery) {
 			if now.Sub(collapseLogged[relay]) < relayCollapseLogEvery {
 				continue
@@ -163,6 +155,32 @@ func runRelayLossJudge(ctx context.Context) {
 			turnLog("[RELAY LOSS] %s looks collapsed: %.1f%% lost at %.0f packets/s per stream, %d windows running — logged only",
 				relay, 100*s.rate(), perStreamRate(s, streams[relay]), relayCollapseStrikes)
 		}
+	}
+}
+
+// restJudgedRelays rests the relays of one window's verdicts and moves the
+// sessions off them. Every relay is rested before any session moves: a session
+// moves only if its link has another usable relay, and a relay judged in the
+// same window is none — rested one by one, the sessions on the first went to
+// the second, which was rested next, and redialed straight back onto a resting
+// relay (iOS review, 2026-10-11: two relays of one link judged against a third
+// of another link, or an extra relay).
+func restJudgedRelays(ctx context.Context, verdicts []relayVerdict, now time.Time) {
+	type rested struct {
+		relayVerdict
+		rest time.Duration
+	}
+	var resting []rested
+	for _, v := range verdicts {
+		if relayResting(v.relay, now) {
+			continue // what still runs there has nowhere else to go
+		}
+		resting = append(resting, rested{v, noteRelayResting(v.relay, now)})
+	}
+	for _, r := range resting {
+		moved, stayed := recycleRelaySessions(ctx, r.relay, now)
+		turnLog("[RELAY LOSS] %s lost %.1f%% of the downlink against %.1f%% through the best relay, %d windows running — resting it for %v, %d session(s) moved off, %d left on it with no other relay of their link to go to",
+			r.relay, 100*r.rate, 100*r.best, relayJudgeStrikes, r.rest, moved, stayed)
 	}
 }
 

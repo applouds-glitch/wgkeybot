@@ -51,6 +51,32 @@ class PhysicalNetworkChoiceTest {
     }
 
     @Test
+    fun `a fresh no-network pick is believed, even with a default network`() {
+        // Field log 2026-10-12 (Xiaomi, cellular reconnecting every 10-15s): for a
+        // second or two after the loss, asked directly, Android still names the
+        // network it has just lost. The new one came within 2.8s every time.
+        assertNull(PhysicalNetworkChoice.pick(SystemPick<String>(null), listOf(wifi), systemDefault = "cell", noneForMs = 0))
+        assertNull(PhysicalNetworkChoice.pick(SystemPick<String>(null), listOf(wifi), systemDefault = "cell", noneForMs = 2_800))
+        assertNull(PhysicalNetworkChoice.pick(SystemPick<String>(null), listOf(wifi), systemDefault = "cell",
+            noneForMs = PhysicalNetworkChoice.STALE_NONE_AFTER_MS - 1))
+    }
+
+    @Test
+    fun `a no-network pick that has lasted yields to the default network`() {
+        // The stale "none" of 2026-10-09/10 lasted minutes.
+        assertEquals("cell", PhysicalNetworkChoice.pick(SystemPick<String>(null), listOf(wifi), systemDefault = "cell",
+            noneForMs = PhysicalNetworkChoice.STALE_NONE_AFTER_MS))
+        assertEquals("cell", PhysicalNetworkChoice.pick(SystemPick<String>(null), emptyList(), systemDefault = "cell",
+            noneForMs = 22 * 60_000L))
+    }
+
+    @Test
+    fun `before android has spoken the default network needs no wait`() {
+        // No "none" to distrust: nothing has been lost yet.
+        assertEquals("cell", PhysicalNetworkChoice.pick(null, emptyList(), systemDefault = "cell", noneForMs = 0))
+    }
+
+    @Test
     fun `no pick and no physical default network is no network`() {
         // Airplane mode: asked directly, Android has no physical network either.
         assertNull(PhysicalNetworkChoice.pick(SystemPick<String>(null), listOf(wifi, cell), systemDefault = null))

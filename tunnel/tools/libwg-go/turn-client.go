@@ -10,6 +10,7 @@ package main
 #include <stdlib.h>
 #include <android/log.h>
 extern int wgProtectSocket(int fd);
+extern int wgVpnServiceRegistered(void);
 */
 import "C"
 
@@ -58,13 +59,56 @@ var errSocketNotProtected = errors.New("VpnService.protect() failed; refusing to
 func protectControl(network, address string, c syscall.RawConn) error {
 	var protectErr error
 	if err := c.Control(func(fd uintptr) {
-		if C.wgProtectSocket(C.int(fd)) != 0 {
+		if !protectFD(fd) {
 			protectErr = errSocketNotProtected
 		}
 	}); err != nil {
 		return err
 	}
 	return protectErr
+}
+
+// protectFD is VpnService.protect() and the bind to the physical network for
+// one socket (wgProtectSocket). A var so that a host test can make it refuse,
+// as it does on the device with no VpnService registered: the host stub never
+// refuses.
+var protectFD = func(fd uintptr) bool { return C.wgProtectSocket(C.int(fd)) == 0 }
+
+// vpnServiceRegistered: is there a VpnService for protect() to be asked of
+// (wgSetVpnService)? A var for the same reason as protectFD.
+var vpnServiceRegistered = func() bool { return C.wgVpnServiceRegistered() != 0 }
+
+type protectIfServiceKey struct{}
+
+// withProtectIfService marks a dial — and every DNS lookup made under the same
+// ctx — as one that goes out unprotected when there is no VpnService to ask,
+// instead of failing. Only the link check carries it (wgTurnCheckVKLink): the
+// settings screen runs it with the tunnel down as often as up, and refusing
+// every socket there turned each check into thirty seconds of "own network"
+// retries and a "VK did not answer" (audit 2026-10-16). It is safe there
+// because the check's sockets are no part of the TURN path: whatever tunnel
+// of ours they meet, they are carried inside it, never looped. With no
+// VpnService registered there is, as a rule, no tunnel at all — the tun is the
+// service's, and GoBackend stops the service with the tunnel — and the socket
+// leaves by the network Android picked, the one protect() and the bind would
+// have chosen. The exceptions are moments: a tunnel coming up mid-check, and
+// a service on its way out (onDestroy drops the registration before
+// wgTurnOff), where a socket may enter a tunnel whose proxy is already gone and
+// at worst time out. Every dial of the proxy itself stays strict: none
+// carries the mark.
+func withProtectIfService(ctx context.Context) context.Context {
+	return context.WithValue(ctx, protectIfServiceKey{}, true)
+}
+
+// protectControlContext is protectControl for net.Dialer.ControlContext: the
+// same refusal, except for a dial marked withProtectIfService while no
+// VpnService is registered. A registered service is always asked, and a
+// protect() it refuses still fails the dial.
+func protectControlContext(ctx context.Context, network, address string, c syscall.RawConn) error {
+	if ctx.Value(protectIfServiceKey{}) != nil && !vpnServiceRegistered() {
+		return nil
+	}
+	return protectControl(network, address, c)
 }
 
 // listenUDP binds a UDP socket with SO_REUSEADDR so a quick tunnel restart can
@@ -154,6 +198,10 @@ type stream struct {
 	// overTCP is published before ready; the dispatcher also reads it when
 	// deciding whether this stream accepts priority packets.
 	overTCP atomic.Bool
+	// pathProofs counts the sessions of this stream that carried a round trip
+	// through their relay, for its worker to tell whether a proof since its
+	// attempt began was its own (path_revival.go).
+	pathProofs atomic.Uint64
 
 	// wrapKey is an optional 32-byte ChaCha20 key for WRAP obfuscation.
 	// When non-nil, raw UDP packets to/from the TURN relay are encrypted with
@@ -303,8 +351,18 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 		}
 		alive, covered, err := s.runWakeProbe(ctx, activity, &probeSeq, probe, why)
 		if err != nil {
-			// A probe that could not even write is not a probe the throttle
-			// should count: the next wake asks again.
+			// A probe that could not even write still takes its turn of the
+			// throttle. Left uncounted, the wake it was for stayed pending, the
+			// top of the loop probed again at once, and a socket that cannot
+			// write kept the loop in failed probes for good — off its retry
+			// path and out of reach of the dead-stream detector (audit
+			// 2026-10-16: 6 probes and 31 pings in 800ms on one wake). The
+			// throttle serves that wake and the burst behind it; the next wake
+			// past it asks again. Counted from when the probe gave up, not from
+			// `now`, its start: a probe may listen through most of its window
+			// before its writes begin to fail, or sleep through a freeze, and
+			// the throttle would be spent by the time it returns (codex review).
+			lastProbeAt = time.Now()
 			if ctx.Err() == nil {
 				turnLog("[STREAM %d] post-wake probe given up on send errors: %v", s.id, err)
 				retryAt = time.Now().Add(keepaliveSendRetry)
@@ -759,6 +817,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			}
 		}
 		noteServerHandshakeOK(s.serverAddr)
+		s.notePathProven()
 		// The only line this transport prints on success. Without it a live
 		// noDTLS stream is invisible in the log — its server can be recovered
 		// only by pairing "Dial TURN" with the absence of a later worker error.
@@ -847,7 +906,7 @@ func (s *stream) awaitRelayProof(ctx context.Context, proof <-chan struct{}, pro
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return fmt.Errorf("relay never answered in %v", limit)
+			return fmt.Errorf("%w in %v", errRelayNeverAnswered, limit)
 		case <-ticker.C:
 			if err := probe(); err != nil {
 				return err
@@ -1013,6 +1072,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	}
 	turnLog("[STREAM %d] DTLS handshake OK", s.id)
 	noteServerHandshakeOK(s.serverAddr)
+	s.notePathProven()
 
 	// Session + stream ID handshake (proxy_v2 only). Sent as a small burst
 	// for the same reason as runNoDTLS — even though DTLS is ordered, the
@@ -1184,6 +1244,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	context.AfterFunc(sCtx, func() { srtpConn.Close() })
 	turnLog("[STREAM %d] SRTP handshake OK", s.id)
 	noteServerHandshakeOK(s.serverAddr)
+	s.notePathProven()
 
 	// Session + stream ID handshake (proxy_v2 model). Sent as a small burst
 	// for the same reason as runDTLS — the server parses the session ID on the
@@ -1460,8 +1521,17 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	for i, raw := range rawLinks {
 		links[i] = joinHash(raw) // the same reduction the link check applies
 	}
+	// What the startup timeout below reports (startTimeoutCode): whether any
+	// credential reached this start — a cache hit counts — and whether VK sent a
+	// byte back over any connection since it began.
+	vkHeardAtStart := vkConnsHeard.Load()
+	var credsObtained atomic.Bool
 	globalGetCreds = func(ctx context.Context, lk string, streamID int) (string, string, []string, error) {
-		return getCredsCached(ctx, lk, streamID, fetchVkCreds)
+		u, p, a, err := getCredsCached(ctx, lk, streamID, fetchVkCreds)
+		if err == nil {
+			credsObtained.Store(true)
+		}
+		return u, p, a, err
 	}
 
 	// ── Apply StreamNum cap / expand ─────────────────────────────────────────
@@ -1634,9 +1704,14 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		turnLog("[PROXY] Startup cancelled")
 		return -1
 	case <-time.After(startupTimeout):
-		turnErrorLog("[PROXY] Startup timeout — no stream proved its data plane within %v", startupTimeout)
+		code := startTimeoutCode(credsObtained.Load(), vkConnsHeard.Load() != vkHeardAtStart)
+		if code == startVKUnreachable {
+			turnErrorLog("[PROXY] Startup timeout — no credentials, and VK never sent a byte back over this network since the start began")
+		} else {
+			turnErrorLog("[PROXY] Startup timeout — no stream proved its data plane within %v", startupTimeout)
+		}
 		cancel()
-		return -1
+		return code
 	}
 }
 

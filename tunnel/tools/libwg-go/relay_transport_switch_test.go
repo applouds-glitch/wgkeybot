@@ -44,10 +44,10 @@ func longWaits(t *testing.T, atLeast time.Duration) <-chan bool {
 	t.Helper()
 	entered := make(chan bool, 16)
 	prev := workerWaits
-	workerWaits = func(_ int, delay time.Duration, wakeable bool) {
-		if delay >= atLeast {
+	workerWaits = func(w workerWait) {
+		if w.delay >= atLeast {
 			select {
-			case entered <- wakeable:
+			case entered <- w.wakeable:
 			default:
 			}
 		}

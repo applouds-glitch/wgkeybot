@@ -69,11 +69,7 @@ class Application : android.app.Application() {
     private lateinit var tetherManager: TetherManager
     private lateinit var persistentLog: PersistentLog
 
-    private fun determineBackend(): Backend {
-        val backend = GoBackend(applicationContext)
-        GoBackend.setAlwaysOnCallback { get().applicationScope.launch { get().tunnelManager.restoreState(true) } }
-        return backend
-    }
+    private fun determineBackend(): Backend = GoBackend(applicationContext)
 
     override fun onCreate() {
         Log.i(TAG, USER_AGENT)
@@ -119,6 +115,17 @@ class Application : android.app.Application() {
             FileConfigStore(applicationContext),
             TurnSettingsStore(applicationContext),
         )
+        // Here, on the main thread, and not with the backend: the service's
+        // onStartCommand runs on main right after this onCreate and drops the
+        // always-on signal while no callback is set. Registered on the IO coroutine
+        // that builds the backend, they lost that race on a cold always-on start
+        // (boot, an update), and with the running set empty — after a revoke or a
+        // disconnect — nothing came up; under lockdown the phone had no network at
+        // all (audit 2026-10-16). Both are static and need no backend.
+        GoBackend.setAlwaysOnCallback { systemAlwaysOn ->
+            get().applicationScope.launch { get().tunnelManager.restoreState(true, systemAlwaysOn) }
+        }
+        GoBackend.setRevokeCallback { get().applicationScope.launch { get().tunnelManager.onVpnRevoked() } }
         // Load wg-go library BEFORE creating TurnProxyManager to avoid UnsatisfiedLinkError
         com.wireguard.android.util.SharedLibraryLoader.loadSharedLibrary(applicationContext, "wg-go")
         turnProxyManager = TurnProxyManager(applicationContext)

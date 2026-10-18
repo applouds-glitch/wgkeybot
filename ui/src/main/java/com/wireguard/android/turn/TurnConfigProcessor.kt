@@ -79,7 +79,8 @@ object TurnConfigProcessor {
      * [overrides] is expert mode's word on the MTU and the resolvers: each one
      * given replaces the config's value for this start; the config is untouched.
      * The resolvers are replaced, not merged — a user who names a resolver wants
-     * that resolver, not it and the bot's.
+     * that resolver, not it and the bot's — and only by those of a family the
+     * tunnel has an address in ([ExpertOverrides.dnsCarriedBy]).
      */
     fun modifyConfigForActiveTurn(
         config: Config,
@@ -89,7 +90,7 @@ object TurnConfigProcessor {
         val iface = config.`interface`
         val ifaceBuilder = com.wireguard.config.Interface.Builder()
         ifaceBuilder.addAddresses(iface.addresses)
-        ifaceBuilder.addDnsServers(overrides.dns ?: iface.dnsServers)
+        ifaceBuilder.addDnsServers(overrides.dnsCarriedBy(iface.addresses) ?: iface.dnsServers)
         ifaceBuilder.addDnsSearchDomains(iface.dnsSearchDomains)
         ifaceBuilder.setKeyPair(iface.keyPair)
         ifaceBuilder.excludeApplications(iface.excludedApplications)
