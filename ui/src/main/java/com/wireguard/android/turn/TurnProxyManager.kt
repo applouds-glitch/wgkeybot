@@ -68,6 +68,19 @@ class TurnProxyManager(private val context: Context) {
     val physicalNetwork: Network?
         get() = networkMonitor.currentPath?.network
 
+    /** What kind of network [physicalNetwork] is, for the screen's wording. */
+    internal val physicalNetworkTransport: PhysicalNetworkChoice.Transport
+        get() {
+            val network = physicalNetwork ?: return PhysicalNetworkChoice.Transport.OTHER
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val caps = cm.getNetworkCapabilities(network) ?: return PhysicalNetworkChoice.Transport.OTHER
+            return when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> PhysicalNetworkChoice.Transport.WIFI
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> PhysicalNetworkChoice.Transport.CELLULAR
+                else -> PhysicalNetworkChoice.Transport.OTHER
+            }
+        }
+
     @Volatile private var activeSettings: TurnSettings? = null
     @Volatile private var userInitiatedStop: Boolean = false
 
@@ -318,7 +331,8 @@ class TurnProxyManager(private val context: Context) {
                 val networkType = getNetworkTypeString(network)
                 Log.d(TAG, "Starting TURN proxy for $tunnelName with network: $network (type=$networkType, handle=$networkHandle, mtu=${networkMonitor.mtuOf(network)}, validated=${networkMonitor.validated.value})")
 
-                val stability = isStabilityMode()
+                // Not for a config without a reserve mode (SRTP), whatever is stored.
+                val stability = isStabilityMode() && ConnectionMode.isOffered(settings.peerType)
                 // Expert mode's own links, while it is on and has any, stand in
                 // for the config's on this start — for the start only, so the
                 // bot's next config refresh changes nothing here. Counted, never
@@ -335,7 +349,7 @@ class TurnProxyManager(private val context: Context) {
                 }
                 val effectivePeerType = if (stability) "proxy_v2" else settings.peerType
                 val effectiveWrapKey = if (stability) "" else settings.wrapKey
-                Log.d(TAG, "Mode: ${if (stability) "Stability (proxy_v2, 1 link, no WRAP)" else "Speed (${settings.peerType}, ${VkLinks.split(configuredVkLink).size} links, WRAP=${settings.wrapKey.isNotBlank()})"}")
+                Log.d(TAG, "Mode: ${if (stability) "Stability (proxy_v2, 1 link, no WRAP)" else "Speed (${settings.peerType}, ${VkLinks.split(configuredVkLink).size} links, WRAP=${settings.wrapKey.isNotBlank()})"}${if (!stability && isStabilityMode()) ", reserve not offered for this peer type" else ""}")
 
                 // Build list of stream counts to try.
                 // 1. Last successful count (fast path on reconnect)

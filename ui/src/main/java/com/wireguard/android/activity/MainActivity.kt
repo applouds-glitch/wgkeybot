@@ -30,6 +30,7 @@ import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
 import androidx.fragment.app.commit
 import androidx.lifecycle.lifecycleScope
+import com.wireguard.android.Application
 import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
 import com.wireguard.android.fragment.TunnelDetailFragment
@@ -95,6 +96,12 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         onBackStackChanged()
         handleDeeplinkIntent(intent)
         checkBatteryOptimization()
+        // The gear's tint depends on the config (ConnectionMode.isReserveInEffect),
+        // which is not known until the tunnels have loaded.
+        lifecycleScope.launch {
+            Application.getTunnelManager().getTunnels()
+            invalidateOptionsMenu()
+        }
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -104,9 +111,10 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
 
         // The reserve transport used to tint a value on the connect screen, and
         // that signal has to survive the move into the settings screen: a
-        // non-default transport shows as a warning-coloured gear.
+        // non-default transport shows as a warning-coloured gear — only while it
+        // counts: a config without a reserve mode (SRTP) connects as configured.
         val settingsColor =
-            if (ConnectionMode.isReserve(this)) ContextCompat.getColor(this, R.color.wgk_warning)
+            if (ConnectionMode.isReserveInEffect(this)) ContextCompat.getColor(this, R.color.wgk_warning)
             else barColor
         menu.findItem(R.id.menu_app_settings)?.setTintedIcon(R.drawable.ic_settings, settingsColor)
         return true

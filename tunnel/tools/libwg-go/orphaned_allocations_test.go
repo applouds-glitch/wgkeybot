@@ -35,7 +35,9 @@ func resetAllocationBook(t *testing.T) {
 		allocationBook.Lock()
 		allocationBook.boundNetwork = 0
 		allocationBook.live = map[relayIdentity]int{}
+		allocationBook.tracked = map[*trackedRelay]bool{}
 		allocationBook.orphanedTill = map[relayIdentity]time.Time{}
+		allocationBook.orphans = map[relayIdentity]int{}
 		allocationBook.announced = map[relayIdentity]bool{}
 		allocationBook.releasedAt = map[relayIdentity]time.Time{}
 		allocationBook.succeeded = map[string]bool{}
@@ -70,10 +72,53 @@ func liveAllocations(user, relay string) int {
 	return allocationBook.live[relayIdentity{user: user, relay: relay}]
 }
 
-// The device case: a session on relay 1, the network drops, the reconnect on
-// the same credential must go to the relays that are not full of our ghosts.
-// A relay whose allocation was closed while the network was alive is not
-// marked — VK released that one.
+// ghosts is how many of user's ghosts the mark in force at now counts on relay.
+func ghosts(user, relay string, now time.Time) int {
+	allocationBook.Lock()
+	defer allocationBook.Unlock()
+	key := relayIdentity{user: user, relay: relay}
+	if till, ok := allocationBook.orphanedTill[key]; !ok || !now.Before(till) {
+		return 0
+	}
+	return allocationBook.orphans[key]
+}
+
+// orphanOrder is addrs with the relays crowded with user's ghosts put last.
+func orphanOrder(user string, addrs []string, now time.Time) []string {
+	return behindCrowded(addrs, crowdedRelays(user, addrs, now))
+}
+
+// behindCrowded moves the crowded relays of order to its end, keeping the order
+// within both parts; if all or none are crowded, nowhere is better to go and the
+// order stands. It returns a new slice.
+func behindCrowded(order []string, crowded map[string]bool) []string {
+	var clean, full []string
+	for _, addr := range order {
+		if crowded[addr] {
+			full = append(full, addr)
+		} else {
+			clean = append(clean, addr)
+		}
+	}
+	if len(clean) == 0 || len(full) == 0 {
+		return append([]string(nil), order...)
+	}
+	return append(clean, full...)
+}
+
+// loseOn tracks n live allocations of user's on relay and leaves the network
+// they are bound to: n ghosts there.
+func loseOn(user, relay string, n int, now time.Time) {
+	noteBoundNetwork(orphanNetA, now)
+	for i := 0; i < n; i++ {
+		trackAllocation(&countingConn{}, user, relay)
+	}
+	noteBoundNetwork(0, now)
+}
+
+// The network drops under two allocations on relay 1: two ghosts there. One on
+// relay 2 closed while the network was alive is none — VK released that one.
+// Two ghosts leave room under the quota, so the order stands.
 func TestLosingTheNetworkOrphansOnlyLiveAllocations(t *testing.T) {
 	resetAllocationBook(t)
 	now := time.Now()
@@ -85,7 +130,24 @@ func TestLosingTheNetworkOrphansOnlyLiveAllocations(t *testing.T) {
 
 	noteBoundNetwork(0, now)
 
-	got := orderAroundOrphans("alice", orphanRelays, now.Add(time.Second))
+	later := now.Add(time.Second)
+	if n1, n2 := ghosts("alice", orphanRelay1, later), ghosts("alice", orphanRelay2, later); n1 != 2 || n2 != 0 {
+		t.Fatalf("ghosts after the loss: %d on relay 1, %d on relay 2; want 2 and 0", n1, n2)
+	}
+	if got := orphanOrder("alice", orphanRelays, later); !slices.Equal(got, orphanRelays) {
+		t.Fatalf("two ghosts steered: %v", got)
+	}
+}
+
+// The device case of 2026-09-18: a session's streams all on relay 1, the
+// network drops, and the reconnect on the same credential must go to the relays
+// that are not full of our ghosts.
+func TestARelayCrowdedWithGhostsGoesLast(t *testing.T) {
+	resetAllocationBook(t)
+	now := time.Now()
+	loseOn("alice", orphanRelay1, orphanSteerAt, now)
+
+	got := orphanOrder("alice", orphanRelays, now.Add(time.Second))
 	if want := []string{orphanRelay2, orphanRelay3, orphanRelay1}; !slices.Equal(got, want) {
 		t.Fatalf("after the loss: %v, want %v", got, want)
 	}
@@ -101,8 +163,8 @@ func TestHandingOverToAnotherNetworkOrphans(t *testing.T) {
 
 	noteBoundNetwork(orphanNetB, now)
 
-	if got := orderAroundOrphans("alice", orphanRelays, now); got[0] == orphanRelay1 {
-		t.Fatalf("A → B left relay 1 first: %v", got)
+	if n := ghosts("alice", orphanRelay1, now); n != 1 {
+		t.Fatalf("A → B left %d ghost(s) on relay 1, want 1", n)
 	}
 }
 
@@ -116,8 +178,8 @@ func TestArrivingOrReaddressingOrphansNothing(t *testing.T) {
 	noteBoundNetwork(orphanNetA, now) // from none
 	noteBoundNetwork(orphanNetA, now) // the same network again
 
-	if got := orderAroundOrphans("alice", orphanRelays, now); !slices.Equal(got, orphanRelays) {
-		t.Fatalf("no network was left, yet the order changed: %v", got)
+	if n := ghosts("alice", orphanRelay1, now); n != 0 {
+		t.Fatalf("no network was left, yet %d ghost(s) were counted", n)
 	}
 }
 
@@ -126,14 +188,12 @@ func TestArrivingOrReaddressingOrphansNothing(t *testing.T) {
 func TestOrphanMarkLastsTheAllocationLifetime(t *testing.T) {
 	resetAllocationBook(t)
 	now := time.Now()
-	noteBoundNetwork(orphanNetA, now)
-	trackAllocation(&countingConn{}, "alice", orphanRelay1)
-	noteBoundNetwork(0, now)
+	loseOn("alice", orphanRelay1, orphanSteerAt, now)
 
-	if got := orderAroundOrphans("alice", orphanRelays, now.Add(orphanedAllocationLifetime-time.Second)); got[0] == orphanRelay1 {
+	if got := orphanOrder("alice", orphanRelays, now.Add(orphanedAllocationLifetime-time.Second)); got[0] == orphanRelay1 {
 		t.Fatalf("a second before the lifetime ends: %v, relay 1 still full", got)
 	}
-	if got := orderAroundOrphans("alice", orphanRelays, now.Add(orphanedAllocationLifetime)); !slices.Equal(got, orphanRelays) {
+	if got := orphanOrder("alice", orphanRelays, now.Add(orphanedAllocationLifetime)); !slices.Equal(got, orphanRelays) {
 		t.Fatalf("at the end of the lifetime: %v, want the plain order back", got)
 	}
 }
@@ -142,11 +202,12 @@ func TestOrphanMarkLastsTheAllocationLifetime(t *testing.T) {
 func TestOrphanMarkIsPerCredential(t *testing.T) {
 	resetAllocationBook(t)
 	now := time.Now()
-	noteBoundNetwork(orphanNetA, now)
-	trackAllocation(&countingConn{}, "alice", orphanRelay1)
-	noteBoundNetwork(0, now)
+	loseOn("alice", orphanRelay1, orphanSteerAt, now)
 
-	if got := orderAroundOrphans("bob", orphanRelays, now); !slices.Equal(got, orphanRelays) {
+	if got := orphanOrder("alice", orphanRelays, now); got[0] == orphanRelay1 {
+		t.Fatalf("alice was not steered: %v", got)
+	}
+	if got := orphanOrder("bob", orphanRelays, now); !slices.Equal(got, orphanRelays) {
 		t.Fatalf("another credential was steered: %v", got)
 	}
 }
@@ -158,12 +219,14 @@ func TestOrphanOrderWithEveryRelayMarked(t *testing.T) {
 	now := time.Now()
 	noteBoundNetwork(orphanNetA, now)
 	for _, r := range orphanRelays {
-		trackAllocation(&countingConn{}, "alice", r)
+		for i := 0; i < orphanSteerAt; i++ {
+			trackAllocation(&countingConn{}, "alice", r)
+		}
 	}
 	noteBoundNetwork(0, now)
 
 	in := slices.Clone(orphanRelays)
-	got := orderAroundOrphans("alice", in, now)
+	got := orphanOrder("alice", in, now)
 	if !slices.Equal(got, orphanRelays) {
 		t.Fatalf("all marked: %v, want the order unchanged", got)
 	}
@@ -176,12 +239,12 @@ func TestOrphanOrderWithEveryRelayMarked(t *testing.T) {
 func TestOrphanOrderDoesNotModifyItsInput(t *testing.T) {
 	resetAllocationBook(t)
 	now := time.Now()
-	noteBoundNetwork(orphanNetA, now)
-	trackAllocation(&countingConn{}, "alice", orphanRelay1)
-	noteBoundNetwork(0, now)
+	loseOn("alice", orphanRelay1, orphanSteerAt, now)
 
 	in := slices.Clone(orphanRelays)
-	orderAroundOrphans("alice", in, now)
+	if got := orphanOrder("alice", in, now); got[0] == orphanRelay1 {
+		t.Fatalf("relay 1 was not steered: %v", got)
+	}
 	if !slices.Equal(in, orphanRelays) {
 		t.Fatalf("input reordered in place: %v", in)
 	}
@@ -207,8 +270,8 @@ func TestTrackedRelayReleasesOnce(t *testing.T) {
 	now := time.Now()
 	noteBoundNetwork(orphanNetA, now)
 	noteBoundNetwork(0, now)
-	if got := orderAroundOrphans("alice", orphanRelays, now); got[0] == orphanRelay1 {
-		t.Fatalf("the remaining live allocation was not marked: %v", got)
+	if n := ghosts("alice", orphanRelay1, now); n != 1 {
+		t.Fatalf("%d ghost(s) after the loss, want the one remaining live allocation", n)
 	}
 }
 
@@ -224,9 +287,8 @@ func TestAReleaseThatDidNotGoOutOrphans(t *testing.T) {
 	trackAllocation(&countingConn{}, "alice", orphanRelay2).Close()
 	noteBoundNetwork(0, now)
 
-	got := orderAroundOrphans("alice", orphanRelays, now)
-	if want := []string{orphanRelay2, orphanRelay3, orphanRelay1}; !slices.Equal(got, want) {
-		t.Fatalf("after a failed release on relay 1 and a sent one on relay 2: %v, want %v", got, want)
+	if n1, n2 := ghosts("alice", orphanRelay1, now), ghosts("alice", orphanRelay2, now); n1 != 1 || n2 != 0 {
+		t.Fatalf("after a failed release on relay 1 and a sent one on relay 2: %d and %d ghost(s), want 1 and 0", n1, n2)
 	}
 }
 
@@ -239,41 +301,145 @@ func TestOnlyTheFirstCloseSpeaksForTheRelease(t *testing.T) {
 	if err := r.Close(); err == nil {
 		t.Fatal("the second close hid the inner conn's answer")
 	}
-	if got := orderAroundOrphans("alice", orphanRelays, time.Now()); !slices.Equal(got, orphanRelays) {
-		t.Fatalf("a released allocation was marked by a later close: %v", got)
+	if n := ghosts("alice", orphanRelay1, time.Now()); n != 0 {
+		t.Fatalf("a released allocation was counted a ghost by a later close: %d", n)
 	}
 }
 
-// A mark lasts from the newest orphan: a second failed release later on
-// extends it.
+// A mark lasts from the newest orphan: a second failed release later on adds a
+// ghost and extends it, both ghosts expiring with the later one.
 func TestALaterOrphanExtendsTheMark(t *testing.T) {
 	resetAllocationBook(t)
 	now := time.Now()
 	trackAllocation(&countingConn{errs: []error{errReleaseUnsent}}, "alice", orphanRelay1).Close()
 	later := now.Add(5 * time.Minute)
-	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, errReleaseUnsent, later)
+	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, errReleaseUnsent, later, nil)
 
-	if got := orderAroundOrphans("alice", orphanRelays, now.Add(orphanedAllocationLifetime+time.Minute)); got[0] == orphanRelay1 {
-		t.Fatalf("the first orphan's expiry ended a mark the later one extended: %v", got)
+	if n := ghosts("alice", orphanRelay1, now.Add(orphanedAllocationLifetime+time.Minute)); n != 2 {
+		t.Fatalf("%d ghost(s) after the first one's lifetime, want both, the mark extended", n)
+	}
+	if n := ghosts("alice", orphanRelay1, later.Add(orphanedAllocationLifetime)); n != 0 {
+		t.Fatalf("%d ghost(s) after the later one's lifetime, want none", n)
 	}
 }
 
 // streamAttemptOrder is what both the attempt and the "did the head move"
 // check in attemptOnce use, so it has to apply the marks on top of the
-// stream's own order.
+// stream's own order: a few ghosts keep the stream's own relay, a crowd of
+// them moves it last.
 func TestStreamAttemptOrderAppliesTheMarks(t *testing.T) {
 	resetAllocationBook(t)
 	defer resetServerHealth()
 	resetServerHealth()
 	now := time.Now()
 	head := assignRelays(orphanRelays, 0, now)[0]
-	noteBoundNetwork(orphanNetA, now)
-	trackAllocation(&countingConn{}, "alice", head)
-	noteBoundNetwork(0, now)
+	loseOn("alice", head, orphanSteerAt-1, now)
 
+	if got := streamAttemptOrder("alice", orphanRelays, 0, WorkerGroupConfig{UseUDP: true}, now); got[0] != head {
+		t.Fatalf("streamAttemptOrder = %v with %d ghosts on %s, want it kept first", got, orphanSteerAt-1, head)
+	}
+	loseOn("alice", head, 1, now)
 	got := streamAttemptOrder("alice", orphanRelays, 0, WorkerGroupConfig{UseUDP: true}, now)
 	if got[0] == head || got[len(got)-1] != head {
-		t.Fatalf("streamAttemptOrder = %v, want %s moved last", got, head)
+		t.Fatalf("streamAttemptOrder = %v with %d ghosts on %s, want it moved last", got, orphanSteerAt, head)
+	}
+}
+
+// Field runs 18.10: after a dark, a few ghosts on most relays sent every stream
+// to the one relay left without any. The streams are spread over the relays
+// that are not crowded — rotated among them, not before the crowded ones are
+// put last, which would hand each crowded relay's streams to the next one.
+func TestCrowdedRelaysAreSteeredAroundAndTheRestSpread(t *testing.T) {
+	resetAllocationBook(t)
+	defer resetServerHealth()
+	resetServerHealth()
+	now := time.Now()
+	a, b, c, d, e, f := "10.0.1.1:3478", "10.0.1.2:3478", "10.0.1.3:3478", "10.0.1.4:3478", "10.0.1.5:3478", "10.0.1.6:3478"
+	addrs := []string{a, b, c, d, e, f}
+	for _, r := range []string{b, c, d} {
+		loseOn("alice", r, orphanSteerAt, now)
+	}
+	loseOn("alice", e, 4, now) // as many as one relay held in those runs: still one to spread over
+
+	var heads []string
+	for id := 0; id < 8; id++ {
+		got := streamAttemptOrder("alice", addrs, id, WorkerGroupConfig{UseUDP: true}, now)
+		heads = append(heads, got[0])
+		if tail := got[3:]; !slices.Contains(tail, b) || !slices.Contains(tail, c) || !slices.Contains(tail, d) {
+			t.Fatalf("stream %d: %v, want the crowded relays behind the rest", id, got)
+		}
+	}
+	if want := []string{a, e, f, a, e, f, a, e}; !slices.Equal(heads, want) {
+		t.Fatalf("heads %v, want %v", heads, want)
+	}
+}
+
+// One allocation is one ghost, whichever of its triggers speak for it: the
+// network it was bound to left (twice over), its release failed, and its relay
+// no longer knew it. Two allocations lost in two outages are two.
+func TestEachAllocationIsCountedOnceAsAGhost(t *testing.T) {
+	resetAllocationBook(t)
+	now := time.Now()
+	noteBoundNetwork(orphanNetA, now)
+	r := trackAllocation(&countingConn{errs: []error{errReleaseUnsent}}, "alice", orphanRelay1)
+	noteBoundNetwork(0, now)
+	noteBoundNetwork(orphanNetB, now)
+	noteBoundNetwork(0, now)
+	r.Close()
+	noteOutOfReach("alice", orphanRelay1, trackedAllocation(r), now)
+	if n := ghosts("alice", orphanRelay1, now); n != 1 {
+		t.Fatalf("one allocation counted as %d ghosts", n)
+	}
+
+	noteBoundNetwork(orphanNetA, now.Add(time.Minute))
+	trackAllocation(&countingConn{}, "alice", orphanRelay1)
+	noteBoundNetwork(0, now.Add(time.Minute))
+	if n := ghosts("alice", orphanRelay1, now.Add(time.Minute)); n != 2 {
+		t.Fatalf("two allocations lost in two outages counted as %d ghosts", n)
+	}
+}
+
+// A session's network leaves, comes back with the session alive
+// (network_switch.go keeps it), and leaves again: the ghost is held from the
+// later loss, not dropped when the first one's mark runs out — and lost once
+// more after that mark ran out too, it counts under the new one (Codex review,
+// 18.10).
+func TestAnAllocationLostAgainIsHeldFromTheLaterLoss(t *testing.T) {
+	resetAllocationBook(t)
+	t0 := time.Now()
+	noteBoundNetwork(orphanNetA, t0)
+	r := trackAllocation(&countingConn{}, "alice", orphanRelay1)
+	noteBoundNetwork(0, t0)
+	noteBoundNetwork(orphanNetA, t0.Add(20*time.Second))
+	noteBoundNetwork(0, t0.Add(500*time.Second))
+	if n := ghosts("alice", orphanRelay1, t0.Add(600*time.Second)); n != 1 {
+		t.Fatalf("%d ghost(s) when the first loss's mark ran out, want the one, held from the second", n)
+	}
+
+	noteBoundNetwork(orphanNetA, t0.Add(520*time.Second))
+	noteBoundNetwork(0, t0.Add(1200*time.Second))
+	if n := ghosts("alice", orphanRelay1, t0.Add(1201*time.Second)); n != 1 {
+		t.Fatalf("lost under a new mark: %d ghost(s), want it counted again", n)
+	}
+	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, errReleaseUnsent, t0.Add(1210*time.Second), trackedAllocation(r))
+	if n := ghosts("alice", orphanRelay1, t0.Add(1211*time.Second)); n != 1 {
+		t.Fatalf("its failed release after that: %d ghost(s), want still one", n)
+	}
+}
+
+// Under the close budget over TCP the allocation is still found, so its out of
+// reach report is told from its failed release.
+func TestTrackedAllocationIsFoundUnderTheCloseBudget(t *testing.T) {
+	resetAllocationBook(t)
+	r := trackAllocation(&countingConn{}, "alice", orphanRelay1)
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	if got := trackedAllocation(boundRelayClose(r, a)); got != r {
+		t.Fatalf("trackedAllocation = %v, want the allocation beneath the close budget", got)
+	}
+	if got := trackedAllocation(&countingConn{}); got != nil {
+		t.Fatalf("trackedAllocation of an untracked conn = %v, want nil", got)
 	}
 }
 
@@ -317,8 +483,8 @@ func TestDialAndAllocateCountsTheAllocation(t *testing.T) {
 	if n := liveAllocations("carol", addr); n != 0 {
 		t.Fatalf("live after closing the relay: %d, want 0", n)
 	}
-	if got := orderAroundOrphans("carol", []string{addr, orphanRelay1}, time.Now()); got[0] != addr {
-		t.Fatalf("a release sent to a live relay marked it: %v", got)
+	if n := ghosts("carol", addr, time.Now()); n != 0 {
+		t.Fatalf("a release sent to a live relay counted %d ghost(s)", n)
 	}
 }
 
@@ -358,8 +524,8 @@ func TestDialAndAllocateMarksAnUnsentRelease(t *testing.T) {
 	if relay.Close() == nil {
 		t.Fatal("pion reported a release written to a closed socket as sent")
 	}
-	if got := orderAroundOrphans("dave", []string{addr, orphanRelay1}, time.Now()); got[0] == addr {
-		t.Fatalf("an unsent release left the relay first: %v", got)
+	if n := ghosts("dave", addr, time.Now()); n != 1 {
+		t.Fatalf("an unsent release counted %d ghost(s), want 1", n)
 	}
 }
 
@@ -395,7 +561,7 @@ func TestA486RightAfterOurReleaseKeepsTheCreds(t *testing.T) {
 func TestReleaseSettleWindowEnds(t *testing.T) {
 	resetAllocationBook(t)
 	t0 := time.Now()
-	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, nil, t0)
+	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, nil, t0, nil)
 
 	if _, _, ok := settlingQuotaError(quota486(), "alice", orphanRelays, t0.Add(releaseSettleWindow-time.Millisecond)); !ok {
 		t.Fatal("a 486 just inside the window was not read as our release settling")
@@ -410,7 +576,7 @@ func TestReleaseSettleWindowEnds(t *testing.T) {
 func TestOnlyAQuotaRefusalSettles(t *testing.T) {
 	resetAllocationBook(t)
 	now := time.Now()
-	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, nil, now)
+	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, nil, now, nil)
 
 	for _, err := range []error{
 		nil,
@@ -445,7 +611,7 @@ func TestAnOrphanedRelayDoesNotSettle(t *testing.T) {
 func TestSettlingIsPerCredentialAndRelay(t *testing.T) {
 	resetAllocationBook(t)
 	now := time.Now()
-	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, nil, now)
+	releaseAllocation(relayIdentity{user: "alice", relay: orphanRelay1}, nil, now, nil)
 
 	if _, _, ok := settlingQuotaError(quota486(), "bob", orphanRelays, now); ok {
 		t.Fatal("another credential's 486 was read as alice's release settling")
@@ -479,7 +645,7 @@ func TestWorkerRetriesTheSameCredsWhileOurReleaseSettles(t *testing.T) {
 		delete(credentialsStore.caches, cacheID)
 		credentialsStore.mu.Unlock()
 	}()
-	releaseAllocation(relayIdentity{user: t.Name(), relay: addr}, nil, time.Now())
+	releaseAllocation(relayIdentity{user: t.Name(), relay: addr}, nil, time.Now(), nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3500*time.Millisecond)
 	defer cancel()

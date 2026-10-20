@@ -183,7 +183,8 @@ class TunnelToggleAppWidgetProvider : AppWidgetProvider() {
             val isBusy = displayState == TunnelState.Connecting ||
                 displayState == TunnelState.Handshake ||
                 displayState == TunnelState.Reconnecting ||
-                displayState == TunnelState.WaitingForNetwork
+                displayState == TunnelState.WaitingForNetwork ||
+                displayState == TunnelState.NetworkSilent
             val layoutRes = when (mode) {
                 LayoutMode.FULL -> R.layout.appwidget_tunnel_toggle
                 LayoutMode.COMPACT, LayoutMode.ICON_ONLY -> R.layout.appwidget_tunnel_toggle_compact
@@ -267,6 +268,7 @@ class TunnelToggleAppWidgetProvider : AppWidgetProvider() {
             state == TunnelState.Connected -> R.string.widget_status_on
             state == TunnelState.Reconnecting -> R.string.widget_status_reconnecting
             state == TunnelState.WaitingForNetwork -> R.string.widget_status_waiting_network
+            state == TunnelState.NetworkSilent -> R.string.widget_status_silent
             state == TunnelState.Failed -> R.string.widget_status_failed
             else -> R.string.widget_status_off
         }

@@ -27,6 +27,7 @@ extern void wgTurnDropCredentials(void);
 extern void wgSetSystemDns(const char *dns_servers);
 extern void wgSetNetworkState(long long handle, int relay_transport);
 extern int wgTurnReadyStreams(void);
+extern int wgTurnPathSilentSeconds(void);
 extern void wgTurnProxyWake(void);
 extern int wgTurnCheckVKLink(const char *link);
 extern int wgTetherStart(const char *bind_ip, int port, const char *dns_servers, const char *tunnel_addrs, const char *routing_dir, const char *direct_dns);
@@ -626,6 +627,11 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetNetwo
 JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnReadyStreams(JNIEnv *env, jclass c)
 {
 	return (jint)wgTurnReadyStreams();
+}
+
+JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnPathSilentSeconds(JNIEnv *env, jclass c)
+{
+	return (jint)wgTurnPathSilentSeconds();
 }
 
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyWake(JNIEnv *env, jclass c)

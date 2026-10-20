@@ -243,6 +243,7 @@ class QuickTileService : TileService() {
             TunnelState.Connected -> R.string.widget_status_on
             TunnelState.Reconnecting -> R.string.widget_status_reconnecting
             TunnelState.WaitingForNetwork -> R.string.widget_status_waiting_network
+            TunnelState.NetworkSilent -> R.string.widget_status_silent
             TunnelState.Failed -> R.string.widget_status_failed
             TunnelState.Disconnected -> R.string.widget_status_off
         }

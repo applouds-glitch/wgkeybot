@@ -153,10 +153,9 @@ func TestOnlyA486OnFreshCredentialsPausesMinting(t *testing.T) {
 }
 
 // A session that ended because the relay no longer knows its socket leaves
-// the allocation seated at the relay: the (credential, relay) is orphaned, the
-// next attempts on that credential go to the other relays first, and the
-// Refresh(0) its close sent — from the socket the relay does not know — does
-// not read as a release settling.
+// the allocation seated at the relay: it counts as a ghost on the (credential,
+// relay), and the Refresh(0) its close sent — from the socket the relay does
+// not know — does not read as a release settling.
 func TestOutOfReachSessionOrphansItsRelay(t *testing.T) {
 	resetAllocationBook(t)
 	now := time.Now()
@@ -181,10 +180,10 @@ func TestOutOfReachSessionOrphansItsRelay(t *testing.T) {
 		}
 	}
 	key := relayIdentity{user: "u", relay: orphanRelay1}
-	releaseAllocation(key, nil, now) // the close's Refresh(0) went out — on the new mapping
-	noteOutOfReach("u", orphanRelay1, now)
-	if got := orderAroundOrphans("u", []string{orphanRelay1, orphanRelay2}, now); got[0] != orphanRelay2 || got[1] != orphanRelay1 {
-		t.Fatalf("attempt order %v, want the out-of-reach relay last", got)
+	releaseAllocation(key, nil, now, nil) // the close's Refresh(0) went out — on the new mapping
+	noteOutOfReach("u", orphanRelay1, nil, now)
+	if n := ghosts("u", orphanRelay1, now); n != 1 {
+		t.Fatalf("the out-of-reach allocation counted %d ghost(s), want 1", n)
 	}
 	if _, _, settling := settlingQuotaError(quota486(), "u", []string{orphanRelay1}, now.Add(time.Second)); settling {
 		t.Fatal("a 486 from a relay holding an out-of-reach allocation read as a release settling")

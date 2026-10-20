@@ -169,7 +169,8 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 	}
 
 	var st workerBackoff
-	credFailStreak := 0 // consecutive credential fetches that failed for any reason
+	defer leaveTheDark(s) // dark_scout.go
+	credFailStreak := 0   // consecutive credential fetches that failed for any reason
 	for {
 		// Parked while there is no physical network at all (network_availability.go).
 		if !waitForNetwork(ctx) {
@@ -279,6 +280,9 @@ type workerBackoff struct {
 	// The credential that has had its one more try after a 486 beside a relay
 	// that never answered (see quotaBesideSilence).
 	quotaGraceUsed string
+	// scouting: the next attempt is this worker's turn to dial a dark path
+	// (dark_scout.go).
+	scouting bool
 }
 
 // attemptOnce runs one attempt of the worker's loop — the session, and the wait
@@ -292,12 +296,17 @@ type workerBackoff struct {
 // another stream's session gets through (path_revival.go).
 func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, pass string, addrs []string, st *workerBackoff) (stop bool) {
 	// Both transports spread the streams over the relays (assignRelays). Health,
-	// a resting relay and orphaned allocations override that preference. Keep
+	// a resting relay and a relay crowded with orphaned allocations override
+	// that preference. Keep
 	// the full list for the later retry decision, including relays that recover
 	// meanwhile.
 	//
 	// Registered first: the order below and the dials after it have to follow
 	// the transport the attempt is tagged with.
+	// The path the attempt begins on, taken before it is registered: a reset
+	// after that point — a move, a proxy start, the network lost and back — makes
+	// whatever it finds about a path that is gone (dark_scout.go).
+	pathAtStart := darkEpoch()
 	attempt := beginAttempt(ctx, cfg)
 	defer attempt.end()
 	s.attempt.Store(attempt.a)
@@ -305,6 +314,15 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 	defer s.attempt.Store(nil)
 	defer s.relays.Store(nil)
 	attemptCfg := cfg.pinTransport(attempt.overTCP)
+
+	// A scout turn is checked again here, after the credential fetch that may
+	// have outlasted its lease: one that has passed to another worker since
+	// does not dial alongside it, and waits again.
+	scouted := st.scouting
+	st.scouting = false
+	if scouted && !darkScoutDials(s, attempt.overTCP, time.Now()) {
+		return s.parkInTheDark(ctx, attempt, st)
+	}
 
 	ordered := streamAttemptOrder(user, addrs, s.id, attemptCfg, time.Now())
 	attemptHead := ordered[0]
@@ -317,9 +335,15 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 	runCtx, endRun := context.WithCancel(attempt.ctx)
 	proven := nextPathProof(attempt.overTCP)
 	ownProofs := s.pathProofs.Load()
+	heardAtStart := relayHeardMark(attempt.overTCP) // dark_scout.go
 	runErr := s.runWithCreds(runCtx, user, pass, ordered, attemptCfg)
 	endRun()
 	sessionDur := time.Since(start)
+	if scouted {
+		darkScoutDone(s, attempt.overTCP, start, time.Now(),
+			ctx.Err() == nil && !attempt.moved() && s.pathProofs.Load() == ownProofs &&
+				parksInTheDark(runErr) && !localNetworkError(runErr))
+	}
 	if s.pathProofs.Load() != ownProofs {
 		// The session got through: only a proof made after it came down says
 		// the path is back since (path_revival.go).
@@ -457,12 +481,15 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 			wakeable = false
 		}
 	}
-	// Into a path that is dark still, no redial at all until it is back; and
-	// out of one, a delay the dark earned does not outlast it (path_revival.go).
-	if wakeable && parksInTheDark(runErr) && pathLooksDark(activeStreamSet(), time.Now()) {
-		turnErrorLog("[WORKER %d] Error (streak %d): %v → parked: the path to the relays is dark (a socket stalled, no relay heard for %v)",
-			s.id, st.failStreak, runErr, pathDarkQuiet)
-		return s.parkInTheDark(ctx, attempt, st)
+	// Into a path that is dark still, no redial at all until it is back (but
+	// the scout's, dark_scout.go); and out of one, a delay the dark earned does
+	// not outlast it (path_revival.go).
+	if wakeable && parksInTheDark(runErr) {
+		if dark, why := findsTheDark(attempt.overTCP, heardAtStart, pathAtStart, start, runErr, time.Now()); dark {
+			turnErrorLog("[WORKER %d] Error (streak %d): %v → parked: the path to the relays is dark (%s)",
+				s.id, st.failStreak, runErr, why)
+			return s.parkInTheDark(ctx, attempt, st)
+		}
 	}
 	turnErrorLog("[WORKER %d] Error (streak %d): %v → retry in %v%s", s.id, st.failStreak, runErr, retryDelay, note)
 	revivable := wakeable && pathWideFailure(runErr)

@@ -163,7 +163,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	// What the relay connections are doing, for the streams that run over TCP;
 	// asleep while none does (relay_tcp_watch.go).
 	go relaySockets.run(gCtx, allStreams)
-	withdrawStreams := publishStreams(allStreams)
+	withdrawStreams := publishStreams(allStreams, cfg.UseUDP)
 
 	var groupsWg sync.WaitGroup
 	// The cascade below sleeps between groups, so it is launched in its own

@@ -245,6 +245,7 @@
     <string name="widget_status_handshake">Обмен ключами…</string>
     <string name="widget_status_reconnecting">Переподключение…</string>
     <string name="widget_status_waiting_network">Ожидание сети…</string>
+    <string name="widget_status_silent">Релеи не отвечают…</string>
     <string name="widget_status_failed">Ошибка подключения</string>
     <string name="tools_installer_already">wg и wg-quick уже установлены</string>
     <string name="tools_installer_failure">Не удалось установить инструменты командной строки (нет root?)</string>
@@ -408,6 +409,9 @@
     <string name="wgk_headline_connected">Туннель активен</string>
     <string name="wgk_headline_reconnecting">Соединение потеряно</string>
     <string name="wgk_headline_waiting_network">Нет сети</string>
+    <string name="wgk_headline_silent_mobile">Релеи не отвечают по мобильной сети</string>
+    <string name="wgk_headline_silent_wifi">Релеи не отвечают по Wi‑Fi</string>
+    <string name="wgk_headline_silent_other">Релеи не отвечают</string>
     <string name="wgk_headline_failed">Не удалось подключиться</string>
     <string name="wgk_status_label">СТАТУС</string>
     <string name="wgk_status_uptime_label">UPTIME</string>
@@ -426,6 +430,7 @@
     <string name="wgk_status_sub_connected">Соединение установлено</string>
     <string name="wgk_status_sub_reconnecting">Сервер не отвечает, повторная попытка</string>
     <string name="wgk_status_sub_waiting_network">Нет подключения к сети. Подключимся сами, как только оно вернётся</string>
+    <string name="wgk_status_sub_silent">Сеть подключена, но релеи по ней не отвечают. Продолжаем попытки — подключимся, как только ответят</string>
     <string name="wgk_status_sub_failed">Сервер недоступен, проверьте сеть</string>
 
     <!-- Terminal failures the app can name. Each has to fit the status card's

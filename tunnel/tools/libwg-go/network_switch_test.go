@@ -29,6 +29,7 @@ func resetNetworkSwitch(t *testing.T) {
 		networkSwitch.leftAt = time.Time{}
 		networkSwitch.attempts = map[uint64]*networkAttempt{}
 		networkSwitch.Unlock()
+		resetDarkPaths() // another test's dark is not this one's (dark_scout.go)
 	}
 	reset()
 	t.Cleanup(reset)

@@ -20,7 +20,30 @@ class TunnelStatePolicyTest {
         hasNetwork: Boolean = true,
         readyStreams: Int = 10,
         pollingStartedMs: Long = started,
-    ) = TunnelStatePolicy.derive(now, pollingStartedMs, lastHandshakeMs, firstHandshakeSeenMs, hasNetwork, readyStreams)
+        silentSeconds: Int = 0,
+    ) = TunnelStatePolicy.derive(now, pollingStartedMs, lastHandshakeMs, firstHandshakeSeenMs, hasNetwork, readyStreams, silentSeconds)
+
+    /**
+     * The dark spells of 18.10: Android kept the network up for two minutes while
+     * no relay answered over it, and the screen blamed the tunnel. Silent for the
+     * threshold, it says the relays do not answer over the network — whatever the
+     * streams and the handshake say, which both lag behind it.
+     */
+    @Test
+    fun `relays silent over a network that is up are said so`() {
+        val at = TunnelStatePolicy.NETWORK_SILENT_SECONDS
+        assertEquals(TunnelState.NetworkSilent, derive(silentSeconds = at))
+        assertEquals(TunnelState.NetworkSilent, derive(silentSeconds = at, readyStreams = 0))
+        assertEquals(TunnelState.NetworkSilent, derive(silentSeconds = 120, lastHandshakeMs = now - 400_000L))
+        // A short stall — a handover, a full queue — is not.
+        assertEquals(TunnelState.Connected, derive(silentSeconds = at - 1))
+        // No network at all is still just that.
+        assertEquals(TunnelState.WaitingForNetwork, derive(silentSeconds = 120, hasNetwork = false))
+        // Nor before the first handshake: the connect has its own deadline.
+        assertEquals(TunnelState.Connecting, derive(silentSeconds = 120, lastHandshakeMs = 0L, pollingStartedMs = now - 5_000L))
+        // Nor without a proxy to ask.
+        assertEquals(TunnelState.Connected, derive(silentSeconds = -1))
+    }
 
     @Test
     fun `a healthy session is connected`() {

@@ -11,6 +11,10 @@ enum class TunnelState {
     // Tunnel is up and the phone has no physical network at all: nothing to
     // reconnect over until one returns.
     WaitingForNetwork,
+    // Tunnel is up, Android says the network is too, and no relay answers over
+    // it: the network no longer reaches the relays — gone quiet itself, or
+    // cutting them off — and the tunnel is not at fault.
+    NetworkSilent,
     // Initial connection didn't produce a handshake within the grace period.
     Failed,
 }
@@ -70,7 +74,12 @@ data class TunnelUiState(
     val configLoadedAt: Long = 0L,
     /** Only meaningful while [state] is [TunnelState.Failed]. */
     val failure: TunnelFailure? = null,
+    /** Only meaningful while [state] is [TunnelState.NetworkSilent]: which network the relays do not answer over. */
+    val silentNetwork: SilentNetwork = SilentNetwork.Other,
 )
+
+/** Which kind of network has gone quiet, for the words on the screen. */
+enum class SilentNetwork { Mobile, WiFi, Other }
 
 /**
  * What the screen says about a tunnel that is up, from what is known at one
@@ -84,6 +93,17 @@ data class TunnelUiState(
  *
  *  - there is no physical network: nothing can reconnect, and saying
  *    "reconnecting" would promise what cannot happen — [TunnelState.WaitingForNetwork];
+ *  - there is one, Android calls it up, and no relay has answered over it for
+ *    [NETWORK_SILENT_SECONDS] — the streams found the path dark, or their
+ *    sockets stalled with no relay heard ([silentSeconds]):
+ *    [TunnelState.NetworkSilent]. The dark spells of 18.10 (Rostelecom on
+ *    Tele2's 3G) were the modem losing its registration for two minutes while
+ *    Android kept the network CONNECTED and VALIDATED; the screen said
+ *    "Connected" for the first 30s of each and "Reconnecting…" after, as if the
+ *    tunnel were at fault. Shorter stalls — a cell handover, a full queue —
+ *    pass under the threshold. What is known is the relays' silence, not the
+ *    network's: one that cuts off only the relays' transport looks the same,
+ *    so the words say no more than that (Codex review, 19.10);
  *  - there is one, the tunnel runs over TURN, and no stream is ready
  *    ([readyStreams] == 0): [TunnelState.Reconnecting], at once.
  *
@@ -98,6 +118,8 @@ object TunnelStatePolicy {
     const val HANDSHAKE_STALE_SECONDS = 180L
     // Grace period for the first handshake after polling starts.
     const val INITIAL_HANDSHAKE_TIMEOUT_MS = 30_000L
+    // How long the path has to be silent before the screen says so.
+    const val NETWORK_SILENT_SECONDS = 10
 
     fun derive(
         nowMs: Long,
@@ -106,11 +128,13 @@ object TunnelStatePolicy {
         firstHandshakeSeenMs: Long,
         hasNetwork: Boolean,
         readyStreams: Int,
+        silentSeconds: Int = -1,
     ): TunnelState = when {
         lastHandshakeMs == 0L ->
             if (nowMs - pollingStartedMs > INITIAL_HANDSHAKE_TIMEOUT_MS) TunnelState.Failed
             else TunnelState.Connecting
         !hasNetwork -> TunnelState.WaitingForNetwork
+        silentSeconds >= NETWORK_SILENT_SECONDS -> TunnelState.NetworkSilent
         readyStreams == 0 -> TunnelState.Reconnecting
         (nowMs - lastHandshakeMs) / 1000 > HANDSHAKE_STALE_SECONDS -> TunnelState.Reconnecting
         firstHandshakeSeenMs == 0L ||

@@ -623,12 +623,16 @@ func TestAProofBeforeTheParkDoesNotEndIt(t *testing.T) {
 	}
 }
 
-// However dark the lookout says the path still is, a park ends: a relay set
-// that has really died is dialed again.
-func TestAParkEndsAtItsLimit(t *testing.T) {
+// However long the path stays dark, its relays are dialed again: a relay set
+// that has really died is not left alone. That used to be the park's limit;
+// with the dark found it is the scout's turn (dark_scout.go).
+func TestARelaySetDarkForLongIsStillDialed(t *testing.T) {
 	prev := pathDarkParkMax
 	pathDarkParkMax = 1500 * time.Millisecond
 	t.Cleanup(func() { pathDarkParkMax = prev })
+	// The turn is counted from the start of the attempt that found the dark,
+	// half a second of connect pacing before the park.
+	pinDarkScout(t, darkScoutGap, pathDarkParkMax+500*time.Millisecond, darkEvidenceMin)
 	relay := startTCPTestRelay(t, listenTCPRelay(t))
 	overTCP(t)
 	resetRevivalPacing()
@@ -650,9 +654,9 @@ func TestAParkEndsAtItsLimit(t *testing.T) {
 		t.Fatal("the worker never went into a wait")
 	}
 	parked := time.Now()
-	waitFor(t, "a connect at the park's limit", 3*time.Second, func() bool { return dials.tried.Load()-tried >= 2 })
+	waitFor(t, "a connect at the scout's turn", 3*time.Second, func() bool { return dials.tried.Load()-tried >= 2 })
 	if took := time.Since(parked); took < pathDarkParkMax-200*time.Millisecond {
-		t.Fatalf("the park ended %v in, before its limit of %v, with the path still dark", took, pathDarkParkMax)
+		t.Fatalf("the relay set was dialed again %v in, before the turn was due (%v), with the path still dark", took, pathDarkParkMax)
 	}
 }
 

@@ -216,6 +216,12 @@ class TunnelListFragment : BaseFragment() {
         super.onViewCreated(view, savedInstanceState)
         observeSessionClock()
         binding?.wgkTetherPanel?.let { tetherPanel?.bind(it, viewLifecycleOwner) }
+        // Whether the mode row is there depends on the config, which is not
+        // known until the tunnels have loaded.
+        viewLifecycleOwner.lifecycleScope.launch {
+            Application.getTunnelManager().getTunnels()
+            updateConnectionModeButton()
+        }
     }
 
     override fun onResume() {
@@ -353,7 +359,7 @@ class TunnelListFragment : BaseFragment() {
             // the slot's business; on TV there is no slot and the hint is the band.
             (b.wgkActionSlot ?: b.wgkHeadline).isVisible = true
             renderedSlotKey = null
-            renderActionSlot(b, vm.uiState.value.state)
+            renderActionSlot(b, vm.uiState.value)
             b.wgkStatusZone.root.isVisible = true
             b.wgkQuickControls?.isVisible = true
             b.wgkTetherPanel?.root?.isVisible = tetherPanel != null
@@ -532,12 +538,15 @@ class TunnelListFragment : BaseFragment() {
 
         if (prev == null || prev.configLoadedAt != ui.configLoadedAt) renderProfile(b, ui)
 
-        if (prev == null || prev.state != ui.state || prev.failure != ui.failure) {
+        // The status card names the silent network, which can change under the
+        // same state (Codex review, 19.10).
+        if (prev == null || prev.state != ui.state || prev.failure != ui.failure ||
+            prev.silentNetwork != ui.silentNetwork) {
             // Nothing to cross-fade from on the first pass: the view tree has just
             // arrived wearing the layout's resting values.
             renderConnectButton(b, ui, from = prev?.state)
             renderStatusChrome(b, ui, from = prev?.state)
-            renderActionSlot(b, ui.state)
+            renderActionSlot(b, ui)
         }
         renderSessionMetrics(b, ui, prev)
     }
@@ -587,13 +596,15 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Connecting,
             TunnelState.Handshake,
             TunnelState.Reconnecting,
-            TunnelState.WaitingForNetwork -> R.string.wgk_connect_cd_cancel
+            TunnelState.WaitingForNetwork,
+            TunnelState.NetworkSilent -> R.string.wgk_connect_cd_cancel
         })
 
         val busy = ui.state == TunnelState.Connecting ||
                 ui.state == TunnelState.Handshake ||
                 ui.state == TunnelState.Reconnecting ||
-                ui.state == TunnelState.WaitingForNetwork
+                ui.state == TunnelState.WaitingForNetwork ||
+                ui.state == TunnelState.NetworkSilent
 
         // Kept in step with the state even though the fill no longer reads them:
         // they are what the view reports to accessibility, and they keep the
@@ -676,7 +687,8 @@ class TunnelListFragment : BaseFragment() {
         TunnelState.Connecting,
         TunnelState.Handshake,
         TunnelState.Reconnecting,
-        TunnelState.WaitingForNetwork -> intArrayOf(android.R.attr.state_activated)
+        TunnelState.WaitingForNetwork,
+        TunnelState.NetworkSilent -> intArrayOf(android.R.attr.state_activated)
         TunnelState.Disconnected,
         TunnelState.Failed -> IntArray(0)
     }
@@ -688,14 +700,15 @@ class TunnelListFragment : BaseFragment() {
     }
 
     /** Original state captions; the button exposes its available action to accessibility. */
-    private fun renderActionSlot(b: TunnelListFragmentBinding, state: TunnelState) {
-        if (renderedSlotKey == state) return
-        renderedSlotKey = state
+    private fun renderActionSlot(b: TunnelListFragmentBinding, ui: TunnelUiState) {
+        if (renderedSlotKey == ui.state) return
+        renderedSlotKey = ui.state
         b.wgkHeadline.isVisible = true
-        renderHeadline(b, state)
+        renderHeadline(b, ui)
     }
 
-    private fun renderHeadline(b: TunnelListFragmentBinding, state: TunnelState) {
+    private fun renderHeadline(b: TunnelListFragmentBinding, ui: TunnelUiState) {
+        val state = ui.state
         b.wgkHeadline.setText(when (state) {
             TunnelState.Disconnected -> R.string.wgk_headline_disconnected
             TunnelState.Connecting   -> R.string.wgk_headline_connecting
@@ -703,15 +716,27 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Connected    -> R.string.wgk_headline_connected
             TunnelState.Reconnecting -> R.string.wgk_headline_reconnecting
             TunnelState.WaitingForNetwork -> R.string.wgk_headline_waiting_network
+            // One line under the button, autosized no smaller than 11sp: the
+            // network's name does not fit on a narrow phone at a large font
+            // (Codex review, 19.10). The status card names it.
+            TunnelState.NetworkSilent -> R.string.wgk_headline_silent_other
             TunnelState.Failed       -> R.string.wgk_headline_failed
         })
         b.wgkHeadline.setTextColor(ContextCompat.getColor(requireContext(), when (state) {
             TunnelState.Connected    -> R.color.wgk_success
             TunnelState.Reconnecting,
-            TunnelState.WaitingForNetwork -> R.color.wgk_warning
+            TunnelState.WaitingForNetwork,
+            TunnelState.NetworkSilent -> R.color.wgk_warning
             TunnelState.Failed       -> R.color.wgk_error
             else                     -> R.color.wgk_on_surface_variant
         }))
+    }
+
+    /** For the status card: "Relays not answering on mobile data", "… on Wi-Fi" — or without the network. */
+    private fun silentNetworkRes(network: SilentNetwork): Int = when (network) {
+        SilentNetwork.Mobile -> R.string.wgk_headline_silent_mobile
+        SilentNetwork.WiFi -> R.string.wgk_headline_silent_wifi
+        SilentNetwork.Other -> R.string.wgk_headline_silent_other
     }
 
     /**
@@ -727,6 +752,7 @@ class TunnelListFragment : BaseFragment() {
         TunnelState.Connected    -> R.string.wgk_status_sub_connected
         TunnelState.Reconnecting -> R.string.wgk_status_sub_reconnecting
         TunnelState.WaitingForNetwork -> R.string.wgk_status_sub_waiting_network
+        TunnelState.NetworkSilent -> R.string.wgk_status_sub_silent
         TunnelState.Failed       -> when (ui.failure) {
             TunnelFailure.CallUnavailable  -> R.string.wgk_status_sub_failed_call_gone
             TunnelFailure.CallRequiresAuth -> R.string.wgk_status_sub_failed_call_auth
@@ -748,7 +774,7 @@ class TunnelListFragment : BaseFragment() {
         val completionDrawable = sz.wgkStageRoutingIndicator.progressDrawable
         val finishStages = isConnected && completionDrawable != null &&
             from in listOf(TunnelState.Connecting, TunnelState.Handshake, TunnelState.Reconnecting,
-                TunnelState.WaitingForNetwork) &&
+                TunnelState.WaitingForNetwork, TunnelState.NetworkSilent) &&
             sz.wgkStageContainer.isShown && Settings.Global.getFloat(
                 requireContext().contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f,
             ) > 0f
@@ -760,11 +786,12 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Connected    -> R.string.wgk_status_connected
             TunnelState.Reconnecting -> R.string.wgk_status_reconnecting
             TunnelState.WaitingForNetwork -> R.string.wgk_status_waiting_network
+            TunnelState.NetworkSilent -> silentNetworkRes(ui.silentNetwork)
             TunnelState.Failed       -> R.string.wgk_status_failed
         })
         val headlineColor = when (ui.state) {
             TunnelState.Connected -> R.color.wgk_success
-            TunnelState.Reconnecting, TunnelState.WaitingForNetwork -> R.color.wgk_warning
+            TunnelState.Reconnecting, TunnelState.WaitingForNetwork, TunnelState.NetworkSilent -> R.color.wgk_warning
             TunnelState.Failed -> R.color.wgk_error
             else -> R.color.wgk_on_surface
         }
@@ -793,8 +820,9 @@ class TunnelListFragment : BaseFragment() {
             TunnelState.Connecting -> 0
             TunnelState.Handshake, TunnelState.Reconnecting -> 1
             // Without a network nothing is in progress: the tunnel stage stays
-            // done and the rest wait — see `active` below.
-            TunnelState.WaitingForNetwork -> 1
+            // done and the rest wait — see `active` below. The same while the
+            // network is silent: what is waited for is the network.
+            TunnelState.WaitingForNetwork, TunnelState.NetworkSilent -> 1
             TunnelState.Connected -> 3
             TunnelState.Disconnected, TunnelState.Failed -> -1
         }
@@ -803,7 +831,8 @@ class TunnelListFragment : BaseFragment() {
         val labels = listOf(sz.wgkLblTunnel, sz.wgkLblHandshake, sz.wgkLblRouting)
         for (i in indicators.indices) {
             val complete = activeStage > i
-            val active = activeStage == i && ui.state != TunnelState.WaitingForNetwork
+            val active = activeStage == i && ui.state != TunnelState.WaitingForNetwork &&
+                ui.state != TunnelState.NetworkSilent
             val failed = ui.state == TunnelState.Failed && i == 0
             val color = ContextCompat.getColor(requireContext(), when {
                 failed -> R.color.wgk_error
@@ -1008,6 +1037,9 @@ class TunnelListFragment : BaseFragment() {
     private suspend fun finishConfigUpdate(tunnel: ObservableTunnel, reconnect: Boolean, showFeedback: Boolean) {
         recordConfigLoaded()
         refreshButtonState()
+        // A new config may bring or take away the reserve mode (ConnectionMode.isOffered).
+        updateConnectionModeButton()
+        activity?.invalidateOptionsMenu()
         if (reconnect && tunnel.state == Tunnel.State.UP) {
             vm.notifyConnecting()
             val manager = Application.getTunnelManager()
@@ -1295,7 +1327,19 @@ class TunnelListFragment : BaseFragment() {
     // TV only: the phone screen moved this row to the settings screen, so on a
     // phone every view here is absent and the binding fields are null.
     private fun updateConnectionModeButton() {
-        val fr = binding?.wgkFooterRow ?: return
+        val b = binding ?: return
+        val fr = b.wgkFooterRow
+        val btn = fr.wgkConnectionModeBtn ?: return
+        // No row for a config without a reserve mode (SRTP). The D-pad chain
+        // names the row, so its neighbours are pointed past it while it is gone:
+        // below API 26 focus does not follow the chain through a hidden view.
+        val offered = ConnectionMode.isOffered()
+        btn.isVisible = offered
+        val below = if (offered) R.id.wgk_connection_mode_btn else R.id.wgk_split_btn
+        b.wgkProfileCard.wgkAutoRefreshBtn?.nextFocusDownId = below
+        b.wgkProfileCard.wgkRefreshBtn.nextFocusDownId = below
+        fr.wgkSplitBtn.nextFocusUpId = if (offered) R.id.wgk_connection_mode_btn else R.id.wgk_auto_refresh_btn
+        if (!offered) return
         val isReserve = ConnectionMode.isReserve(requireContext())
         val activeColor = ContextCompat.getColor(requireContext(), R.color.wgk_warning)
         fr.wgkConnectionModeValue?.setText(

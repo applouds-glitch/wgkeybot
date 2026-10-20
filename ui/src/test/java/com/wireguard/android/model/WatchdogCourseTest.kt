@@ -4,6 +4,7 @@ package com.wireguard.android.model
 
 import com.wireguard.android.model.HandshakeWatchdog.REBUILT_GRACE_MS
 import com.wireguard.android.model.HandshakeWatchdog.STALE_MS
+import com.wireguard.android.model.WatchdogCourse.Companion.SILENT_HOLD_MS
 import com.wireguard.android.model.WatchdogCourse.Step
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -18,12 +19,14 @@ class WatchdogCourseTest {
         var now = start
         var handshake = 0L
         var network = true
+        var silent = false
+        var sending = true
         private var tx = 0L
 
         fun poll(): Step {
             now += pollMs
-            tx += 1_000
-            return course.poll(now, handshake, tx, network)
+            if (sending) tx += 1_000
+            return course.poll(now, handshake, tx, network, silent)
         }
 
         /** Polls until something happens; returns the step and when it happened. */
@@ -33,6 +36,15 @@ class WatchdogCourseTest {
                 if (step != Step.NONE) return step to now
             }
             throw AssertionError("nothing happened in $limitPolls polls")
+        }
+
+        /** Polls past any holds to the next other step; a course that only ever holds fails. */
+        fun untilPastHolds(limitSteps: Int = 20): Pair<Step, Long> {
+            repeat(limitSteps) {
+                val next = untilStep()
+                if (next.first != Step.HOLD) return next
+            }
+            throw AssertionError("held $limitSteps verdicts in a row")
         }
     }
 
@@ -111,5 +123,100 @@ class WatchdogCourseTest {
         val (step, at) = s.untilStep()
         assertEquals(Step.REBUILD, step)
         assertTrue(at - start > HandshakeWatchdog.NEVER_CONNECTED_MS)
+    }
+
+    // The dark spells of 18.10: a rebuild restarted the proxy into the dark, the
+    // second dropped the cached credential for a VK request that could not get
+    // through. Held instead — and the tunnel still goes down about when the
+    // whole course would have taken it.
+    @Test
+    fun `verdicts while no relay answers are held, then the tunnel goes down`() {
+        val course = WatchdogCourse(start)
+        val s = Session(course)
+        s.handshake = start + 5_000
+        s.silent = true
+
+        val (first, firstAt) = s.untilStep()
+        assertEquals(Step.HOLD, first)
+        val (step, at) = s.untilPastHolds()
+        assertEquals("rebuilt while no relay answered", Step.TEAR_DOWN, step)
+        assertEquals(0, course.rebuilds)
+        assertTrue("torn down before the hold was out", at - firstAt >= SILENT_HOLD_MS)
+        assertTrue("torn down later than the hold plus a poll", at - firstAt <= SILENT_HOLD_MS + pollMs)
+        assertTrue("the whole course ran over ten minutes", at - s.handshake <= 10 * 60_000L)
+    }
+
+    // A hold takes no step of the course: once relays answer again and the
+    // tunnel still does not handshake, the step that was next is taken.
+    @Test
+    fun `the course goes on from where it was once relays answer`() {
+        val course = WatchdogCourse(start)
+        val s = Session(course)
+        s.handshake = start + 5_000
+        val (first, at) = s.untilStep()
+        assertEquals(Step.REBUILD, first)
+        course.rebuilt(at)
+
+        s.silent = true
+        assertEquals("a new credential while no relay answered", Step.HOLD, s.untilStep().first)
+        s.silent = false
+        assertEquals(Step.REBUILD_NEW_CREDENTIALS, s.untilStep().first)
+    }
+
+    // A handshake ends the hold, and a later silence is given the whole of it.
+    @Test
+    fun `a handshake ends the hold`() {
+        val course = WatchdogCourse(start)
+        val s = Session(course)
+        s.handshake = start + 5_000
+        s.silent = true
+        val (_, heldAt) = s.untilStep()
+
+        s.handshake = heldAt + 3_000
+        assertEquals(Step.NONE, s.poll())
+        val (again, againAt) = s.untilStep()
+        assertEquals(Step.HOLD, again)
+        val (step, at) = s.untilPastHolds()
+        assertEquals(Step.TEAR_DOWN, step)
+        assertTrue("the second silence was not given the whole hold", at - againAt >= SILENT_HOLD_MS)
+    }
+
+    // WireGuard gives up its initiations and an idle phone sends nothing, so tx
+    // stops growing and no poll reads as dead any more: the hold still runs out
+    // (Codex review, 19.10).
+    @Test
+    fun `the hold runs out with nothing sent`() {
+        val course = WatchdogCourse(start)
+        val s = Session(course)
+        s.handshake = start + 5_000
+        s.silent = true
+        val (held, heldAt) = s.untilStep()
+        assertEquals(Step.HOLD, held)
+
+        s.sending = false
+        val (step, at) = s.untilStep()
+        assertEquals(Step.TEAR_DOWN, step)
+        assertTrue("torn down before the hold was out", at - heldAt >= SILENT_HOLD_MS)
+        assertTrue("torn down later than the hold plus a poll", at - heldAt <= SILENT_HOLD_MS + pollMs)
+    }
+
+    // The network gone ends the hold; the one that comes back is given the whole
+    // of a new one, not the remains of the old.
+    @Test
+    fun `the network lost ends the hold`() {
+        val course = WatchdogCourse(start)
+        val s = Session(course)
+        s.handshake = start + 5_000
+        s.silent = true
+        assertEquals(Step.HOLD, s.untilStep().first)
+
+        s.network = false
+        repeat(20) { assertEquals(Step.NONE, s.poll()) }
+        s.network = true
+        val (step, at) = s.untilStep()
+        assertEquals("the hold outlived the network lost", Step.HOLD, step)
+        val (next, nextAt) = s.untilStep()
+        assertEquals(Step.TEAR_DOWN, next)
+        assertTrue(nextAt - at >= SILENT_HOLD_MS)
     }
 }

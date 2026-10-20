@@ -102,7 +102,7 @@ func TestTCPRelayPreferencesRespectOrphanedAllocations(t *testing.T) {
 	overTCP(t)
 	now := time.Now()
 	allocationBook.Lock()
-	orphanLocked(relayIdentity{user: "old", relay: electTestA}, now)
+	orphanLocked(relayIdentity{user: "old", relay: electTestA}, now, orphanSteerAt)
 	allocationBook.Unlock()
 	addrs := []string{electTestA, electTestB}
 	if got := streamAttemptOrder("old", addrs, 0, WorkerGroupConfig{}, now); got[0] != electTestB {

@@ -142,8 +142,14 @@ func connectRelayTCP(ctx context.Context, d *net.Dialer, addr string) (net.Conn,
 	}
 	c, err := dialRelayTCP(ctx, d, addr)
 	if err != nil {
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			// The relay's RST: heard, if not welcome (relay_silence.go).
+			noteRelayHeard(true)
+		}
 		return nil, err
 	}
+	// The relay's SYN-ACK: the relay heard (relay_silence.go).
+	noteRelayHeard(true)
 	// After the connect, so the SYN keeps its own, shorter limit above.
 	if tc, ok := c.(*net.TCPConn); ok {
 		if err := setTCPUserTimeout(tc, relayTCPUserTimeout); err != nil {

@@ -405,6 +405,16 @@ public final class TurnBackend {
      */
     public static native int wgTurnReadyStreams();
 
+    /**
+     * How long, in whole seconds, the path to the relays over the transport in use
+     * has been silent while the phone's network is up: a dark the streams found and
+     * still hold, or stalled sockets with no relay heard — 0 when it is not silent,
+     * -1 when no proxy is running. For the screen: Android can keep a network
+     * CONNECTED and VALIDATED for minutes while no relay answers over it, and that
+     * is the network, not the tunnel.
+     */
+    public static native int wgTurnPathSilentSeconds();
+
     /** {@link #wgTurnCheckVKLink}: the call is live and hands out TURN credentials. */
     public static final int LINK_CHECK_OK = 0;
     /** {@link #wgTurnCheckVKLink}: VK could not be reached or asked to come back later. */

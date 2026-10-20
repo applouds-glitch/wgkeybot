@@ -57,8 +57,8 @@ import (
 // quota gives the first woken worker has usually come back, and rotated the
 // credential or been held by the breaker (quota_breaker.go), before the next is
 // let go — the same as at a start; the worker that drew it sits out its cooldown,
-// which no proof cuts. Each attempt's order still steers around the allocations
-// the dark left orphaned (orphaned_allocations.go).
+// which no proof cuts. Each attempt's order still steers around a relay the dark
+// left crowded with orphaned allocations (orphaned_allocations.go).
 
 // proofWaits holds, per transport, the channel the next proof over it closes.
 var proofWaits = struct {
@@ -84,6 +84,7 @@ func nextPathProof(overTCP bool) <-chan struct{} {
 // its first round trip through the relay.
 func (s *stream) notePathProven() {
 	s.pathProofs.Add(1)
+	litPath(s.overTCP.Load())
 	i := proofTransport(s.overTCP.Load())
 	proofWaits.Lock()
 	close(proofWaits.next[i])
@@ -223,17 +224,17 @@ func awaitRevivalSlot(ctx context.Context, deadline time.Time) bool {
 // against a relay that did nothing; and an Allocate that gets through in a
 // flicker dies with the next dark, its release written into a dead socket: six
 // "release of our allocation … did not go out" in the 17.10 log, each an
-// orphaned allocation that steers the attempts after it and a 486 in waiting.
+// orphaned allocation that holds a seat at its relay and a 486 in waiting.
 //
 // Dark is what the streams that are still up say (pathLooksDark): one of them
 // at least is over TCP with its socket stalled — what it sends is not being
 // acknowledged (relay_tcp_watch.go) — and none has heard its relay for
 // pathDarkQuiet. Those sockets are the lookout: the kernel goes on
 // retransmitting on them at no cost to anyone, and the moment the path carries
-// again one of them moves or hears. So nothing is parked over UDP, where nothing
-// stalls, nor while no stream is up to keep that lookout: the worker that fails
-// last keeps trying on its own backoff, and a session of its getting through
-// releases the rest.
+// again one of them moves or hears. A dark found holds after the lookout is
+// gone, and is found without one too — over UDP, where nothing stalls — by an
+// attempt that heard no relay at all; then one parked worker scouts it
+// (dark_scout.go).
 //
 // Who is parked: a worker whose failure was the dark's (pathWideFailure), but
 // not a reset. A reset is the relay's packet reaching us, so the light is back:
@@ -242,11 +243,11 @@ func awaitRevivalSlot(ctx context.Context, deadline time.Time) bool {
 // into its write deadline — and the redial after it goes at once, as before.
 //
 // Released, the failure uncounted and the streak cleared, one at a time like the
-// workers a proof wakes: by a proof; by the path no longer looking dark — a
-// stream heard its relay, the stalled sockets moved again, or none is left (all
-// reset, or given up after relayTCPUserTimeout); by a move to another network or
-// transport; and after pathDarkParkMax whatever the lookout says, so a relay set
-// that has really died is still dialed.
+// workers a proof wakes: by a proof; by the path no longer dark — a stream heard
+// its relay, or a relay was heard over the transport since the dark was found
+// and no scout's attempt is still to tell what it was; by a move to another
+// network or transport. While the dark holds, pathDarkParkMax no longer ends a
+// park: a relay set that has really died is still dialed, by the scouts.
 
 var (
 	pathDarkQuiet   = 2 * time.Second // no relay heard for this long, with a socket stalled, is dark
@@ -322,6 +323,8 @@ func activeStreamSet() []*stream {
 func (s *stream) parkInTheDark(ctx context.Context, attempt *attemptHandle, st *workerBackoff) (stop bool) {
 	proven := nextPathProof(attempt.overTCP)
 	workerWaits(workerWait{stream: s.id, delay: pathDarkParkMax, wakeable: true, revivable: true, parked: true})
+	waitInTheDark(s, attempt.overTCP)
+	defer stopWaitingInTheDark(s, attempt.overTCP)
 	start := time.Now()
 	limit := time.NewTimer(pathDarkParkMax)
 	defer limit.Stop()
@@ -341,13 +344,42 @@ func (s *stream) parkInTheDark(ctx context.Context, attempt *attemptHandle, st *
 		case <-proven:
 			why = "another stream's session got through"
 		case <-poll.C:
-			if !pathLooksDark(activeStreamSet(), time.Now()) {
-				why = "the path no longer looks dark (a relay heard, or no socket stalled any more)"
+			now := time.Now()
+			if heardWithin(attempt.overTCP, activeStreamSet(), now, pathDarkQuiet) {
+				litPath(attempt.overTCP)
+				why = "a stream heard its relay"
+				break
+			}
+			if darkReleases(attempt.overTCP, now) {
+				why = "the path is no longer dark"
+				break
+			}
+			// Back in line every time: a reset of the dark (a network lost or
+			// back, the same handle) empties the line without waking anybody,
+			// and a dark found again before this worker looked would leave it
+			// waiting outside it for good (Codex review, 18.10).
+			waitInTheDark(s, attempt.overTCP)
+			if taken, changed := takeDarkScout(s, attempt.overTCP, now); taken {
+				if changed {
+					turnLog("[WORKER %d] its turn to scout the dark path over %s: dialing it while the others wait",
+						s.id, relayTransportLabel(attempt.overTCP))
+				}
+				st.failStreak = 0
+				st.scouting = true
+				return false
 			}
 		case <-limit.C:
+			if pathStillDark(attempt.overTCP) || darkScouted(s, attempt.overTCP, time.Now()) {
+				// The scouts dial it: nobody else needs to.
+				limit.Reset(pathDarkParkMax)
+				break
+			}
 			why = "parked for as long as a park may last"
 		}
 	}
+	// Out of the line before the wait for a slot: a dark found again meanwhile
+	// is not to wait on a worker that has already left.
+	stopWaitingInTheDark(s, attempt.overTCP)
 	if !awaitRevivalSlot(attempt.ctx, time.Now().Add(pathDarkParkMax)) && ctx.Err() != nil {
 		return true
 	}

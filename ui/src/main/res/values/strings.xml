@@ -106,6 +106,7 @@
     <string name="widget_status_handshake">Handshake…</string>
     <string name="widget_status_reconnecting">Reconnecting…</string>
     <string name="widget_status_waiting_network">Waiting for network…</string>
+    <string name="widget_status_silent">Relays not answering…</string>
     <string name="widget_status_failed">Connection failed</string>
     <string name="bad_config_context">%1$s\'s %2$s</string>
     <string name="bad_config_context_top_level">%s</string>
@@ -433,6 +434,9 @@
     <string name="wgk_headline_connected">Tunnel active</string>
     <string name="wgk_headline_reconnecting">Connection lost</string>
     <string name="wgk_headline_waiting_network">No network</string>
+    <string name="wgk_headline_silent_mobile">Relays not answering on mobile data</string>
+    <string name="wgk_headline_silent_wifi">Relays not answering on Wi‑Fi</string>
+    <string name="wgk_headline_silent_other">Relays not answering</string>
     <string name="wgk_headline_failed">Failed to connect</string>
 
     <string name="wgk_profile_name">Configuration</string>
@@ -461,6 +465,7 @@
     <string name="wgk_status_sub_connected">Connection established</string>
     <string name="wgk_status_sub_reconnecting">Server not responding, retrying</string>
     <string name="wgk_status_sub_waiting_network">No network connection. We will reconnect as soon as it is back</string>
+    <string name="wgk_status_sub_silent">The network is up, but the relays do not answer over it. We keep trying and will reconnect as soon as they do</string>
     <string name="wgk_status_sub_failed">Server unreachable, check your network</string>
 
     <!-- Terminal failures the app can name. Each has to fit the status card's

@@ -172,7 +172,14 @@ func noteNetworkState(handle int64, choice int32) {
 		networkSwitch.last = handle
 	}
 	networkMoved := handle != 0 && from != 0 && from != handle
-	choiceChanged := relayTransportChoice.Swap(choice) != choice
+	prevChoice := relayTransportChoice.Swap(choice)
+	choiceChanged := prevChoice != choice
+	// The running proxy's dials go over the other transport now, whether or
+	// not an attempt is there to recycle: a worker fetching its credential has
+	// none, and the dark of the transport left stayed behind with it — the
+	// screen said silent over a transport that worked (Codex review, 19.10).
+	useUDP := activeUseUDP.Load()
+	transportMoved := transportOverTCP(prevChoice, useUDP) != transportOverTCP(choice, useUDP)
 
 	var recycled []*networkAttempt
 	overTransport := 0
@@ -199,13 +206,17 @@ func noteNetworkState(handle int64, choice int32) {
 	case networkMoved:
 		resetServerHealth()
 		resetRelayConnectPacing()
+		resetDarkPaths()
 		ClearCache()
 		turnLog("[NETWORK] moved from network %d to %d: %d attempt(s) begun elsewhere recycled (sessions, dials and reconnect delays); server health and DNS cache reset",
 			from, handle, len(recycled))
 	case overTransport > 0:
 		resetServerHealth()
+		resetDarkPaths()
 		turnLog("[NETWORK] relay transport is now %s: %d attempt(s) on the other one recycled (sessions, dials and reconnect delays); server health reset",
 			relayTransportName(choice), overTransport)
+	case transportMoved:
+		resetDarkPaths()
 	}
 	for _, a := range recycled {
 		a.cancel()
@@ -221,6 +232,8 @@ func setNetworkState(handle int64, choice int32, now time.Time) {
 	noteBoundNetwork(handle, now)
 	noteNetworkState(handle, choice)
 	if setPhysicalPath(handle != 0) {
+		// Whatever the path was before, the one after a loss is another.
+		resetDarkPaths()
 		if handle != 0 {
 			turnLog("[NETWORK] physical network is back — workers released")
 		} else {

@@ -62,7 +62,8 @@ func fetchCreds(ctx context.Context, link string, groupID int) (user, pass strin
 // outage, not a bad host, and an empty list would leave the stream nothing to
 // dial; the next attempts re-probe all of them. Not in canonical order, though:
 // outageOrder puts a server that failed only Allocates ahead of one that
-// allocated and then failed the data plane, because the latter never fails over.
+// allocated and then failed the data plane, because the latter never fails over,
+// and spreads the streams' heads over the servers that carried.
 //
 // UDP used to route every stream to one elected relay. Spread, the downlink of
 // each relay pair carries half the traffic, and when one relay's downlink goes
@@ -73,6 +74,18 @@ func fetchCreds(ctx context.Context, link string, groupID int) (user, pass strin
 // Returns a fresh slice — addrs may alias the cached ServerAddrs slice (returned
 // by reference on a cache hit), so it must not be mutated in place.
 func assignRelays(addrs []string, streamID int, now time.Time) []string {
+	return assignRelaysAround(addrs, streamID, now, nil)
+}
+
+// assignRelaysAround is assignRelays with the relays in crowded — full of a
+// credential's ghosts (orphaned_allocations.go) — put behind the rest. The
+// streams are spread over the rest, rotated among them: rotated first and moved
+// after, every crowded relay would hand its streams to the relay behind it, the
+// heads of six streams over A…F with B C D crowded coming out A E E E E F
+// instead of A E F A E F. Periodic-download run 18.10, the dark at 21:30: with
+// one relay crowded and two more marked, 5 of the 10 streams came back on one
+// of the three left.
+func assignRelaysAround(addrs []string, streamID int, now time.Time, crowded map[string]bool) []string {
 	sorted := append([]string(nil), addrs...)
 	sort.Strings(sorted)
 	sorted = slices.Compact(sorted)
@@ -86,9 +99,20 @@ func assignRelays(addrs []string, streamID int, now time.Time) []string {
 		}
 	}
 	if len(live) == 0 {
-		return outageOrder(sorted)
+		return outageOrder(sorted, streamID, crowded)
 	}
-	return rotateServers(live, streamID%len(live))
+	var clean, full []string
+	for _, addr := range live {
+		if crowded[addr] {
+			full = append(full, addr)
+		} else {
+			clean = append(clean, addr)
+		}
+	}
+	if len(clean) == 0 || len(full) == 0 {
+		return rotateServers(live, streamID%len(live))
+	}
+	return append(rotateServers(clean, streamID%len(clean)), rotateServers(full, streamID%len(full))...)
 }
 
 // relayUsable reports whether addr has no verdict against it: not demoted, not
@@ -108,8 +132,14 @@ func hasOtherUsableRelay(relays []string, addr string, now time.Time) bool {
 	return false
 }
 
+// streamAttemptOrder is the order an attempt of the stream on user's credential
+// dials addrs in: its own relay first (assignRelays), with the relays crowded
+// with the credential's ghosts behind the rest.
 func streamAttemptOrder(user string, addrs []string, streamID int, cfg WorkerGroupConfig, now time.Time) []string {
-	return orderAroundOrphans(user, assignRelays(addrs, streamID, now), now)
+	crowded := crowdedRelays(user, addrs, now)
+	order := assignRelaysAround(addrs, streamID, now, crowded)
+	announceCrowded(user, crowded, order, now)
+	return order
 }
 
 // rotateServers returns list rotated so idx comes first, leaving the rest in

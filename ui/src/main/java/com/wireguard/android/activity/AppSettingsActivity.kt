@@ -20,11 +20,13 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
 import androidx.core.view.updatePadding
+import androidx.databinding.Observable
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.wireguard.android.Application
+import com.wireguard.android.BR
 import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
 import com.wireguard.android.databinding.AppSettingsActivityBinding
@@ -51,6 +53,8 @@ import com.wireguard.android.util.applicationScope
 import com.wireguard.android.util.localeWrapped
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -103,6 +107,7 @@ class AppSettingsActivity : AppCompatActivity() {
         tether = TetherToggle(this, this) { renderTether(Application.getTetherManager().state.value) }
 
         bindConnectionMode()
+        observeConnectionModeOffer()
         bindRelayTransport()
         bindAutoRefresh()
         bindTheme()
@@ -158,6 +163,37 @@ class AppSettingsActivity : AppCompatActivity() {
         renderConnectionMode()
     }
 
+    /**
+     * Whether the mode is offered follows the config (ConnectionMode.isOffered),
+     * which may not be loaded yet when this screen comes up — after the process
+     * was killed behind it — and may be replaced by a config refresh finishing
+     * while it is open. The tunnel reports the change from the IO thread, so the
+     * views are touched from the collector, not from the callback.
+     */
+    private fun observeConnectionModeOffer() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                val tunnel = Application.getTunnelManager().primaryTunnel()
+                if (tunnel == null) {
+                    renderConnectionMode()
+                    return@repeatOnLifecycle
+                }
+                callbackFlow {
+                    val callback = object : Observable.OnPropertyChangedCallback() {
+                        override fun onPropertyChanged(sender: Observable?, propertyId: Int) {
+                            if (propertyId == BR.turnSettings) trySend(Unit)
+                        }
+                    }
+                    tunnel.addOnPropertyChangedCallback(callback)
+                    // The first render comes after the callback is in, so a change
+                    // landing in between is not lost.
+                    trySend(Unit)
+                    awaitClose { tunnel.removeOnPropertyChangedCallback(callback) }
+                }.collect { renderConnectionMode() }
+            }
+        }
+    }
+
     private fun setConnectionMode(reserve: Boolean) {
         if (ConnectionMode.isReserve(this) == reserve) return
         ConnectionMode.setReserve(this, reserve)
@@ -165,6 +201,10 @@ class AppSettingsActivity : AppCompatActivity() {
     }
 
     private fun renderConnectionMode() {
+        // No choice to show for a config without a reserve mode (SRTP).
+        val offered = ConnectionMode.isOffered()
+        binding.wgkConnectionSection.isVisible = offered
+        if (!offered) return
         val reserve = ConnectionMode.isReserve(this)
         binding.wgkChoiceStandard.select(!reserve, R.color.wgk_primary)
         // The reserve transport is the non-default one, and it says so in warning

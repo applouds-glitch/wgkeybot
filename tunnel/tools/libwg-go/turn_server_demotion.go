@@ -84,7 +84,24 @@ func demotedLocked(h *serverHealth) bool {
 // watchdog tore the VPN down, in both sessions, every stream went to 193 and 91
 // was never dialled. Ranked this way 91 leads, and 193 is still reached as
 // failover whenever 91 does not answer.
-func outageOrder(sorted []string) []string {
+//
+// The streams do not all take the same head, though, when more than one server
+// has carried a round trip and none of those has failed one since: that leading
+// run is rotated by streamID, and stream 0 keeps the order exactly. Field run
+// 18.10 (TCP, Rostelecom): a path dark for two minutes stood every relay down —
+// relay_silence.go now keeps that from happening, this is the fallback should
+// all of them be stood down again — and once the light was back every stream
+// went to the relay with the freshest proof, seconds fresher than the rest: 8 of
+// the 10 came up on it, and 13 minutes later they were still there. Behind that
+// run the order stands — the unproven, then the demoted — so a relay that eats
+// the data plane still never leads one that carried (18.09).
+//
+// Within that run the relays crowded with the credential's ghosts
+// (orphaned_allocations.go) go behind the rest, rotated among them as in
+// assignRelaysAround — and no further: behind an unproven or a demoted relay a
+// crowded one would hand every stream to the very relay 18.09 is about, its
+// worst case a 486 against that one's dead data plane (Codex review, 18.10).
+func outageOrder(sorted []string, streamID int, crowded map[string]bool) []string {
 	serverHealthState.Lock()
 	defer serverHealthState.Unlock()
 
@@ -99,7 +116,30 @@ func outageOrder(sorted []string) []string {
 		}
 		return lastGoodLocked(hb).Compare(lastGoodLocked(ha))
 	})
-	return out
+	proven := 0
+	for _, addr := range out {
+		h := serverHealthState.byAddr[addr]
+		if lastGoodLocked(h).IsZero() || demotedLocked(h) {
+			break
+		}
+		proven++
+	}
+	if proven < 2 {
+		return out
+	}
+	var clean, full []string
+	for _, addr := range out[:proven] {
+		if crowded[addr] {
+			full = append(full, addr)
+		} else {
+			clean = append(clean, addr)
+		}
+	}
+	if len(clean) == 0 || len(full) == 0 {
+		return append(rotateServers(out[:proven], streamID%proven), out[proven:]...)
+	}
+	head := append(rotateServers(clean, streamID%len(clean)), rotateServers(full, streamID%len(full))...)
+	return append(head, out[proven:]...)
 }
 
 // lastGoodLocked is h.lastGood for a server that may have no entry yet.

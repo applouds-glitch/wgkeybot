@@ -218,45 +218,57 @@
                             android:visibility="gone" />
                     </LinearLayout>
 
-                    <TextView
+                    <!-- The mode, absent for a config that has no reserve mode to
+                         offer (SRTP: see ConnectionMode.isOffered). The gap to the
+                         next section is this one's bottom margin, so it goes with
+                         it, as with the update and sharing sections above. -->
+                    <LinearLayout
+                        android:id="@+id/wgk_connection_section"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginBottom="8dp"
-                        android:paddingStart="4dp"
-                        android:paddingEnd="4dp"
-                        android:text="@string/wgk_settings_section_connection"
-                        android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
+                        android:layout_marginBottom="@dimen/wgk_settings_section_gap"
+                        android:orientation="vertical">
 
-                    <com.google.android.material.card.MaterialCardView
-                        style="@style/Widget.WGKeyBot.InstrumentCard"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content">
-
-                        <LinearLayout
+                        <TextView
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:orientation="vertical">
+                            android:layout_marginBottom="8dp"
+                            android:paddingStart="4dp"
+                            android:paddingEnd="4dp"
+                            android:text="@string/wgk_settings_section_connection"
+                            android:textAppearance="@style/TextAppearance.WGKeyBot.SectionHeader" />
 
-                            <include
-                                android:id="@+id/wgk_choice_standard"
-                                layout="@layout/view_wgk_settings_choice_row"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content" />
+                        <com.google.android.material.card.MaterialCardView
+                            style="@style/Widget.WGKeyBot.InstrumentCard"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content">
 
-                            <View
+                            <LinearLayout
                                 android:layout_width="match_parent"
-                                android:layout_height="1dp"
-                                android:layout_marginStart="16dp"
-                                android:layout_marginEnd="16dp"
-                                android:background="@color/wgk_divider" />
+                                android:layout_height="wrap_content"
+                                android:orientation="vertical">
 
-                            <include
-                                android:id="@+id/wgk_choice_reserve"
-                                layout="@layout/view_wgk_settings_choice_row"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content" />
-                        </LinearLayout>
-                    </com.google.android.material.card.MaterialCardView>
+                                <include
+                                    android:id="@+id/wgk_choice_standard"
+                                    layout="@layout/view_wgk_settings_choice_row"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content" />
+
+                                <View
+                                    android:layout_width="match_parent"
+                                    android:layout_height="1dp"
+                                    android:layout_marginStart="16dp"
+                                    android:layout_marginEnd="16dp"
+                                    android:background="@color/wgk_divider" />
+
+                                <include
+                                    android:id="@+id/wgk_choice_reserve"
+                                    layout="@layout/view_wgk_settings_choice_row"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content" />
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
+                    </LinearLayout>
 
                     <!-- How the relays are reached. A card of its own rather than a
                          third row above: it is a separate question from the mode
@@ -265,7 +277,6 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="@dimen/wgk_settings_section_gap"
                         android:layout_marginBottom="8dp"
                         android:paddingStart="4dp"
                         android:paddingEnd="4dp"

@@ -19,7 +19,9 @@ import com.wireguard.android.backend.Tunnel
 import com.wireguard.android.fragment.TunnelFailure
 import com.wireguard.android.fragment.TunnelState
 import com.wireguard.android.fragment.TunnelStatePolicy
+import com.wireguard.android.fragment.SilentNetwork
 import com.wireguard.android.fragment.TunnelUiState
+import com.wireguard.android.turn.PhysicalNetworkChoice
 import com.wireguard.android.util.ScreenStateMonitor
 import com.wireguard.android.util.applicationScope
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +37,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Single source of truth for the user-facing tunnel state (Connecting / Handshake /
- * Connected / Reconnecting / Failed). Lives in the Application scope so both the
+ * Connected / Reconnecting / WaitingForNetwork / NetworkSilent / Failed). Lives in the Application scope so both the
  * fragment ViewModel and the home-screen widget can subscribe to the same state.
  *
  * The tracker watches the named tunnel; whenever [Tunnel.State.UP] it runs a stats
@@ -189,16 +191,25 @@ class TunnelStateTracker(private val context: Context) {
                     val tx = stats.totalTx()
                     val now = System.currentTimeMillis()
                     val turn = Application.getTurnProxyManager()
+                    // Both only for the tunnel the proxy is running for; -1 otherwise,
+                    // and from the proxy itself when it is not running.
+                    val ours = turn.activeTunnel == tunnel.name
                     val newState = TunnelStatePolicy.derive(
                         nowMs = now,
                         pollingStartedMs = pollingStartedMs,
                         lastHandshakeMs = lastHandshakeMs,
                         firstHandshakeSeenMs = firstHandshakeMs,
                         hasNetwork = turn.hasPhysicalNetwork,
-                        // Only for the tunnel the proxy is running for; -1 otherwise,
-                        // and from the proxy itself when it is not running.
-                        readyStreams = if (turn.activeTunnel == tunnel.name) TurnBackend.wgTurnReadyStreams() else -1,
+                        readyStreams = if (ours) TurnBackend.wgTurnReadyStreams() else -1,
+                        silentSeconds = if (ours) TurnBackend.wgTurnPathSilentSeconds() else -1,
                     )
+                    // Which network is quiet, asked only when one is.
+                    val silentNetwork = if (newState != TunnelState.NetworkSilent) SilentNetwork.Other
+                    else when (turn.physicalNetworkTransport) {
+                        PhysicalNetworkChoice.Transport.CELLULAR -> SilentNetwork.Mobile
+                        PhysicalNetworkChoice.Transport.WIFI -> SilentNetwork.WiFi
+                        PhysicalNetworkChoice.Transport.OTHER -> SilentNetwork.Other
+                    }
                     if (lastHandshakeMs != 0L && firstHandshakeMs == 0L) {
                         firstHandshakeMs = now
                         firstHandshakeElapsedMs = SystemClock.elapsedRealtime()
@@ -211,6 +222,7 @@ class TunnelStateTracker(private val context: Context) {
                         rxBytes = rx,
                         txBytes = tx,
                         failure = null,
+                        silentNetwork = silentNetwork,
                     ))
                 } catch (_: Exception) {
                     // Backend transient error — keep polling.

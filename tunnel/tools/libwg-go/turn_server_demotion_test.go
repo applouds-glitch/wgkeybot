@@ -142,9 +142,109 @@ func TestOutageFallbackPutsTheDataPlaneFailureLast(t *testing.T) {
 	}
 }
 
+// Field run 18.10: a path dark for two minutes stood every relay down, all of
+// them proven seconds apart, and every stream went to the freshest proof. The
+// streams take their heads in turn among the relays that carried — stream 0 the
+// freshest, as before — and a relay that failed its data plane leads nobody,
+// however fresh its proof.
+func TestOutageFallbackSpreadsTheStreamsOverTheRelaysThatCarried(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	const c, eater = "3.3.3.3:3478", "4.4.4.4:3478"
+	addrs := []string{electTestA, electTestB, c, eater}
+	proveServer(electTestA, 3*time.Second)
+	proveServer(electTestB, 2*time.Second)
+	proveServer(c, time.Second)
+	proveServer(eater, 500*time.Millisecond)
+	noteServerDemotedAt(eater, time.Now())
+	for _, addr := range addrs {
+		standDown(addr)
+	}
+
+	heads := map[string]int{}
+	for id := 0; id < 9; id++ {
+		got := assignRelays(addrs, id, time.Now())
+		if len(got) != len(addrs) || got[len(got)-1] != eater {
+			t.Fatalf("stream %d got %v: want the whole list, the demoted relay last", id, got)
+		}
+		heads[got[0]]++
+	}
+	for _, addr := range []string{electTestA, electTestB, c} {
+		if heads[addr] != 3 {
+			t.Fatalf("heads %v: want each relay that carried at the head of three streams' lists", heads)
+		}
+	}
+	if got := assignRelays(addrs, 0, time.Now())[0]; got != c {
+		t.Fatalf("stream 0 leads with %s, want the freshest proof %s", got, c)
+	}
+}
+
+// Every relay stood down, one that carried crowded with a credential's ghosts:
+// the streams spread over the others that carried, and it goes behind them —
+// but never behind a relay that ate the data plane, which would then lead
+// every stream (18.09).
+func TestOutageOrderStepsAroundACrowdedRelayOnlyAmongThoseThatCarried(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	const c = "3.3.3.3:3478"
+	addrs := []string{electTestA, electTestB, c}
+	proveServer(electTestA, 3*time.Second)
+	proveServer(electTestB, 2*time.Second)
+	proveServer(c, time.Second)
+	for _, addr := range addrs {
+		standDown(addr)
+	}
+	crowded := map[string]bool{electTestB: true}
+	heads := map[string]int{}
+	for id := 0; id < 6; id++ {
+		got := assignRelaysAround(addrs, id, time.Now(), crowded)
+		if got[2] != electTestB {
+			t.Fatalf("stream %d got %v: want the crowded relay behind the two others that carried", id, got)
+		}
+		heads[got[0]]++
+	}
+	if heads[electTestA] != 3 || heads[c] != 3 {
+		t.Fatalf("heads %v: want the two that carried and are not crowded taking turns", heads)
+	}
+
+	resetServerHealth()
+	proveServer(electTestA, time.Minute)
+	standDown(electTestA)
+	proveServer(electTestB, 10*time.Second)
+	noteServerDemotedAt(electTestB, time.Now())
+	for id := 0; id < 4; id++ {
+		got := assignRelaysAround([]string{electTestA, electTestB}, id, time.Now(), map[string]bool{electTestA: true})
+		if got[0] != electTestA {
+			t.Fatalf("stream %d got %v: a crowded relay went behind the one that eats the data plane", id, got)
+		}
+	}
+}
+
+// Only the relays that carried are spread over: while one has, a relay that
+// never did leads nobody.
+func TestOutageFallbackLeadsWithTheOnlyRelayThatCarried(t *testing.T) {
+	resetServerHealth()
+	defer resetServerHealth()
+
+	const c = "3.3.3.3:3478"
+	addrs := []string{electTestA, electTestB, c}
+	proveServer(electTestB, time.Minute)
+	for _, addr := range addrs {
+		standDown(addr)
+	}
+	for id := 0; id < 6; id++ {
+		if got := assignRelays(addrs, id, time.Now()); got[0] != electTestB {
+			t.Fatalf("stream %d got %v: want the only relay that carried, %s, first", id, got, electTestB)
+		}
+	}
+}
+
 // Among servers with the same kind of verdict, the one that carried traffic most
-// recently leads; with no proof on either side the canonical order stands, so
-// every group still starts on the same host.
+// recently leads (for stream 0; the others take turns, see above); with no proof
+// on either side the canonical order stands, so every group still starts on the
+// same host.
 func TestOutageFallbackPrefersTheFreshestProof(t *testing.T) {
 	resetServerHealth()
 	defer resetServerHealth()

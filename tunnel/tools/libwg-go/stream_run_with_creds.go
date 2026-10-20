@@ -231,7 +231,7 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 		case w := <-winCh:
 			err := s.runSession(ctx, w, cfg)
 			if outOfReachError(err) {
-				noteOutOfReach(user, w.addr, time.Now())
+				noteOutOfReach(user, w.addr, trackedAllocation(w.relay), time.Now())
 			}
 			return err
 		case <-connecting:
@@ -506,6 +506,10 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 	}
 	dialStart := time.Now()
 	perm := newPermWatch(s.id)
+	// Where the count of relays heard stood when this candidate began to wait on
+	// its relay (relay_silence.go): at the connect over TCP, at the Allocate
+	// over UDP.
+	var heard uint64
 
 	dialer := &net.Dialer{
 		Timeout: 30 * time.Second,
@@ -525,6 +529,7 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		if opts.connecting != nil {
 			opts.connecting()
 		}
+		heard = relayHeardMark(true)
 		c, err := connectRelayTCP(ctx, dialer, addr)
 		if err != nil {
 			// Over TCP the connect is the relay's first chance to be silent or to
@@ -535,10 +540,11 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 			if session == nil {
 				session = ctx
 			}
-			// Nor a local network failure or an isolated TCP flow failure
-			// while another stream is receiving from this same relay.
+			// Nor a local network failure, an isolated TCP flow failure while
+			// another stream is receiving from this same relay, or a silence no
+			// relay broke (relay_silence.go).
 			if session.Err() == nil && ctx.Err() == nil && !relayNotToBlame(err, dialStart) &&
-				!tcpAttemptFailureIsIsolated(addr, s, err) {
+				!tcpAttemptFailureIsIsolated(addr, s, err) && !silenceNotToBlame(err, true, heard, addr) {
 				noteServerFailure(addr)
 			}
 			return nil, nil, nil, 0, nil, fmt.Errorf("TURN TCP dial: %w", err)
@@ -549,7 +555,8 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 			opts.connected(true)
 		}
 	}
-	responses := &allocateResponseConn{PacketConn: turnConn, remote: raw.RemoteAddr().String()}
+	// Everything the relay's socket delivers is the relay heard (relay_silence.go).
+	responses := &allocateResponseConn{PacketConn: relayHeardConn{turnConn, overTCP}, remote: raw.RemoteAddr().String()}
 
 	// This socket is only used for TURN, never STUN Binding discovery. With
 	// STUNServerAddr set, pion ends its receive loop on the first datagram from
@@ -613,6 +620,12 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 	if opts.allocating != nil {
 		opts.allocating(slot)
 	}
+	if !overTCP {
+		// Over UDP nothing has gone to the relay before this request; over TCP
+		// the window opened with the connect, which, accepted, was the relay
+		// heard.
+		heard = relayHeardMark(false)
+	}
 	allocStart := time.Now()
 	relay, err := client.Allocate()
 	err = responses.allocationError(err)
@@ -642,9 +655,10 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		// Nor an Allocate the phone's own network failed: a write the local stack
 		// refused, or silence while the network was leaving (relayNotToBlame).
 		// Over TCP a live sibling also excuses transport failure or silence;
-		// explicit TURN refusals keep their existing handling.
+		// explicit TURN refusals keep their existing handling. Nor a silence no
+		// relay broke while it lasted (relay_silence.go).
 		if session.Err() == nil && !isQuotaError(err) && !isAllocateMismatch(err) && !relayNotToBlame(err, dialStart) &&
-			(!overTCP || !tcpAttemptFailureIsIsolated(addr, s, err)) {
+			(!overTCP || !tcpAttemptFailureIsIsolated(addr, s, err)) && !silenceNotToBlame(err, overTCP, heard, addr) {
 			noteServerFailure(addr)
 		}
 		return nil, nil, nil, 0, nil, fmt.Errorf("TURN allocate: %w", err)

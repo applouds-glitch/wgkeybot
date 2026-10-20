@@ -1400,6 +1400,20 @@ func wgTurnReadyStreams() C.int {
 	return C.int(readyStreamCount())
 }
 
+// wgTurnPathSilentSeconds is how long the path to the relays over the transport
+// in use has been silent, in whole seconds (pathSilence): 0 when it is not, -1
+// when no proxy is running. For the screen, which tells relays the network no
+// longer reaches from a tunnel at fault, and for the handshake watchdog.
+//
+//export wgTurnPathSilentSeconds
+func wgTurnPathSilentSeconds() C.int {
+	set := activeStreams.Load()
+	if set == nil {
+		return -1
+	}
+	return C.int(pathSilence(*set, relayTransportInUse(), time.Now()) / time.Second)
+}
+
 // wgTurnProxyWake tells every keepalive loop that the host is back: the user
 // unlocked the device (ACTION_USER_PRESENT → TurnProxyManager.onUserPresent).
 // Each stream then asks its relay whether its allocation is still there
@@ -1463,6 +1477,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	clearTransientState() // flush DNS without clearing credential caches
 	resetServerHealth()   // new credentials, usually a new server list
 	resetRelayConnectPacing()
+	resetDarkPaths()
 	resetWorkerFatalState(0) // re-armed with the real worker count in StartTunnelGroups
 
 	// The system DNS list is not read here: it belongs to wgSetNetwork, which has

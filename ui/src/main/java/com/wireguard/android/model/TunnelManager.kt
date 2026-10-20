@@ -31,6 +31,7 @@ import com.wireguard.android.R
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Statistics
 import com.wireguard.android.backend.Tunnel
+import com.wireguard.android.backend.TurnBackend
 import com.wireguard.android.configStore.ConfigStore
 import com.wireguard.android.databinding.ObservableSortedKeyedArrayList
 import com.wireguard.android.fragment.TunnelFailure
@@ -892,10 +893,17 @@ class TunnelManager(
                     else
                         "Handshake watchdog: physical network is back for ${tunnel.name} — counting again")
                 }
-                when (val step = course.poll(now, latestHandshake, tx, hasNetwork)) {
+                // No relay answering over the network holds the rebuilds (see
+                // WatchdogCourse): asked only of the proxy running for this tunnel.
+                val pathSilent = getTurnProxyManager().activeTunnel == tunnel.name &&
+                    TurnBackend.wgTurnPathSilentSeconds() > 0
+                when (val step = course.poll(now, latestHandshake, tx, hasNetwork, pathSilent)) {
                     WatchdogCourse.Step.NONE -> Unit
                     WatchdogCourse.Step.RECOVERED ->
                         Log.i(TAG, "Handshake watchdog: ${tunnel.name} handshakes again after the rebuild")
+                    WatchdogCourse.Step.HOLD ->
+                        Log.i(TAG, "Handshake watchdog: ${tunnel.name} has no working connection, and no relay answers " +
+                            "over the network — not rebuilding: a new transport or credential would not reach them either")
                     WatchdogCourse.Step.REBUILD, WatchdogCourse.Step.REBUILD_NEW_CREDENTIALS -> {
                         Log.w(TAG, "Handshake watchdog: ${tunnel.name} has no working connection — " +
                             "rebuild ${course.rebuilds}/${WatchdogCourse.REBUILDS}")

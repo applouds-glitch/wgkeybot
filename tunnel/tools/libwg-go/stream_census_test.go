@@ -17,7 +17,7 @@ func TestReadyStreamCount(t *testing.T) {
 	}
 
 	streams := []*stream{{id: 0}, {id: 1}, {id: 2}}
-	withdraw := publishStreams(streams)
+	withdraw := publishStreams(streams, false)
 	if got := readyStreamCount(); got != 0 {
 		t.Fatalf("a proxy with no stream up: %d, want 0", got)
 	}
@@ -31,7 +31,7 @@ func TestReadyStreamCount(t *testing.T) {
 	// published another: it must not take that one down.
 	next := []*stream{{id: 0}}
 	next[0].ready.Store(true)
-	withdrawNext := publishStreams(next)
+	withdrawNext := publishStreams(next, false)
 	withdraw()
 	if got := readyStreamCount(); got != 1 {
 		t.Fatalf("the old proxy's withdrawal took the new proxy's streams down: %d", got)

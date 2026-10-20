@@ -75,6 +75,27 @@ internal object HandshakeWatchdog {
  * [HandshakeWatchdog.REBUILT_GRACE_MS] to handshake, measured from the rebuild.
  * A handshake after a rebuild means it worked, and a later failure starts over
  * from the first step.
+ *
+ * Neither rebuild is made while the proxy says no relay answers over the
+ * network (wgTurnPathSilentSeconds): a verdict then is [Step.HOLD]. The dark
+ * spells of 18.10 and 08.10 were the phone's network carrying nothing for two
+ * to seven minutes while Android called it up; a rebuild in one restarted the
+ * proxy, which forgot the dark and sent every worker dialing into it again,
+ * and the second dropped the cached credential for a VK request that could
+ * not get through — and, once the network was back, cost a fetch the cache
+ * would have spared, a captcha's chance included. The scouts dial the dark
+ * meanwhile (dark_scout.go), and whatever relay answers them ends it. The
+ * tunnel still goes down: [SILENT_HOLD_MS] after the verdict held, checked on
+ * every poll while the relays stay silent — not on the next verdict, which
+ * needs tx to grow, and an idle phone sends nothing once WireGuard gives up
+ * its initiations: the hold would never have run out (Codex review, 19.10).
+ * With the screen on that is about the ~9 minutes the steps it stands for
+ * would take; with it off the polls are minutes apart, and it comes later.
+ * Only a handshake since the hold began, or the network gone, ends it early.
+ * Should the relays be dead rather than the network, no new credential —
+ * another relay list — is tried while the silence lasts; nothing tells the two
+ * apart from here, and the cache is what is kept. A verdict with the relays
+ * answering again takes the step that was next.
  */
 internal class WatchdogCourse(startedAt: Long) {
     enum class Step {
@@ -90,6 +111,9 @@ internal class WatchdogCourse(startedAt: Long) {
         /** Rebuild it on a new credential (one VK request). */
         REBUILD_NEW_CREDENTIALS,
 
+        /** A verdict while no relay answers over the network: wait, rebuild nothing. */
+        HOLD,
+
         /** Give up: take the tunnel down. */
         TEAR_DOWN,
     }
@@ -100,22 +124,36 @@ internal class WatchdogCourse(startedAt: Long) {
     private var prevTx = -1L
     private var deadPolls = 0
 
+    // When the verdict over a silent path was held; 0 while none is.
+    private var heldSince = 0L
+
     /** Rebuilds since the last handshake; 0 while the session is healthy. */
     var rebuilds = 0
         private set
 
-    fun poll(now: Long, latestHandshake: Long, tx: Long, hasPhysicalNetwork: Boolean): Step {
+    /** [pathSilent]: the tunnel's own proxy hears no relay over the network (see above). */
+    fun poll(now: Long, latestHandshake: Long, tx: Long, hasPhysicalNetwork: Boolean, pathSilent: Boolean = false): Step {
         val handshake = if (latestHandshake >= since) latestHandshake else 0L
         val recovered = handshake != 0L && rebuilds > 0
         if (recovered) rebuilds = 0
+        if (heldSince != 0L && (!hasPhysicalNetwork || latestHandshake >= heldSince)) heldSince = 0L
         val dead = HandshakeWatchdog.isDeadPoll(now, since, handshake, tx, prevTx, hasPhysicalNetwork, graceMs)
         prevTx = tx
+        if (heldSince != 0L && pathSilent) {
+            deadPolls = 0
+            return if (now - heldSince >= SILENT_HOLD_MS) Step.TEAR_DOWN else Step.NONE
+        }
         if (!dead) {
             deadPolls = 0
             return if (recovered) Step.RECOVERED else Step.NONE
         }
         if (++deadPolls < DEAD_POLLS) return Step.NONE
         deadPolls = 0
+        if (pathSilent) {
+            heldSince = now
+            return Step.HOLD
+        }
+        heldSince = 0L
         return when {
             rebuilds >= REBUILDS -> Step.TEAR_DOWN
             rebuilds++ == 0 -> Step.REBUILD
@@ -137,5 +175,9 @@ internal class WatchdogCourse(startedAt: Long) {
 
         // Rebuilds before the tunnel is taken down; all but the first on a new credential.
         const val REBUILDS = 2
+
+        // How long a verdict over a silent path is held before the tunnel goes
+        // down: the two rebuild steps it stands for, ~2.5 minutes each.
+        const val SILENT_HOLD_MS = 5 * 60_000L
     }
 }

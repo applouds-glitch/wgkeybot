@@ -19,13 +19,26 @@ import "sync/atomic"
 // activeStreams is the stream set of the proxy that is running, nil when none is.
 var activeStreams atomic.Pointer[[]*stream]
 
-// publishStreams makes streams the set readyStreamCount counts, and returns the
-// call that withdraws it — only if it is still the one published: a stop that
-// drains slowly must not take the next start's set down with it.
-func publishStreams(streams []*stream) (withdraw func()) {
+// activeUseUDP is the running proxy's config transport (#@wgt:UseUDP): with the
+// choice in force it says which transport the dials go over (relayTransportInUse).
+var activeUseUDP atomic.Bool
+
+// publishStreams makes streams the set readyStreamCount counts, over a config
+// that says useUDP, and returns the call that withdraws it — only if it is still
+// the one published: a stop that drains slowly must not take the next start's
+// set down with it.
+func publishStreams(streams []*stream, useUDP bool) (withdraw func()) {
 	set := &streams
+	activeUseUDP.Store(useUDP)
 	activeStreams.Store(set)
 	return func() { activeStreams.CompareAndSwap(set, nil) }
+}
+
+// relayTransportInUse reports whether the running proxy's dials go over TCP now.
+// Not what a stream last ran over: a worker fetching its credential has no
+// attempt, and its last session may be on the transport just left.
+func relayTransportInUse() bool {
+	return transportOverTCP(relayTransportChoice.Load(), activeUseUDP.Load())
 }
 
 // readyStreamCount is the number of streams handed to the dispatcher, or -1 when
