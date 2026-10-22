@@ -10,6 +10,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -190,6 +192,109 @@ func TestNoDTLSFailsTheStreamWhenTheRelayNeverAnswers(t *testing.T) {
 		}
 	case <-time.After(relayProofTimeout + 5*time.Second):
 		t.Fatal("a silent relay never failed the stream")
+	}
+}
+
+// ...and the verdict is the relay's silence. Giving up on the proof cancels the
+// session, the cancel closes the relay conn under the RX goroutine, and its
+// "use of closed network connection" used to take the verdict's place: the
+// stream failed as if its socket had broken, and pathWideFailure, which knows a
+// proof unanswered, never saw one (found 20.10 while widening the UDP proof
+// window). Over TCP the code path is the same; only the limit is its own.
+func TestNoDTLSSilentRelayFailsWithItsSilence(t *testing.T) {
+	for _, tcp := range []bool{false, true} {
+		name := "UDP"
+		if tcp {
+			name = "TCP"
+		}
+		t.Run(name, func(t *testing.T) {
+			defer resetServerHealth()
+			resetServerHealth()
+
+			s, relayConn := newNoDTLSTestStream(t)
+			if tcp {
+				s.overTCP.Store(true)
+				shortTCPRelayProof(t, relayProofTimeout)
+			}
+			peer := fakeRelay(t, nil)
+
+			err := runNoDTLSUntilItEnds(t, s, relayConn, peer, relayProofTimeout+5*time.Second)
+			if !errors.Is(err, errDataPlaneHandshake) || !errors.Is(err, errRelayNeverAnswered) {
+				t.Fatalf("a silent relay failed the stream with %v, not with its silence", err)
+			}
+			if !pathWideFailure(err) {
+				t.Fatalf("%v is not read as a silence the whole path may share", err)
+			}
+		})
+	}
+}
+
+// A session that broke before the limit still says why itself: the relay closed
+// under it — runSession's blackhole watchdog does that — is a failure of its
+// own, and the verdict the limit would have given later knows nothing of it.
+func TestNoDTLSFailureBeforeTheProofLimitKeepsItsCause(t *testing.T) {
+	defer resetServerHealth()
+	resetServerHealth()
+
+	s, relayConn := newNoDTLSTestStream(t)
+	peer := fakeRelay(t, nil)
+	time.AfterFunc(relayProbeInterval/2, func() { relayConn.Close() })
+
+	start := time.Now()
+	err := runNoDTLSUntilItEnds(t, s, relayConn, peer, relayProofTimeout+5*time.Second)
+	if !errors.Is(err, errDataPlaneHandshake) || !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("a relay closed under the stream failed it with %v", err)
+	}
+	if errors.Is(err, errRelayNeverAnswered) {
+		t.Fatalf("a relay closed after %v was blamed for not answering: %v", relayProbeInterval/2, err)
+	}
+	if took := time.Since(start); took >= relayProofTimeout {
+		t.Fatalf("the stream waited out the proof limit (%v) on a relay already closed", took)
+	}
+}
+
+// A probe the phone's own stack refused is the network leaving under the stream,
+// not the relay failing it. relayNotToBlame reads that from the errno, which the
+// closed relay conn hid as it hid the silence.
+func TestNoDTLSProbeRefusedLocallyKeepsItsErrno(t *testing.T) {
+	defer resetServerHealth()
+	resetServerHealth()
+
+	s, relayConn := newNoDTLSTestStream(t)
+	peer := fakeRelay(t, nil)
+
+	err := runNoDTLSUntilItEnds(t, s, refusingProbes{relayConn}, peer, relayProofTimeout+5*time.Second)
+	if !errors.Is(err, errDataPlaneHandshake) || !errors.Is(err, syscall.ENETUNREACH) {
+		t.Fatalf("a probe the stack refused failed the stream with %v", err)
+	}
+	if !relayNotToBlame(err, time.Now()) {
+		t.Fatalf("%v was held against the relay", err)
+	}
+}
+
+// refusingProbes lets the session header out and refuses every STUN probe, as
+// the stack does once the route has gone.
+type refusingProbes struct{ net.PacketConn }
+
+func (c refusingProbes) WriteTo(b []byte, addr net.Addr) (int, error) {
+	if isStunKeepalive(b) {
+		return 0, &net.OpError{Op: "write", Net: "udp", Addr: addr, Err: os.NewSyscallError("sendto", syscall.ENETUNREACH)}
+	}
+	return c.PacketConn.WriteTo(b, addr)
+}
+
+func runNoDTLSUntilItEnds(t *testing.T, s *stream, relayConn net.PacketConn, peer *net.UDPAddr, within time.Duration) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.runNoDTLS(ctx, relayConn, peer) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(within):
+		t.Fatalf("runNoDTLS still running after %v", within)
+		return nil
 	}
 }
 

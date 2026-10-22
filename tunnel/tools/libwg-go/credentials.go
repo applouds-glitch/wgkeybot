@@ -15,7 +15,8 @@ import (
 	"time"
 )
 
-// TurnCredentials stores cached TURN credentials.
+// TurnCredentials stores cached TURN credentials. A slot's are also kept on
+// disk, to outlive the process (turn_creds_store.go).
 type TurnCredentials struct {
 	Username    string
 	Password    string
@@ -123,8 +124,11 @@ func getStreamCache(streamID int) *StreamCredentialsCache {
 // group goes to VK for a new identity (see wgTurnDropCredentials).
 func invalidateAllCaches() {
 	credentialsStore.mu.Lock()
-	defer credentialsStore.mu.Unlock()
 	credentialsStore.caches = make(map[int]*StreamCredentialsCache)
+	credentialsStore.mu.Unlock()
+	// On disk as well: the new identity is wanted after the process's death too.
+	clearSlotCreds()
+	saveTurnCreds(time.Now())
 	turnLog("[Auth] All credential caches cleared (streamsPerCred=%d)", streamsPerCredValue())
 }
 
@@ -188,6 +192,9 @@ func refreshGroupCreds(groupID int, user string) {
 	cache.refreshMu.Unlock()
 
 	lived := expireCredsLocked(cache)
+	// The file no longer offers the rejected credential to the next process.
+	noteSlotCreds(groupID, cache.creds)
+	saveTurnCreds(time.Now())
 	turnLog("[Auth] Credential cache for group %d force-expired (lived %v)", groupID, lived)
 }
 
@@ -284,6 +291,10 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 		FetchedAt:   time.Now(),
 		Link:        link,
 	}
+	// Written with the slot's lock held: once per trip to VK, with the group's
+	// other workers waiting on that trip anyway (turn_creds_store.go).
+	noteSlotCreds(cacheID, cache.creds)
+	saveTurnCreds(time.Now())
 	// A lifetime, not a wall-clock time: Go on Android formats in UTC, while
 	// logcat stamps the line in local time, so "until 04:55" on a line stamped
 	// 06:56 read as creds that had expired two hours ago.

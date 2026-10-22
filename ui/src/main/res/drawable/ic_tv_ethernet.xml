@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A wired network, for the network pill of the TV main screen. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M9,2h6v6h-6zM2,16h6v6h-6zM16,16h6v6h-6zM5,16v-3a1,1 0,0 1,1 -1h12a1,1 0,0 1,1 1v3M12,12v-4"
+        android:strokeWidth="2"
+        android:strokeColor="@android:color/white"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

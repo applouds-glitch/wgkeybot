@@ -12,8 +12,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.res.ColorStateList
-import android.content.pm.PackageManager
-import android.content.res.Configuration
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
@@ -43,7 +44,6 @@ import com.wireguard.android.databinding.TunnelListFragmentBinding
 import com.wireguard.android.databinding.ViewWgkConnectButtonBinding
 import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.model.TunnelManager
-import com.wireguard.android.turn.ConnectionMode
 import com.wireguard.android.util.ApiClient
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.ErrorMessages
@@ -70,6 +70,8 @@ import com.wireguard.android.util.ConnectionImportErrors
 import com.wireguard.android.util.ConnectionLink
 import com.wireguard.android.updater.UpdateActivity
 import com.wireguard.android.updater.UpdatePolicy
+import com.wireguard.android.activity.AppSettingsActivity
+import com.wireguard.android.util.isTv
 import com.wireguard.android.widget.TvTokenKeyboard
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -157,12 +159,15 @@ class TunnelListFragment : BaseFragment() {
         binding?.apply {
             wgkConnectButtonView.wgkConnectBtn.setOnClickListener { toggleWgKeybot() }
             wgkFooterRow.wgkSplitBtn.setOnClickListener { openSplitTunnelDialog() }
-            // TV only: the phone screen moved this row to the settings screen, so
-            // on a phone this view is absent and the binding field is null.
-            wgkFooterRow.wgkConnectionModeBtn?.setOnClickListener {
-                ConnectionMode.showDialog(requireContext()) { updateConnectionModeButton() }
+            // TV only, so on a phone these views are absent and the fields null.
+            // The configuration row takes the place of the profile card's two
+            // round buttons; the settings row is the way into the settings, a TV
+            // having no action bar and so no gear.
+            wgkFooterRow.wgkConfigBtn?.setOnClickListener { showTvConfigDialog() }
+            wgkFooterRow.wgkSettingsBtn?.setOnClickListener {
+                startActivity(Intent(requireContext(), AppSettingsActivity::class.java))
             }
-            updateConnectionModeButton()
+            wgkTvVersion?.text = getString(R.string.wgk_tv_version, BuildConfig.VERSION_NAME)
             wgkProfileCard.wgkRefreshBtn.setOnClickListener { refreshConfig() }
             // TV keeps its on-screen control; phones use AppSettingsActivity.
             wgkProfileCard.wgkAutoRefreshBtn?.setOnClickListener { toggleAutoRefresh() }
@@ -216,18 +221,17 @@ class TunnelListFragment : BaseFragment() {
         super.onViewCreated(view, savedInstanceState)
         observeSessionClock()
         binding?.wgkTetherPanel?.let { tetherPanel?.bind(it, viewLifecycleOwner) }
-        // Whether the mode row is there depends on the config, which is not
-        // known until the tunnels have loaded.
-        viewLifecycleOwner.lifecycleScope.launch {
-            Application.getTunnelManager().getTunnels()
-            updateConnectionModeButton()
-        }
     }
 
     override fun onResume() {
         super.onResume()
         refreshButtonState()
-        updateConnectionModeButton()
+        // Asked for by the TV settings' "Refresh now", which closes itself to
+        // let the refresh run here, where its progress and outcome are shown.
+        if (refreshOnResume) {
+            refreshOnResume = false
+            refreshConfig()
+        }
     }
 
     override fun onDestroyView() {
@@ -365,6 +369,8 @@ class TunnelListFragment : BaseFragment() {
             b.wgkTetherPanel?.root?.isVisible = tetherPanel != null
             b.wgkSharingDivider?.isVisible = tetherPanel != null
             b.wgkFooterRow.root.isVisible = true
+            b.wgkTvControl?.isVisible = true
+            renderTvHeader(b, authed = true)
 
             if (isTv()) {
                 // Give the D-pad an explicit landing spot when the control UI
@@ -433,11 +439,7 @@ class TunnelListFragment : BaseFragment() {
         SplitTunnelWizardFragment().show(childFragmentManager, TAG_SPLIT_WIZARD)
     }
 
-    private fun isTv(): Boolean {
-        val uiType = resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK
-        return uiType == Configuration.UI_MODE_TYPE_TELEVISION ||
-               requireContext().packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
-    }
+    private fun isTv(): Boolean = requireContext().isTv()
 
     private fun showNoAuthContainer(b: TunnelListFragmentBinding, expired: Boolean) {
         vm.notifyTunnelDown()
@@ -449,13 +451,25 @@ class TunnelListFragment : BaseFragment() {
         b.wgkQuickControls?.isVisible = false
         b.wgkTetherPanel?.root?.isVisible = false
         b.wgkFooterRow.root.isVisible = false
+        b.wgkTvControl?.isVisible = false
+        renderTvHeader(b, authed = false)
 
-        b.wgkNoKeyTitle.text = getString(
-            if (expired) R.string.wgk_expired_title else R.string.wgk_no_key_title
-        )
-        b.wgkNoKeySubtitle.text = getString(
-            if (expired) R.string.wgk_expired_subtitle else R.string.wgk_no_key_subtitle
-        )
+        // The TV asks for the key in its own words: it is typed, never pasted or
+        // opened from a link, and the card under them says where it comes from.
+        // An expired subscription reads the same on both.
+        val tvKeyCard = b.wgkTvKeyCard
+        b.wgkNoKeyTitle.text = getString(when {
+            expired -> R.string.wgk_expired_title
+            tvKeyCard != null -> R.string.wgk_tv_no_key_title
+            else -> R.string.wgk_no_key_title
+        })
+        b.wgkNoKeySubtitle.text = getString(when {
+            expired -> R.string.wgk_expired_subtitle
+            tvKeyCard != null -> R.string.wgk_tv_no_key_subtitle
+            else -> R.string.wgk_no_key_subtitle
+        })
+        tvKeyCard?.isVisible = !expired
+        b.wgkTvKeyFootnote?.isVisible = !expired
         b.wgkBotLinkBtn.setOnClickListener {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/wg_key_bot")))
         }
@@ -547,11 +561,16 @@ class TunnelListFragment : BaseFragment() {
             renderConnectButton(b, ui, from = prev?.state)
             renderStatusChrome(b, ui, from = prev?.state)
             renderActionSlot(b, ui)
+            // The tunnel's state moves whenever the network under it does
+            // (waiting for a network, back again), so this is where the TV's
+            // network pill catches a change without a callback of its own.
+            renderTvNetworkPill(b)
         }
         renderSessionMetrics(b, ui, prev)
     }
 
     private fun renderProfile(b: TunnelListFragmentBinding, ui: TunnelUiState) {
+        renderTvConfigRow(b)
         val loaded = formatLoadedAt(ui.configLoadedAt)
         b.wgkProfileCard.wgkProfileLoaded.text = if (isTv()) loaded else formatLoadedAt(ui.configLoadedAt, compact = true)
         if (!isTv()) {
@@ -796,10 +815,25 @@ class TunnelListFragment : BaseFragment() {
             else -> R.color.wgk_on_surface
         }
         sz.wgkStatusHeadline.setTextColor(ContextCompat.getColor(requireContext(), headlineColor))
-        sz.wgkStatusSub.setText(statusSubRes(ui))
-        sz.wgkStageContainer.visibility = if (!isConnected || finishStages) View.VISIBLE else View.INVISIBLE
-        sz.wgkMetricsContainer.visibility = if (isConnected && !finishStages) View.VISIBLE else View.INVISIBLE
-        if (finishStages && completionDrawable != null) {
+        val tvSession = b.wgkTvSession
+        sz.wgkStatusSub.setText(if (tvSession != null) tvHintRes(ui) else statusSubRes(ui))
+        if (tvSession != null) {
+            // TV: the stage bars stay under the ring for good, green once
+            // connected, and the figures have a card of their own on the right,
+            // which says nothing until there is a session to count.
+            sz.wgkStageContainer.visibility = View.VISIBLE
+            sz.wgkMetricsContainer.visibility = View.GONE
+            if (!isConnected) {
+                val empty = getString(R.string.wgk_status_metric_empty)
+                tvSession.wgkUptimeValue.text = empty
+                tvSession.wgkReceivedValue.text = empty
+                tvSession.wgkSentValue.text = empty
+            }
+        } else {
+            sz.wgkStageContainer.visibility = if (!isConnected || finishStages) View.VISIBLE else View.INVISIBLE
+            sz.wgkMetricsContainer.visibility = if (isConnected && !finishStages) View.VISIBLE else View.INVISIBLE
+        }
+        if (tvSession == null && finishStages && completionDrawable != null) {
             lateinit var listener: DynamicAnimation.OnAnimationEndListener
             listener = DynamicAnimation.OnAnimationEndListener { _, _, _, _ ->
                 completionDrawable.removeSpringAnimationEndListener(listener)
@@ -880,7 +914,9 @@ class TunnelListFragment : BaseFragment() {
                         if (startedAt == 0L) return@collectLatest
                         while (isActive) {
                             val elapsedMs = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
-                            binding?.wgkStatusZone?.wgkUptimeValue?.text = formatUptime(elapsedMs / 1000)
+                            val uptime = formatUptime(elapsedMs / 1000)
+                            binding?.wgkStatusZone?.wgkUptimeValue?.text = uptime
+                            binding?.wgkTvSession?.wgkUptimeValue?.text = uptime
                             // Align to the next session second, avoiding accumulated
                             // drift and catching up immediately after background/sleep.
                             delay(1000L - elapsedMs % 1000L)
@@ -901,8 +937,14 @@ class TunnelListFragment : BaseFragment() {
         if (prev != null && prev.state == ui.state &&
             prev.rxBytes == ui.rxBytes && prev.txBytes == ui.txBytes) return
 
-        sz.wgkReceivedValue.text = QuantityFormatter.formatTechnicalBytes(ui.rxBytes)
-        sz.wgkSentValue.text = QuantityFormatter.formatTechnicalBytes(ui.txBytes)
+        val rx = QuantityFormatter.formatTechnicalBytes(ui.rxBytes)
+        val tx = QuantityFormatter.formatTechnicalBytes(ui.txBytes)
+        sz.wgkReceivedValue.text = rx
+        sz.wgkSentValue.text = tx
+        b.wgkTvSession?.let {
+            it.wgkReceivedValue.text = rx
+            it.wgkSentValue.text = tx
+        }
     }
 
     // ── Refresh config ─────────────────────────────────────────────────────────
@@ -985,6 +1027,7 @@ class TunnelListFragment : BaseFragment() {
     }
 
     private fun renderAutoRefreshControl(b: TunnelListFragmentBinding) {
+        renderTvConfigRow(b)
         val enabled = AuthStore.getInstance(requireContext()).isAutoRefreshEnabled()
         val colorRes = if (enabled) R.color.wgk_primary else R.color.wgk_on_surface_variant
         b.wgkProfileCard.wgkAutoRefreshBtn?.apply {
@@ -1037,8 +1080,8 @@ class TunnelListFragment : BaseFragment() {
     private suspend fun finishConfigUpdate(tunnel: ObservableTunnel, reconnect: Boolean, showFeedback: Boolean) {
         recordConfigLoaded()
         refreshButtonState()
-        // A new config may bring or take away the reserve mode (ConnectionMode.isOffered).
-        updateConnectionModeButton()
+        // A new config may bring or take away the reserve mode (ConnectionMode.isOffered),
+        // which the phone's gear shows in its colour.
         activity?.invalidateOptionsMenu()
         if (reconnect && tunnel.state == Tunnel.State.UP) {
             vm.notifyConnecting()
@@ -1084,12 +1127,14 @@ class TunnelListFragment : BaseFragment() {
             interpolator = LinearInterpolator()
             start()
         }
+        binding?.let { renderTvConfigRow(it, refreshing = true) }
     }
 
     private fun stopRefreshAnim() {
         refreshAnim?.cancel()
         refreshAnim = null
         binding?.wgkProfileCard?.wgkRefreshBtn?.rotation = 0f
+        binding?.let { renderTvConfigRow(it, refreshing = false) }
     }
 
     // ── Version check ──────────────────────────────────────────────────────────
@@ -1326,38 +1371,146 @@ class TunnelListFragment : BaseFragment() {
 
     // TV only: the phone screen moved this row to the settings screen, so on a
     // phone every view here is absent and the binding fields are null.
-    private fun updateConnectionModeButton() {
-        val b = binding ?: return
-        val fr = b.wgkFooterRow
-        val btn = fr.wgkConnectionModeBtn ?: return
-        // No row for a config without a reserve mode (SRTP). The D-pad chain
-        // names the row, so its neighbours are pointed past it while it is gone:
-        // below API 26 focus does not follow the chain through a hidden view.
-        val offered = ConnectionMode.isOffered()
-        btn.isVisible = offered
-        val below = if (offered) R.id.wgk_connection_mode_btn else R.id.wgk_split_btn
-        b.wgkProfileCard.wgkAutoRefreshBtn?.nextFocusDownId = below
-        b.wgkProfileCard.wgkRefreshBtn.nextFocusDownId = below
-        fr.wgkSplitBtn.nextFocusUpId = if (offered) R.id.wgk_connection_mode_btn else R.id.wgk_auto_refresh_btn
-        if (!offered) return
-        val isReserve = ConnectionMode.isReserve(requireContext())
-        val activeColor = ContextCompat.getColor(requireContext(), R.color.wgk_warning)
-        fr.wgkConnectionModeValue?.setText(
-            if (isReserve) R.string.wgk_connection_mode_reserve_value
-            else R.string.wgk_connection_mode_standard_value
+    // ── Android TV ─────────────────────────────────────────────────────────────
+
+    /**
+     * The TV's configuration row opens this: the two round buttons of the
+     * profile card, which the TV layout no longer shows, as two actions a remote
+     * can pick. Both go through the code the buttons used.
+     */
+    private fun showTvConfigDialog() {
+        val auth = AuthStore.getInstance(requireContext())
+        val items = arrayOf(
+            getString(R.string.wgk_tv_config_refresh_now),
+            getString(
+                if (auth.isAutoRefreshEnabled()) R.string.wgk_tv_config_auto_turn_off
+                else R.string.wgk_tv_config_auto_turn_on
+            ),
         )
-        fr.wgkConnectionModeValue?.setTextColor(
-            if (isReserve) activeColor
-            else ContextCompat.getColor(requireContext(), R.color.wgk_on_surface)
-        )
-        fr.wgkConnectionModeIcon?.imageTintList = ColorStateList.valueOf(
-            if (isReserve) activeColor
-            else ContextCompat.getColor(requireContext(), R.color.wgk_on_surface_variant)
-        )
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.wgk_profile_name)
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> refreshConfig()
+                    else -> toggleAutoRefresh()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    /**
+     * "Loaded at 19:10 · auto-refresh", or "Refreshing…" while a refresh runs:
+     * the configuration row says what the profile card and its spinning refresh
+     * button used to. [refreshing] is passed by the refresh animation, which
+     * stops before the in-progress flag is cleared.
+     */
+    private fun renderTvConfigRow(b: TunnelListFragmentBinding, refreshing: Boolean = vm.refreshInProgress) {
+        val value = b.wgkFooterRow.wgkConfigValue ?: return
+        if (refreshing) {
+            value.setText(R.string.wgk_tv_config_refreshing)
+            return
+        }
+        val ts = vm.uiState.value.configLoadedAt
+        val loaded = formatLoadedAt(ts)
+        val auto = AuthStore.getInstance(requireContext()).isAutoRefreshEnabled()
+        value.text = if (auto && ts != 0L) getString(R.string.wgk_tv_config_value_auto, loaded) else loaded
+    }
+
+    /** The hint line under the TV's state: what OK does at rest, the detail otherwise. */
+    private fun tvHintRes(ui: TunnelUiState): Int = when (ui.state) {
+        TunnelState.Disconnected -> R.string.wgk_tv_hint_connect
+        TunnelState.Connected -> R.string.wgk_tv_hint_disconnect
+        else -> statusSubRes(ui)
+    }
+
+    /** The header pills: shown once there is a key, so not on the first-run screen. */
+    private fun renderTvHeader(b: TunnelListFragmentBinding, authed: Boolean) {
+        b.wgkTvNetPill?.isVisible = authed
+        if (authed) renderTvNetworkPill(b)
+        val subPill = b.wgkTvSubPill ?: return
+        val until = if (authed) subscriptionUntil() else null
+        subPill.isVisible = until != null
+        if (until != null) b.wgkTvSubLabel?.text = getString(R.string.wgk_tv_subscription_until, until)
+    }
+
+    /**
+     * The day the subscription runs to, as the user's locale writes a day and a
+     * month ("12 ноября", "November 12"), with the year only when it is not this
+     * one. Null without a date, or with the epoch the refresh writes to mark a
+     * rejected key.
+     */
+    private fun subscriptionUntil(): String? {
+        val raw = AuthStore.getInstance(requireContext()).getSubscriptionExpiresAt() ?: return null
+        val expires = try {
+            java.time.Instant.parse(raw)
+        } catch (_: Exception) {
+            return null
+        }
+        if (expires.epochSecond <= 0L) return null
+        val locale = resources.configuration.locales[0]
+        val date = Date(expires.toEpochMilli())
+        val year = SimpleDateFormat("yyyy", locale)
+        val skeleton = if (year.format(date) == year.format(Date())) "dMMMM" else "dMMMMyyyy"
+        return SimpleDateFormat(android.text.format.DateFormat.getBestDateTimePattern(locale, skeleton), locale)
+            .format(date)
+    }
+
+    /**
+     * The network pill: what the TV is on, and the Wi-Fi's name when Android
+     * gives it out (it does only with the location permission granted, which
+     * this app does not ask for on a TV, so "Wi-Fi" alone is the usual case).
+     *
+     * While the tunnel is up the default network is the VPN, so the physical one
+     * is looked for among all of them, a wire before a radio, as Android itself
+     * prefers when both are up.
+     */
+    private fun renderTvNetworkPill(b: TunnelListFragmentBinding) {
+        val label = b.wgkTvNetLabel ?: return
+        val context = context ?: return
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return
+        @Suppress("DEPRECATION") // allNetworks: the default network is the tunnel itself.
+        val physical = cm.allNetworks.mapNotNull { cm.getNetworkCapabilities(it) }
+            .filter {
+                it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    !it.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            }
+        val (icon, text) = when {
+            physical.any { it.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) } ->
+                R.drawable.ic_tv_ethernet to getString(R.string.wgk_tv_net_ethernet)
+            physical.any { it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) } ->
+                R.drawable.ic_tv_wifi to wifiLabel(context)
+            physical.any { it.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) } ->
+                R.drawable.ic_status_antenna to getString(R.string.wgk_tv_net_mobile)
+            else -> R.drawable.ic_tv_wifi to getString(R.string.wgk_tv_net_none)
+        }
+        b.wgkTvNetIcon?.setImageResource(icon)
+        label.text = text
+    }
+
+    private fun wifiLabel(context: Context): String {
+        val wifi = getString(R.string.wgk_tv_net_wifi)
+        val wm = context.applicationContext.getSystemService(WifiManager::class.java) ?: return wifi
+        @Suppress("DEPRECATION") // connectionInfo: the replacement needs a network callback for one name.
+        val ssid = wm.connectionInfo?.ssid?.removeSurrounding("\"").orEmpty()
+        return if (ssid.isBlank() || ssid == WifiManager.UNKNOWN_SSID) wifi
+        else getString(R.string.wgk_tv_net_named, wifi, ssid)
     }
 
     companion object {
         private const val TAG = "WireGuard/TunnelListFragment"
+
+        /**
+         * Set by the TV settings screen's "Refresh now", cleared by the next
+         * onResume, which runs the refresh. Process memory only: a refresh asked
+         * for by a screen that did not survive the process is not owed.
+         */
+        @Volatile
+        private var refreshOnResume = false
+
+        fun requestConfigRefresh() {
+            refreshOnResume = true
+        }
         private const val TAG_SPLIT_WIZARD = "split_wizard"
 
         /** Cross-fade of the whole connect control on a state change. Long enough

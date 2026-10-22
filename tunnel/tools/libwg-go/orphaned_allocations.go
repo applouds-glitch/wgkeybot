@@ -333,6 +333,29 @@ func noteBoundNetwork(handle int64, now time.Time) {
 	}
 }
 
+// noteCredsFromEarlierProcess takes user, a credential read back from disk
+// (turn_creds_store.go), as one with ghosts on every one of relays: the process
+// that fetched it may have died with its allocations up, and nothing says how
+// many, on which relays or how long ago. Each relay is marked crowded — counted
+// as orphanSteerAt ghosts, half the quota — for the whole allocation lifetime
+// from now, under the rules a lost network applies to the allocations it
+// strands (orphanLocked): a mark already in force only grows. And the
+// credential counts as one allocations were accepted on, so that a 486 on it is
+// its own quota, not a relay refusing fresh credentials (quota_breaker.go).
+//
+// With every relay of the credential crowded the dial order stands as it is
+// (assignRelaysAround): there is nowhere better to go, and a 486 takes the
+// ordinary rotation. The marks keep the book honest meanwhile — a 486 beside an
+// orphan mark is never read as our own release settling (settlingQuotaError).
+func noteCredsFromEarlierProcess(user string, relays []string, now time.Time) {
+	allocationBook.Lock()
+	defer allocationBook.Unlock()
+	allocationBook.succeeded[user] = true
+	for _, relay := range relays {
+		orphanLocked(relayIdentity{user: user, relay: relay}, now, orphanSteerAt)
+	}
+}
+
 // orphanSteerAt is how many of a credential's ghosts on a relay make it crowded:
 // half of VK's quota of about ten (see above). Beside fewer there is room for
 // the one or two streams the spread sends there.

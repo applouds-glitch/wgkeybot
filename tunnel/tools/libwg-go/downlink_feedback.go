@@ -113,6 +113,9 @@ func (r *downlinkReporter) update(streams []*stream, now time.Time) {
 			continue
 		}
 		ready++
+		// Deaf by the dispatcher's measure: silent past dispatchStaleAfter, or
+		// found silent under load while its siblings were heard
+		// (silent_under_load.go) — the server skips it from the next report.
 		if s.id >= 0 && s.id < 256 && !s.dispatchStale(now) {
 			mask.add(byte(s.id))
 		} else {

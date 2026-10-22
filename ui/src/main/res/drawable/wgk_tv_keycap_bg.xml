@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ A remote key drawn in the hint lines at the foot of the TV screens
+  ~ ("OK open", "◀ to the connect button"): an outlined cap, not focusable.
+  -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="@dimen/wgk_tv_keycap_radius" />
+    <stroke
+        android:width="@dimen/wgk_tv_keycap_stroke"
+        android:color="@color/wgk_outline_variant" />
+</shape>

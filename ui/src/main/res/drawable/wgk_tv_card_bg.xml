@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ A resting card on the TV screens (the session card, the "where to get a key"
+  ~ card): wgk_surface_container with the mock's 24px corner, halved.
+  -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="@dimen/wgk_tv_card_radius" />
+    <solid android:color="@color/wgk_surface_container" />
+</shape>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ AppSettingsActivity slims the choice rows of the cards that are set once
+  ~ (transport, theme) from code, with these two values. On the TV those rows
+  ~ are the option rows of the settings pane, whose height and padding carry the
+  ~ focus halo (see view_wgk_settings_choice_row in layout-television), so the
+  ~ slim row there is the full TV row.
+  -->
+<resources>
+    <dimen name="wgk_settings_choice_compact_min">@dimen/wgk_tv_option_view_min</dimen>
+    <dimen name="wgk_settings_choice_compact_pad">@dimen/wgk_tv_option_view_pad_v</dimen>
+</resources>

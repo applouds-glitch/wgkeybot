@@ -15,6 +15,8 @@
     <color name="wgk_outline">@color/md_theme_dark_outline</color>
     <color name="wgk_outline_variant">@color/md_theme_dark_outlineVariant</color>
     <color name="wgk_primary_12">#1FA4C9FE</color>
+    <!-- The TV focus halo: wgk_primary at 18% (wgk_tv_focus_bg). -->
+    <color name="wgk_primary_18">#2EA4C9FE</color>
     <color name="wgk_primary_30">#4DA4C9FE</color>
     <color name="wgk_warning">#FFFFB870</color>
     <color name="wgk_error">#FFFFB4AB</color>

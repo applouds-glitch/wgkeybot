@@ -38,6 +38,13 @@ import (
 // wiped by a reconnect or by a move to another network — neither changes that
 // path.
 //
+// Nor by the process dying. On a Lenovo TB-X705L (Android 9, field log of
+// 2026-10-20) Android killed the app 40-95 s after almost every disconnect, and
+// every connect then put five of nine streams back on 90.156.234.252, which lost
+// 3-13% of the downlink until the judge rested it again — 40 s to 10.5 min
+// later, and always for 30 minutes: the relapse rule never saw the verdict
+// before. So the marks are kept on disk as well (relay_rest_store.go).
+//
 // A relay with nothing to compare it with — the only one left, or pinned — is
 // not rested; when its downlink collapses under the sessions on it, that is
 // logged (relay_collapse.go).
@@ -90,43 +97,51 @@ func relayRestKeyLocked(addr string) string { return addr + "→" + relayRest.pe
 // relayResting reports whether addr is resting from the current server's traffic.
 func relayResting(addr string, now time.Time) bool {
 	relayRest.Lock()
-	defer relayRest.Unlock()
 	key := relayRestKeyLocked(addr)
 	m, ok := relayRest.marks[key]
+	var resting, returned bool
 	switch {
 	case !ok:
-		return false
 	case now.Before(m.until):
-		return true
+		resting = true
 	case !m.returned:
 		m.returned = true
 		relayRest.marks[key] = m
-		turnLog("[RELAY LOSS] %s has rested %v — back in rotation", addr, m.rest)
+		returned = true
 	case now.Sub(m.until) >= relayRestRelapse:
 		delete(relayRest.marks, key) // out of trouble: the next verdict starts over
 	}
-	return false
+	relayRest.Unlock()
+	if returned {
+		turnLog("[RELAY LOSS] %s has rested %v — back in rotation", addr, m.rest)
+		saveRelayRest(now)
+	}
+	return resting
 }
 
 // noteRelayResting rests addr and returns for how long.
 func noteRelayResting(addr string, now time.Time) time.Duration {
 	relayRest.Lock()
-	defer relayRest.Unlock()
 	key := relayRestKeyLocked(addr)
 	rest := relayRestFor
 	if m, ok := relayRest.marks[key]; ok && now.Sub(m.until) < relayRestRelapse {
 		rest = min(2*m.rest, relayRestMax)
 	}
 	relayRest.marks[key] = relayRestMark{until: now.Add(rest), rest: rest}
+	relayRest.Unlock()
+	saveRelayRest(now)
 	return rest
 }
 
 // runRelayLossJudge reads the downlink loss per relay every relayJudgeEvery for
 // the life of the proxy. A relay that loses alone rests and its sessions move
 // to the others (relay_judge.go); a relay whose downlink collapsed is logged
-// (relay_collapse.go).
+// (relay_collapse.go). Every relayLossLogEvery windows it logs the order the
+// downlink came in (relay_order.go).
 func runRelayLossJudge(ctx context.Context) {
 	downlinkRelayLoss.reset()
+	downlinkRelayOrder.reset(time.Now())
+	noteLossyRelays(nil, time.Time{})
 	var judge relayJudge
 	var collapse relayCollapseJudge
 	collapseLogged := map[string]time.Time{}
@@ -145,6 +160,14 @@ func runRelayLossJudge(ctx context.Context) {
 			turnLog("[RELAY LOSS] last %v: %s; %d lost on no relay in particular",
 				relayJudgeEvery, formatRelayLoss(samples, streams), unplaced)
 		}
+		if n%relayLossLogEvery == 0 {
+			if order := downlinkRelayOrder.take(now); order.got > 0 {
+				turnLog("[RELAY ORDER] %s", order)
+			}
+		}
+		// Before the verdicts: the sessions they move dial the relays losing in
+		// this same window last (relay_move.go).
+		noteLossyRelays(lossyRelays(samples), now)
 		restJudgedRelays(ctx, judge.step(samples), now)
 		for _, relay := range collapse.step(samples, streams, relayJudgeEvery) {
 			if now.Sub(collapseLogged[relay]) < relayCollapseLogEvery {
@@ -178,10 +201,19 @@ func restJudgedRelays(ctx context.Context, verdicts []relayVerdict, now time.Tim
 		resting = append(resting, rested{v, noteRelayResting(v.relay, now)})
 	}
 	for _, r := range resting {
-		moved, stayed := recycleRelaySessions(ctx, r.relay, now)
-		turnLog("[RELAY LOSS] %s lost %.1f%% of the downlink against %.1f%% through the best relay, %d windows running — resting it for %v, %d session(s) moved off, %d left on it with no other relay of their link to go to",
-			r.relay, 100*r.rate, 100*r.best, relayJudgeStrikes, r.rest, moved, stayed)
+		moved, stayed, last := recycleRelaySessions(ctx, r.relay, now)
+		turnLog("[RELAY LOSS] %s lost %.1f%% of the downlink against %.1f%% through the best relay, %d windows running — resting it for %v, %d session(s) moved off, %d left on it with no other relay of their link to go to%s",
+			r.relay, 100*r.rate, 100*r.best, relayJudgeStrikes, r.rest, moved, stayed, dialedLastNote(moved, last))
 	}
+}
+
+// dialedLastNote is the tail of a verdict's line naming the relays the moved
+// sessions dial last for losing in the window (relay_move.go), if any.
+func dialedLastNote(moved int, last []string) string {
+	if moved == 0 || len(last) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; they dial %s last, losing in this window", strings.Join(last, ", "))
 }
 
 func sampleFor(samples []relayLossSample, relay string) relayLossSample {
@@ -234,10 +266,12 @@ func formatRelayLoss(samples []relayLossSample, streams map[string]int) string {
 // recycleRelaySessions moves the sessions now running on addr whose link has
 // another usable relay: each attempt is recycled the way a network move
 // recycles it (network_switch.go), so its worker reconnects at once and without
-// counting a failure — and, the relay resting, onto another one. It returns how
-// many it moves and how many stay.
-func recycleRelaySessions(ctx context.Context, addr string, now time.Time) (moved, stayed int) {
+// counting a failure — and, the relay resting, onto another one, the relays
+// losing in the latest window dialed last (relay_move.go). It returns how many
+// it moves, how many stay, and the relays the moved ones dial last.
+func recycleRelaySessions(ctx context.Context, addr string, now time.Time) (moved, stayed int, last []string) {
 	type session struct {
+		stream  *stream
 		attempt *networkAttempt
 		relays  *[]string
 	}
@@ -245,13 +279,17 @@ func recycleRelaySessions(ctx context.Context, addr string, now time.Time) (move
 	var sessions []session
 	for s := range liveSessions.byRelay[addr] {
 		if a := s.attempt.Load(); a != nil {
-			sessions = append(sessions, session{a, s.relays.Load()})
+			sessions = append(sessions, session{s, a, s.relays.Load()})
 		}
 	}
 	liveSessions.Unlock()
+	lossy := lossyRelaysAt(now)
 	var attempts []*networkAttempt
 	for _, s := range sessions {
 		if s.relays != nil && hasOtherUsableRelay(*s.relays, addr, now) {
+			if lossy != nil {
+				s.stream.moveLossy.Store(&relayMove{lossy: lossy, at: now})
+			}
 			attempts = append(attempts, s.attempt)
 		} else {
 			stayed++
@@ -269,5 +307,5 @@ func recycleRelaySessions(ctx context.Context, addr string, now time.Time) (move
 			recycleAttempt(a)
 		}
 	}()
-	return len(attempts), stayed
+	return len(attempts), stayed, dialedLast(lossy, addr, now)
 }

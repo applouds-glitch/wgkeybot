@@ -1,105 +1,109 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-  ~ Android TV variant of the footer rows.
-  ~ Taller rows (52 dp) and an explicit D-pad chain; the focused look comes from
-  ~ the state_focused branch of wgk_row_pill_bg.
-  ~ IDs must match layout/view_wgk_footer_row.xml (same ViewBinding class).
+  ~ Android TV variant of the footer: the one D-pad list of the mock's right
+  ~ column, three rows: Конфигурация, Раздельное туннелирование, Настройки.
+  ~ The split row keeps the ids of layout/view_wgk_footer_row.xml (same binding
+  ~ class); the other two are TV only, so their binding fields are nullable.
+  ~
+  ~ There is no connection-mode row any more: on TV the mode is chosen in the
+  ~ settings, as on the phone, which leaves this list with nothing that comes
+  ~ and goes, so its D-pad chain is fixed here and nothing in code repoints it.
+  ~ Up and down walk the list and stop at its ends; left from any row goes back
+  ~ to the connect button, and right stays put.
+  ~
+  ~ Each row is its visible size plus a focus halo on every side (see
+  ~ wgk_tv_focus_bg), so the rows overlap by wgk_tv_row_view_overlap, and the
+  ~ card and the hint beside the list are moved in by a halo to line up.
   -->
-<layout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto">
+<layout xmlns:android="http://schemas.android.com/apk/res/android">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center_horizontal"
         android:orientation="vertical">
 
+        <!-- OK opens a dialog: refresh now, auto-refresh on or off. -->
         <LinearLayout
-            android:id="@+id/wgk_connection_mode_btn"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:background="@drawable/wgk_row_pill_bg"
-            android:clickable="true"
-            android:defaultFocusHighlightEnabled="false"
-            android:focusable="true"
-            android:gravity="center_vertical"
+            android:id="@+id/wgk_config_btn"
+            style="@style/Widget.WGKeyBot.Tv.Row"
             android:nextFocusDown="@id/wgk_split_btn"
-            android:nextFocusUp="@id/wgk_auto_refresh_btn"
-            android:orientation="horizontal"
-            android:paddingStart="18dp"
-            android:paddingEnd="18dp">
+            android:nextFocusLeft="@id/wgk_connect_btn"
+            android:nextFocusRight="@id/wgk_config_btn"
+            android:nextFocusUp="@id/wgk_config_btn">
 
             <ImageView
-                android:id="@+id/wgk_connection_mode_icon"
-                android:layout_width="18dp"
-                android:layout_height="18dp"
+                style="@style/Widget.WGKeyBot.Tv.RowIcon"
                 android:contentDescription="@null"
-                android:src="@drawable/ic_vpn_arrow"
-                app:tint="@color/wgk_on_surface_variant" />
+                android:src="@drawable/ic_cloud" />
 
             <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:layout_weight="1"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:text="@string/wgk_connection_mode_title"
-                android:textAppearance="?attr/textAppearanceLabelMedium"
-                android:textColor="@color/wgk_on_surface_variant" />
+                style="@style/Widget.WGKeyBot.Tv.RowTitle"
+                android:text="@string/wgk_profile_name" />
 
             <TextView
-                android:id="@+id/wgk_connection_mode_value"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:text="@string/wgk_connection_mode_standard_value"
-                android:textAppearance="?attr/textAppearanceLabelMedium"
-                android:textColor="@color/wgk_on_surface" />
+                android:id="@+id/wgk_config_value"
+                style="@style/Widget.WGKeyBot.Tv.RowValue"
+                android:text="@string/wgk_profile_never_loaded" />
+
+            <ImageView
+                style="@style/Widget.WGKeyBot.Tv.RowChevron"
+                android:contentDescription="@null" />
         </LinearLayout>
 
         <LinearLayout
             android:id="@+id/wgk_split_btn"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="8dp"
-            android:background="@drawable/wgk_row_pill_bg"
-            android:clickable="true"
-            android:defaultFocusHighlightEnabled="false"
-            android:focusable="true"
-            android:gravity="center_vertical"
-            android:nextFocusUp="@id/wgk_connection_mode_btn"
-            android:orientation="horizontal"
-            android:paddingStart="18dp"
-            android:paddingEnd="18dp">
+            style="@style/Widget.WGKeyBot.Tv.Row"
+            android:layout_marginTop="@dimen/wgk_tv_row_view_overlap"
+            android:nextFocusDown="@id/wgk_settings_btn"
+            android:nextFocusLeft="@id/wgk_connect_btn"
+            android:nextFocusRight="@id/wgk_split_btn"
+            android:nextFocusUp="@id/wgk_config_btn">
 
             <ImageView
                 android:id="@+id/wgk_split_icon"
-                android:layout_width="18dp"
-                android:layout_height="18dp"
+                style="@style/Widget.WGKeyBot.Tv.RowIcon"
                 android:contentDescription="@null"
-                android:src="@drawable/ic_call_split"
-                app:tint="@color/wgk_on_surface_variant" />
+                android:src="@drawable/ic_call_split" />
 
             <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:layout_weight="1"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:text="@string/wgk_action_split_tunneling"
-                android:textAppearance="?attr/textAppearanceLabelMedium"
-                android:textColor="@color/wgk_on_surface_variant" />
+                style="@style/Widget.WGKeyBot.Tv.RowTitle"
+                android:text="@string/wgk_action_split_tunneling" />
 
             <TextView
                 android:id="@+id/wgk_split_value"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:text="@string/wgk_split_off_value"
-                android:textAppearance="?attr/textAppearanceLabelMedium"
-                android:textColor="@color/wgk_on_surface_variant" />
+                style="@style/Widget.WGKeyBot.Tv.RowValue"
+                android:text="@string/wgk_split_off_value" />
+
+            <ImageView
+                style="@style/Widget.WGKeyBot.Tv.RowChevron"
+                android:contentDescription="@null" />
         </LinearLayout>
 
+        <!-- The way into AppSettingsActivity: a TV has no action bar, so no gear. -->
+        <LinearLayout
+            android:id="@+id/wgk_settings_btn"
+            style="@style/Widget.WGKeyBot.Tv.Row"
+            android:layout_marginTop="@dimen/wgk_tv_row_view_overlap"
+            android:nextFocusDown="@id/wgk_settings_btn"
+            android:nextFocusLeft="@id/wgk_connect_btn"
+            android:nextFocusRight="@id/wgk_settings_btn"
+            android:nextFocusUp="@id/wgk_split_btn">
+
+            <ImageView
+                style="@style/Widget.WGKeyBot.Tv.RowIcon"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_settings" />
+
+            <TextView
+                style="@style/Widget.WGKeyBot.Tv.RowTitle"
+                android:text="@string/wgk_settings_title" />
+
+            <TextView
+                style="@style/Widget.WGKeyBot.Tv.RowValue"
+                android:text="@string/wgk_tv_settings_row_value" />
+
+            <ImageView
+                style="@style/Widget.WGKeyBot.Tv.RowChevron"
+                android:contentDescription="@null" />
+        </LinearLayout>
     </LinearLayout>
 </layout>

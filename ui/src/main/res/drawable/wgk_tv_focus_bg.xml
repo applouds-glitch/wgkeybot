@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ The one focus look of every focusable element on Android TV, after the
+  ~ mock's box-shadow: a ring of wgk_tv_focus_ring in wgk_primary just outside
+  ~ the element, and around it a halo of the same colour at 18% out to
+  ~ wgk_tv_focus_halo.
+  ~
+  ~ A background cannot paint outside its view, so the view reserves the room:
+  ~ it is its visible size plus a halo on every side, every state draws the
+  ~ element inset by the halo, and focus fills that margin with the ring and the
+  ~ halo. The element keeps its size when focus lands on it, as in the mock,
+  ~ instead of shrinking to make room for its own glow. Layouts use the
+  ~ *_view_* tokens of dimens_tv.xml for that (size plus halo, neighbours
+  ~ overlapping by what the visible gap leaves over).
+  ~
+  ~ Resting fill wgk_surface_container, focused wgk_surface_container_high, as
+  ~ the mock's two surfaces. Variants: _section (keeps the chosen section lit
+  ~ while focus is in the pane beside it), _outline (no fill, a border), _primary
+  ~ (the filled call to action).
+  -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item android:state_focused="true">
+        <layer-list>
+            <!-- Halo: the outer band, out to the view's edge. -->
+            <item>
+                <shape android:shape="rectangle">
+                    <corners android:radius="@dimen/wgk_tv_focus_halo_radius" />
+                    <solid android:color="@color/wgk_primary_18" />
+                </shape>
+            </item>
+            <!-- Ring: just outside the element. -->
+            <item
+                android:bottom="@dimen/wgk_tv_focus_ring_inset"
+                android:left="@dimen/wgk_tv_focus_ring_inset"
+                android:right="@dimen/wgk_tv_focus_ring_inset"
+                android:top="@dimen/wgk_tv_focus_ring_inset">
+                <shape android:shape="rectangle">
+                    <corners android:radius="@dimen/wgk_tv_focus_ring_radius" />
+                    <solid android:color="@color/wgk_primary" />
+                </shape>
+            </item>
+            <!-- The element itself, at its resting size. -->
+            <item
+                android:bottom="@dimen/wgk_tv_focus_halo"
+                android:left="@dimen/wgk_tv_focus_halo"
+                android:right="@dimen/wgk_tv_focus_halo"
+                android:top="@dimen/wgk_tv_focus_halo">
+                <shape android:shape="rectangle">
+                    <corners android:radius="@dimen/wgk_tv_row_radius" />
+                    <solid android:color="@color/wgk_surface_container_high" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <item android:state_pressed="true">
+        <inset
+            android:inset="@dimen/wgk_tv_focus_halo">
+            <shape android:shape="rectangle">
+                <corners android:radius="@dimen/wgk_tv_row_radius" />
+                <solid android:color="@color/wgk_surface_container_high" />
+            </shape>
+        </inset>
+    </item>
+    <item>
+        <inset
+            android:inset="@dimen/wgk_tv_focus_halo">
+            <shape android:shape="rectangle">
+                <corners android:radius="@dimen/wgk_tv_row_radius" />
+                <solid android:color="@color/wgk_surface_container" />
+            </shape>
+        </inset>
+    </item>
+</selector>

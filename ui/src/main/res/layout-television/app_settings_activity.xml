@@ -1,0 +1,512 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Android TV variant of the settings screen, after the TV mock (Settings): a
+  ~ header with a back button, then two panes. Left, the sections, each with its
+  ~ current value; right, the options of the section in focus, a title, a hint
+  ~ and an explanatory note under them. Right from a section goes to its
+  ~ options, left from an option back to its section, OK chooses, Back leaves.
+  ~ AppSettingsActivity wires the panes (bindTvPanes); everything else it binds
+  ~ exactly as on the phone, so no setting is stored twice.
+  ~
+  ~ IDs must match layout/app_settings_activity.xml (same binding class): every
+  ~ option row is the phone's include under the same id, only placed in a pane,
+  ~ and what the TV does not show (the toolbar, sharing, two of the themes) is
+  ~ kept hidden. wgk_connection_section and wgk_update_section wrap the section
+  ~ rows of their panes, so the activity hiding them hides the section. Views
+  ~ named wgk_tv_* are TV only.
+  ~
+  ~ Focusable views carry their focus halo inside them (wgk_tv_focus_bg); the
+  ~ panes reach a halo into the screen's safe padding so the visible rows line
+  ~ up with it, which is why the root does not clip to its padding.
+  -->
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <LinearLayout
+        android:id="@+id/wgk_settings_root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/wgk_background"
+        android:clipToPadding="false"
+        android:orientation="vertical"
+        android:paddingStart="@dimen/wgk_tv_safe_h"
+        android:paddingTop="@dimen/wgk_tv_safe_v"
+        android:paddingEnd="@dimen/wgk_tv_safe_h"
+        android:paddingBottom="@dimen/wgk_tv_safe_v">
+
+        <!-- The phone's toolbar, for the binding; the TV header is below. -->
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/wgk_settings_toolbar"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/wgk_tv_halo_neg"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <FrameLayout
+                android:id="@+id/wgk_tv_settings_back"
+                android:layout_width="@dimen/wgk_tv_back_view"
+                android:layout_height="@dimen/wgk_tv_back_view"
+                android:background="@drawable/wgk_tv_focus_round_bg"
+                android:clickable="true"
+                android:contentDescription="@string/wgk_tv_back_cd"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="@dimen/wgk_tv_back_icon"
+                    android:layout_height="@dimen/wgk_tv_back_icon"
+                    android:layout_gravity="center"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_arrow_back"
+                    app:tint="@color/wgk_on_surface" />
+            </FrameLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/wgk_tv_back_gap_halo"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/wgk_settings_title"
+                android:textColor="@color/wgk_on_surface"
+                android:textSize="@dimen/wgk_tv_text_screen_title" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginStart="@dimen/wgk_tv_halo_neg"
+            android:layout_marginTop="@dimen/wgk_tv_block_gap_halo"
+            android:layout_marginEnd="@dimen/wgk_tv_halo_neg"
+            android:layout_weight="1"
+            android:baselineAligned="false"
+            android:orientation="horizontal">
+
+            <!-- The sections. The activity's first-focus code lands on the
+                 first one shown. Every row overlaps the next by what the
+                 visible gap leaves of two halos. -->
+            <LinearLayout
+                android:id="@+id/wgk_settings_column"
+                android:layout_width="@dimen/wgk_tv_section_column"
+                android:layout_height="match_parent"
+                android:orientation="vertical">
+
+                <!-- Hidden with its pane's subject; the overlap is the wrapper's,
+                     so the row inside it is never cut short. -->
+                <LinearLayout
+                    android:id="@+id/wgk_connection_section"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/wgk_tv_section_view_overlap"
+                    android:orientation="vertical">
+
+                    <!-- Each section include names the row's height itself: an include's
+                         layout_height replaces the root's, and wrap_content collapsed the
+                         56dp rows to their text (seen on the Haier TV, 21.10). -->
+                    <include
+                        android:id="@+id/wgk_tv_section_mode"
+                        layout="@layout/view_wgk_tv_section_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="@dimen/wgk_tv_section_view_height" />
+                </LinearLayout>
+
+                <include
+                    android:id="@+id/wgk_tv_section_transport"
+                    layout="@layout/view_wgk_tv_section_row"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/wgk_tv_section_view_height"
+                    android:layout_marginBottom="@dimen/wgk_tv_section_view_overlap" />
+
+                <include
+                    android:id="@+id/wgk_tv_section_config"
+                    layout="@layout/view_wgk_tv_section_row"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/wgk_tv_section_view_height"
+                    android:layout_marginBottom="@dimen/wgk_tv_section_view_overlap" />
+
+                <include
+                    android:id="@+id/wgk_tv_section_theme"
+                    layout="@layout/view_wgk_tv_section_row"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/wgk_tv_section_view_height"
+                    android:layout_marginBottom="@dimen/wgk_tv_section_view_overlap" />
+
+                <!-- Hidden with its pane's subject; the overlap is the wrapper's,
+                     so the row inside it is never cut short. -->
+                <LinearLayout
+                    android:id="@+id/wgk_update_section"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="@dimen/wgk_tv_section_view_overlap"
+                    android:orientation="vertical">
+
+                    <include
+                        android:id="@+id/wgk_tv_section_update"
+                        layout="@layout/view_wgk_tv_section_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="@dimen/wgk_tv_section_view_height" />
+                </LinearLayout>
+
+                <include
+                    android:id="@+id/wgk_tv_section_expert"
+                    layout="@layout/view_wgk_tv_section_row"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/wgk_tv_section_view_height"
+                    android:layout_marginBottom="@dimen/wgk_tv_section_view_overlap" />
+
+            </LinearLayout>
+
+            <!-- The options of the section in focus: one pane shown at a time.
+                 A scroll view for the expert pane at a large font scale; the
+                 activity pads it for the system bars, so it has no padding of
+                 its own. -->
+            <androidx.core.widget.NestedScrollView
+                android:id="@+id/wgk_settings_scroll"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginStart="@dimen/wgk_tv_pane_gap_halo"
+                android:layout_weight="1"
+                android:fillViewport="true"
+                android:scrollbars="none">
+
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content">
+
+                <!-- Connection mode. Its section is hidden for a config without a reserve mode (SRTP). -->
+                <LinearLayout
+                    android:id="@+id/wgk_tv_pane_mode"
+                    style="@style/Widget.WGKeyBot.Tv.Pane">
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneTitle"
+                        android:text="@string/wgk_connection_mode_title" />
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneHelp"
+                        android:text="@string/wgk_tv_pane_mode_help" />
+
+                    <include
+                        android:id="@+id/wgk_choice_standard"
+                        layout="@layout/view_wgk_settings_choice_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_pane_block_gap_halo" />
+                    <include
+                        android:id="@+id/wgk_choice_reserve"
+                        layout="@layout/view_wgk_settings_choice_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_option_view_overlap" />
+                </LinearLayout>
+
+                <!-- Relay transport. -->
+                <LinearLayout
+                    android:id="@+id/wgk_tv_pane_transport"
+                    style="@style/Widget.WGKeyBot.Tv.Pane">
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneTitle"
+                        android:text="@string/wgk_relay_transport_title" />
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneHelp"
+                        android:text="@string/wgk_tv_pane_transport_help" />
+
+                    <include
+                        android:id="@+id/wgk_transport_auto"
+                        layout="@layout/view_wgk_settings_choice_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_pane_block_gap_halo" />
+                    <include
+                        android:id="@+id/wgk_transport_udp"
+                        layout="@layout/view_wgk_settings_choice_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_option_view_overlap" />
+                    <include
+                        android:id="@+id/wgk_transport_tcp"
+                        layout="@layout/view_wgk_settings_choice_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_option_view_overlap" />
+
+                    <Space style="@style/Widget.WGKeyBot.Tv.PaneSpace" />
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneNote"
+                        android:text="@string/wgk_tv_pane_transport_note" />
+                </LinearLayout>
+
+                <!-- Configuration: auto-refresh, and a refresh made now, which runs on the main screen. -->
+                <LinearLayout
+                    android:id="@+id/wgk_tv_pane_config"
+                    style="@style/Widget.WGKeyBot.Tv.Pane">
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneTitle"
+                        android:text="@string/wgk_profile_name" />
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneHelp"
+                        android:text="@string/wgk_tv_pane_config_help" />
+
+                    <include
+                        android:id="@+id/wgk_auto_refresh_row"
+                        layout="@layout/view_wgk_settings_switch_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_pane_block_gap_halo" />
+                    <include
+                        android:id="@+id/wgk_tv_config_refresh_row"
+                        layout="@layout/view_wgk_settings_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_option_view_overlap" />
+
+                    <Space style="@style/Widget.WGKeyBot.Tv.PaneSpace" />
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneNote"
+                        android:text="@string/wgk_tv_pane_config_note" />
+                </LinearLayout>
+
+                <!-- Appearance: dark only, shown as chosen and not selectable. -->
+                <LinearLayout
+                    android:id="@+id/wgk_tv_pane_theme"
+                    style="@style/Widget.WGKeyBot.Tv.Pane">
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneTitle"
+                        android:text="@string/wgk_settings_section_appearance" />
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneHelp"
+                        android:text="@string/wgk_tv_pane_theme_help" />
+
+                    <include
+                        android:id="@+id/wgk_theme_dark"
+                        layout="@layout/view_wgk_settings_choice_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_pane_block_gap_halo" />
+
+                    <!-- The other two themes, kept for the binding: the TV is
+                         always dark (Application forces night mode there). -->
+                    <FrameLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:visibility="gone">
+
+                        <include
+                            android:id="@+id/wgk_theme_system"
+                            layout="@layout/view_wgk_settings_choice_row"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" />
+
+                        <include
+                            android:id="@+id/wgk_theme_light"
+                            layout="@layout/view_wgk_settings_choice_row"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" />
+                    </FrameLayout>
+
+                    <Space style="@style/Widget.WGKeyBot.Tv.PaneSpace" />
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneNote"
+                        android:text="@string/wgk_tv_pane_theme_note" />
+                </LinearLayout>
+
+                <!-- Update: the version and the manual check, and the way to the permission Android asks for before it installs one. -->
+                <LinearLayout
+                    android:id="@+id/wgk_tv_pane_update"
+                    style="@style/Widget.WGKeyBot.Tv.Pane">
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneTitle"
+                        android:text="@string/wgk_tv_section_update" />
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneHelp"
+                        android:text="@string/wgk_tv_pane_update_help" />
+
+                    <include
+                        android:id="@+id/wgk_update_row"
+                        layout="@layout/view_wgk_settings_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_pane_block_gap_halo" />
+                    <include
+                        android:id="@+id/wgk_tv_update_allow_row"
+                        layout="@layout/view_wgk_settings_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_option_view_overlap" />
+
+                    <Space style="@style/Widget.WGKeyBot.Tv.PaneSpace" />
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneNote"
+                        android:text="@string/wgk_tv_pane_update_note" />
+                </LinearLayout>
+
+                <!-- Expert mode: the switch, and MTU, DNS and VK links under it once it is on. -->
+                <LinearLayout
+                    android:id="@+id/wgk_tv_pane_expert"
+                    style="@style/Widget.WGKeyBot.Tv.Pane">
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneTitle"
+                        android:text="@string/wgk_expert_section" />
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneHelp"
+                        android:text="@string/wgk_tv_pane_expert_help" />
+
+                    <include
+                        android:id="@+id/wgk_expert_switch_row"
+                        layout="@layout/view_wgk_settings_switch_row"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_pane_block_gap_halo" />
+
+                    <LinearLayout
+                        android:id="@+id/wgk_expert_rows"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/wgk_tv_option_view_overlap"
+                        android:orientation="vertical"
+                        android:visibility="gone">
+
+                        <include
+                            android:id="@+id/wgk_expert_mtu_row"
+                            layout="@layout/view_wgk_settings_row"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content" />
+
+                        <include
+                            android:id="@+id/wgk_expert_dns_row"
+                            layout="@layout/view_wgk_settings_row"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/wgk_tv_option_view_overlap" />
+
+                        <include
+                            android:id="@+id/wgk_expert_links_row"
+                            layout="@layout/view_wgk_settings_row"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/wgk_tv_option_view_overlap" />
+                    </LinearLayout>
+
+                    <!-- When an override applies, shown with the rows, as on the phone. -->
+                    <TextView
+                        android:id="@+id/wgk_expert_note"
+                        style="@style/Widget.WGKeyBot.Tv.PaneHelp"
+                        android:text="@string/wgk_expert_note"
+                        android:visibility="gone" />
+
+                    <Space style="@style/Widget.WGKeyBot.Tv.PaneSpace" />
+
+                    <TextView
+                        style="@style/Widget.WGKeyBot.Tv.PaneNote"
+                        android:text="@string/wgk_tv_pane_expert_note" />
+                </LinearLayout>
+
+                </FrameLayout>
+            </androidx.core.widget.NestedScrollView>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/wgk_tv_block_gap_halo"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                style="@style/Widget.WGKeyBot.Tv.Keycap"
+                android:text="@string/wgk_tv_key_right" />
+
+            <TextView
+                style="@style/Widget.WGKeyBot.Tv.RemoteHint"
+                android:text="@string/wgk_tv_hint_to_options" />
+
+            <TextView
+                style="@style/Widget.WGKeyBot.Tv.Keycap"
+                android:text="@string/wgk_tv_key_ok" />
+
+            <TextView
+                style="@style/Widget.WGKeyBot.Tv.RemoteHint"
+                android:text="@string/wgk_tv_hint_ok_choose" />
+
+            <TextView
+                style="@style/Widget.WGKeyBot.Tv.Keycap"
+                android:text="@string/wgk_tv_key_back" />
+
+            <TextView
+                style="@style/Widget.WGKeyBot.Tv.RemoteHint"
+                android:text="@string/wgk_tv_hint_back_main" />
+        </LinearLayout>
+
+        <!-- Internet sharing, kept for the binding and never shown: a TV box has
+             no radio to raise an access point on (AppSettingsActivity.bindTether). -->
+        <FrameLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/wgk_tether_section"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <include
+                    android:id="@+id/wgk_tether_switch_row"
+                    layout="@layout/view_wgk_settings_switch_row"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <include
+                    android:id="@+id/wgk_tether_auto_off_row"
+                    layout="@layout/view_wgk_settings_switch_row"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <include
+                    android:id="@+id/wgk_tether_routing_row"
+                    layout="@layout/view_wgk_settings_switch_row"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <include
+                    android:id="@+id/wgk_tether_routing_settings_row"
+                    layout="@layout/view_wgk_settings_row"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <View
+                    android:id="@+id/wgk_tether_details_divider"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp" />
+
+                <include
+                    android:id="@+id/wgk_tether_details_row"
+                    layout="@layout/view_wgk_settings_row"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <TextView
+                    android:id="@+id/wgk_tether_status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+        </FrameLayout>
+    </LinearLayout>
+</layout>

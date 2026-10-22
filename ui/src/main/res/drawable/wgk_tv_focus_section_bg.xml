@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ wgk_tv_focus_bg for a section of the TV settings list. The section whose
+  ~ options are shown stays lit (activated, wgk_surface_container_high) while
+  ~ focus is out in the options pane, so the user can see which section they
+  ~ are in; focus itself is the shared ring and halo.
+  -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item android:state_focused="true">
+        <layer-list>
+            <!-- Halo: the outer band, out to the view's edge. -->
+            <item>
+                <shape android:shape="rectangle">
+                    <corners android:radius="@dimen/wgk_tv_focus_halo_radius" />
+                    <solid android:color="@color/wgk_primary_18" />
+                </shape>
+            </item>
+            <!-- Ring: just outside the element. -->
+            <item
+                android:bottom="@dimen/wgk_tv_focus_ring_inset"
+                android:left="@dimen/wgk_tv_focus_ring_inset"
+                android:right="@dimen/wgk_tv_focus_ring_inset"
+                android:top="@dimen/wgk_tv_focus_ring_inset">
+                <shape android:shape="rectangle">
+                    <corners android:radius="@dimen/wgk_tv_focus_ring_radius" />
+                    <solid android:color="@color/wgk_primary" />
+                </shape>
+            </item>
+            <!-- The element itself, at its resting size. -->
+            <item
+                android:bottom="@dimen/wgk_tv_focus_halo"
+                android:left="@dimen/wgk_tv_focus_halo"
+                android:right="@dimen/wgk_tv_focus_halo"
+                android:top="@dimen/wgk_tv_focus_halo">
+                <shape android:shape="rectangle">
+                    <corners android:radius="@dimen/wgk_tv_row_radius" />
+                    <solid android:color="@color/wgk_surface_container_high" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <item android:state_activated="true">
+        <inset
+            android:inset="@dimen/wgk_tv_focus_halo">
+            <shape android:shape="rectangle">
+                <corners android:radius="@dimen/wgk_tv_row_radius" />
+                <solid android:color="@color/wgk_surface_container_high" />
+            </shape>
+        </inset>
+    </item>
+    <item>
+        <inset
+            android:inset="@dimen/wgk_tv_focus_halo">
+            <shape android:shape="rectangle">
+                <corners android:radius="@dimen/wgk_tv_row_radius" />
+                <solid android:color="@color/wgk_surface_container" />
+            </shape>
+        </inset>
+    </item>
+</selector>

@@ -25,6 +25,7 @@ import com.wireguard.android.turn.ExpertSettings
 import com.wireguard.android.turn.VkLinkChecker
 import com.wireguard.android.turn.VkLinks
 import com.wireguard.android.util.localeWrapped
+import com.wireguard.android.util.lockPortraitOnPhone
 import kotlinx.coroutines.launch
 
 /**
@@ -48,6 +49,7 @@ class VkLinksActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lockPortraitOnPhone()
         enableEdgeToEdge()
         binding = VkLinksActivityBinding.inflate(layoutInflater)
         setContentView(binding.root)

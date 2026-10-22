@@ -125,4 +125,17 @@ class TokenFormatTest {
         assertFalse(TokenFormat.isTokenChar('.'))
         assertFalse(TokenFormat.isTokenChar(' '))
     }
+
+    // ── isUuidHexSoFar ─────────────────────────────────────────────────────────
+
+    @Test
+    fun `a buffer counts towards a UUID while it is hex and no longer than one`() {
+        assertTrue(TokenFormat.isUuidHexSoFar(""))
+        assertTrue(TokenFormat.isUuidHexSoFar("550e"))
+        assertTrue(TokenFormat.isUuidHexSoFar("550E8400"))
+        assertTrue(TokenFormat.isUuidHexSoFar(uuidHex))
+        assertFalse(TokenFormat.isUuidHexSoFar(uuidHex + "0"))
+        assertFalse(TokenFormat.isUuidHexSoFar(short))
+        assertFalse(TokenFormat.isUuidHexSoFar(uuid))       // dashes are not typed
+    }
 }

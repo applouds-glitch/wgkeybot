@@ -78,8 +78,6 @@
     <string name="wgk_connection_mode_title">Connection mode</string>
     <string name="wgk_connection_mode_standard_value">Standard</string>
     <string name="wgk_connection_mode_reserve_value">Fallback</string>
-    <string name="wgk_connection_mode_standard_option">Standard — faster, recommended</string>
-    <string name="wgk_connection_mode_reserve_option">Fallback — slower, use if standard mode fails</string>
     <string name="wgk_split_search_hint">Search apps</string>
     <string name="wgk_split_show_system">System apps</string>
     <string name="wgk_split_exclude_hint">Selected apps will bypass the VPN. Everything else goes through the tunnel.</string>

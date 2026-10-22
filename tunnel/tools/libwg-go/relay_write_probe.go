@@ -31,6 +31,9 @@ import (
 // Field log 18.09: 193.203.43.43 allocated in 200ms and then failed every SRTP
 // handshake for an hour, and nothing in the log could say which of these it was.
 //
+// The time a granted first write took is also one round trip to the relay over
+// UDP, by which the noDTLS relay proof sizes its window (permissionGrantedIn).
+//
 // After the first write the probe costs one atomic load per packet.
 type relayWriteProbe struct {
 	net.PacketConn
@@ -67,6 +70,19 @@ func (p *relayWriteProbe) WriteTo(b []byte, addr net.Addr) (int, error) {
 	p.took, p.err = time.Since(start), err
 	p.done.Store(true)
 	return n, err
+}
+
+// permissionGrantedIn is how long the relay took to grant the peer permission:
+// the time of the first write through conn, when that write has returned
+// without an error — over UDP one CreatePermission round trip (two after a
+// stale nonce). 0 while the write is still blocked, after it failed, or when
+// conn is not a probe.
+func permissionGrantedIn(conn net.PacketConn) time.Duration {
+	p, ok := conn.(*relayWriteProbe)
+	if !ok || !p.done.Load() || p.err != nil {
+		return 0
+	}
+	return p.took
 }
 
 // describe says what the first write through the relay tells about a handshake

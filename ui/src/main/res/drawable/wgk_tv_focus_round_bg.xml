@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ wgk_tv_focus_bg for a round control (the back button of the TV settings):
+  ~ the same ring and halo outside the element, drawn as ovals. The view is the
+  ~ circle plus a halo on every side.
+  -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item android:state_focused="true">
+        <layer-list>
+            <item>
+                <shape android:shape="oval">
+                    <solid android:color="@color/wgk_primary_18" />
+                </shape>
+            </item>
+            <item
+                android:bottom="@dimen/wgk_tv_focus_ring_inset"
+                android:left="@dimen/wgk_tv_focus_ring_inset"
+                android:right="@dimen/wgk_tv_focus_ring_inset"
+                android:top="@dimen/wgk_tv_focus_ring_inset">
+                <shape android:shape="oval">
+                    <solid android:color="@color/wgk_primary" />
+                </shape>
+            </item>
+            <item
+                android:bottom="@dimen/wgk_tv_focus_halo"
+                android:left="@dimen/wgk_tv_focus_halo"
+                android:right="@dimen/wgk_tv_focus_halo"
+                android:top="@dimen/wgk_tv_focus_halo">
+                <shape android:shape="oval">
+                    <solid android:color="@color/wgk_surface_container_high" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <item>
+        <inset android:inset="@dimen/wgk_tv_focus_halo">
+            <shape android:shape="oval">
+                <solid android:color="@color/wgk_surface_container" />
+            </shape>
+        </inset>
+    </item>
+</selector>

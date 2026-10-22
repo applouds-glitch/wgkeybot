@@ -324,7 +324,10 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 		return s.parkInTheDark(ctx, attempt, st)
 	}
 
-	ordered := streamAttemptOrder(user, addrs, s.id, attemptCfg, time.Now())
+	// Just moved off a rested relay: the relays losing in that window last
+	// (relay_move.go).
+	now := time.Now()
+	ordered := streamAttemptOrderAround(user, addrs, s.id, attemptCfg, now, s.takeMoveLossy(now))
 	attemptHead := ordered[0]
 
 	// The session and its race get a context of their own, ended with them: a

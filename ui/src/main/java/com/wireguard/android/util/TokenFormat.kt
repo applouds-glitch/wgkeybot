@@ -22,8 +22,8 @@ object TokenFormat {
     /** Characters the on-screen TV keyboard offers, in grid order. */
     const val KEYBOARD_CHARS = "0123456789abcdefghijklmnopqrstuvwxyz"
 
-    /** A UUID with its dashes stripped — the shape the TV keyboard buffers. */
-    private const val UUID_HEX_LENGTH = 32
+    /** A UUID with its dashes stripped — the shape the TV keyboard buffers, and counts towards. */
+    const val UUID_HEX_LENGTH = 32
     private val UUID_DASH_POSITIONS = setOf(8, 12, 16, 20)
 
     /** Unanchored on purpose: [Regex.matches] already requires the whole input. */
@@ -90,7 +90,7 @@ object TokenFormat {
      */
     fun display(raw: String, cursor: Int): String {
         if (raw.isEmpty()) return ""
-        val grouped = raw.length <= UUID_HEX_LENGTH && raw.all { it.isHexDigit() }
+        val grouped = isUuidHexSoFar(raw)
         val sb = StringBuilder()
         for (i in 0..raw.length) {
             if (grouped && i in UUID_DASH_POSITIONS && (i < raw.length || i == cursor)) sb.append('-')
@@ -99,6 +99,12 @@ object TokenFormat {
         }
         return sb.toString()
     }
+
+    /**
+     * Whether [raw] can still become a dashless UUID: hex digits only, no more
+     * than 32. The TV keyboard groups such a buffer and counts it towards 32.
+     */
+    fun isUuidHexSoFar(raw: String): Boolean = raw.length <= UUID_HEX_LENGTH && raw.all { it.isHexDigit() }
 
     private fun Char.isHexDigit(): Boolean =
         this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ The icon tile in the "where to get a key" card of the TV first-run screen.
+  -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="@dimen/wgk_tv_row_radius" />
+    <solid android:color="@color/wgk_surface_container_high" />
+</shape>

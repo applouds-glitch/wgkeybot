@@ -21,7 +21,9 @@
 
     <!-- TV variant: hard-coded dark window background so there is no white flash
          on startup regardless of the device's current night-mode setting. -->
-    <style name="AppTheme.Tv" parent="AppTheme">
+    <!-- No system title bar on TV: the TV screens draw their own header, and the
+         bar's "WGKeyBot" doubled it and pushed the header out of the safe zone. -->
+    <style name="AppTheme.Tv" parent="AppTheme.NoActionBar">
         <item name="android:windowBackground">@color/wgk_tv_bg_splash</item>
     </style>
 
@@ -34,47 +36,15 @@
         <item name="android:windowIsFloating">false</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
-    <!-- Key height is a dimen because the grid is 6 rows tall (0-9 a-z): at the
-         old 52dp the keyboard no longer fits the height of a 1080p TV. -->
-    <style name="TvKeyButton" parent="Widget.Material3.Button">
-        <item name="android:layout_width">0dp</item>
-        <item name="android:layout_height">@dimen/wgk_tv_key_height</item>
-        <item name="android:layout_weight">1</item>
-        <item name="android:layout_marginStart">3dp</item>
-        <item name="android:layout_marginEnd">3dp</item>
-        <item name="android:focusable">true</item>
-        <item name="android:textAllCaps">false</item>
-        <item name="android:textSize">17sp</item>
-        <item name="android:textStyle">bold</item>
-        <item name="android:fontFamily">monospace</item>
-        <item name="cornerRadius">8dp</item>
-        <!-- Focused key inverts (white fill, primary text) and gains a thick
-             primary border so it's instantly identifiable from across the room. -->
-        <item name="backgroundTint">@color/wgk_tv_key_bg</item>
-        <item name="android:textColor">@color/wgk_tv_key_text</item>
-        <item name="strokeColor">@color/wgk_tv_key_stroke</item>
-        <item name="strokeWidth">2dp</item>
-    </style>
 
-    <style name="TvKeyButton.Action" parent="TvKeyButton">
-        <item name="android:textSize">14sp</item>
-        <item name="android:textStyle">normal</item>
-        <item name="android:fontFamily">sans-serif</item>
-        <item name="backgroundTint">@color/wgk_tv_key_action_bg</item>
-        <item name="android:textColor">@color/wgk_tv_key_action_text</item>
-    </style>
-
-    <style name="TvKeyButton.Connect" parent="TvKeyButton">
-        <item name="android:textSize">14sp</item>
-        <item name="android:textStyle">normal</item>
-        <item name="android:fontFamily">sans-serif</item>
-        <!-- Inherits backgroundTint/textColor from TvKeyButton so the focus
-             inversion applies identically to the Connect key. -->
-    </style>
-
+    <!-- The TV connect button: the mock's plain disc. No stroke and no shadow,
+         focus is the ring and halo its frame draws (wgk_tv_focus_oval_bg). -->
     <style name="Widget.WGKeyBot.ConnectButton.Tv" parent="Widget.WGKeyBot.ConnectButton">
-        <item name="strokeColor">@color/wgk_tv_connect_stroke</item>
-        <item name="strokeWidth">5dp</item>
+        <item name="android:layout_width">@dimen/wgk_tv_ring</item>
+        <item name="android:layout_height">@dimen/wgk_tv_ring</item>
+        <item name="iconSize">@dimen/wgk_tv_ring_icon</item>
+        <item name="strokeWidth">0dp</item>
+        <item name="elevation">0dp</item>
     </style>
 
     <!-- Экраны, которые рисуют собственный MaterialToolbar в разметке: AppTheme

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ wgk_tv_focus_bg for a transparent, outlined control (Paste under the TV
+  ~ keyboard): the shared ring and halo on focus, a wgk_outline_variant border
+  ~ and no fill at rest.
+  -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item android:state_focused="true">
+        <layer-list>
+            <!-- Halo: the outer band, out to the view's edge. -->
+            <item>
+                <shape android:shape="rectangle">
+                    <corners android:radius="@dimen/wgk_tv_focus_halo_radius" />
+                    <solid android:color="@color/wgk_primary_18" />
+                </shape>
+            </item>
+            <!-- Ring: just outside the element. -->
+            <item
+                android:bottom="@dimen/wgk_tv_focus_ring_inset"
+                android:left="@dimen/wgk_tv_focus_ring_inset"
+                android:right="@dimen/wgk_tv_focus_ring_inset"
+                android:top="@dimen/wgk_tv_focus_ring_inset">
+                <shape android:shape="rectangle">
+                    <corners android:radius="@dimen/wgk_tv_focus_ring_radius" />
+                    <solid android:color="@color/wgk_primary" />
+                </shape>
+            </item>
+            <!-- The element itself, at its resting size. -->
+            <item
+                android:bottom="@dimen/wgk_tv_focus_halo"
+                android:left="@dimen/wgk_tv_focus_halo"
+                android:right="@dimen/wgk_tv_focus_halo"
+                android:top="@dimen/wgk_tv_focus_halo">
+                <shape android:shape="rectangle">
+                    <corners android:radius="@dimen/wgk_tv_row_radius" />
+                    <solid android:color="@color/wgk_surface_container_high" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <item>
+        <inset
+            android:inset="@dimen/wgk_tv_focus_halo">
+            <shape android:shape="rectangle">
+                <corners android:radius="@dimen/wgk_tv_row_radius" />
+                <solid android:color="@android:color/transparent" />
+                <stroke
+                    android:width="@dimen/wgk_tv_keycap_stroke"
+                    android:color="@color/wgk_outline_variant" />
+            </shape>
+        </inset>
+    </item>
+</selector>

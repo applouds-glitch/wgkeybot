@@ -128,15 +128,20 @@ func (r *chunkRotor) advance() {
 // like an uplink outage until then. The per-stream lines tell one dead
 // allocation from the rest: it stales one stream while its siblings keep
 // hearing echoes. The "every stream" line says only that all of them went
-// quiet, not where: a shared path may fail even when TCP uses two relays.
+// quiet, not where: a shared path may fail even when TCP uses two relays. A
+// stream found silent under load has its lines, with the witnesses and their
+// packets, from the judge that found it (silent_under_load.go), the return
+// too: that judge sees the return on its own turn, while a scan here may miss
+// an episode shorter than its interval altogether.
 type staleWatch struct {
 	stale    []bool
+	early    []bool // stale by the judge of silence under load, whose lines they are
 	allStale bool
 	lastScan time.Time
 }
 
 func newStaleWatch(n int) *staleWatch {
-	return &staleWatch{stale: make([]bool, n)}
+	return &staleWatch{stale: make([]bool, n), early: make([]bool, n)}
 }
 
 // observe re-evaluates every stream at most once per staleWatchInterval and
@@ -165,15 +170,22 @@ func (w *staleWatch) observe(streams []*stream, now time.Time) []string {
 			continue
 		}
 		w.stale[i] = isStale
-		if isStale {
+		switch a := st.activity.Load(); {
+		case !isStale:
+			if w.early[i] {
+				w.early[i] = false // the judge reports the return
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("[DISPATCH] stream %d heard its relay again — back in rotation", st.id))
+		case a.foundSilentUnderLoad():
+			w.early[i] = true // the judge has said why, with the numbers
+		default:
 			lines = append(lines, fmt.Sprintf("[DISPATCH] stream %d silent for %v — skipped while siblings hear echoes",
-				st.id, st.activity.Load().heardAge(now).Round(time.Second)))
+				st.id, a.heardAge(now).Round(time.Second)))
 			// Over TCP, what the socket looked like at that moment (nothing over UDP).
 			if line := relaySockets.silentSocketLine(st); line != "" {
 				lines = append(lines, line)
 			}
-		} else {
-			lines = append(lines, fmt.Sprintf("[DISPATCH] stream %d heard its relay again — back in rotation", st.id))
 		}
 	}
 

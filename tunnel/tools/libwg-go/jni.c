@@ -30,6 +30,7 @@ extern int wgTurnReadyStreams(void);
 extern int wgTurnPathSilentSeconds(void);
 extern void wgTurnProxyWake(void);
 extern int wgTurnCheckVKLink(const char *link);
+extern void wgSetStateDir(const char *dir);
 extern int wgTetherStart(const char *bind_ip, int port, const char *dns_servers, const char *tunnel_addrs, const char *routing_dir, const char *direct_dns);
 extern void wgTetherStop(void);
 extern char *wgTetherStats(void);
@@ -655,6 +656,16 @@ JNIEXPORT jint JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnChec
 	int ret = wgTurnCheckVKLink(link_str ? link_str : "");
 	free(link_str);
 	return (jint)ret;
+}
+
+JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgSetStateDir(JNIEnv *env, jclass c, jstring dir)
+{
+	const char *dir_jni = dir ? (*env)->GetStringUTFChars(env, dir, 0) : NULL;
+	char *dir_str = dir_jni ? strdup(dir_jni) : NULL;
+	if (dir_jni)
+		(*env)->ReleaseStringUTFChars(env, dir, dir_jni);
+	wgSetStateDir(dir_str ? dir_str : "");
+	free(dir_str);
 }
 
 JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyStop(JNIEnv *env, jclass c)

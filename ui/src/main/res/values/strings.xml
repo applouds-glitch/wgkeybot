@@ -486,8 +486,6 @@
     <string name="wgk_connection_mode_title">Connection mode</string>
     <string name="wgk_connection_mode_standard_value">Standard</string>
     <string name="wgk_connection_mode_reserve_value">Fallback</string>
-    <string name="wgk_connection_mode_standard_option">Standard: faster, recommended</string>
-    <string name="wgk_connection_mode_reserve_option">Fallback: slower, use if standard mode fails</string>
     <string name="wgk_connection_mode_standard_desc">Faster, recommended</string>
     <string name="wgk_connection_mode_reserve_desc">Slower. Turn it on if the standard mode does not work</string>
     <string name="wgk_relay_transport_title">Relay transport</string>
@@ -656,4 +654,77 @@
     <string name="wgk_vk_links_result_captcha">Link %1$d: VK asks for a captcha, cannot check</string>
     <string name="wgk_vk_links_result_temporary">Link %1$d: VK did not answer, try again later</string>
     <string name="wgk_vk_links_result_error">Link %1$d: VK refused the request</string>
+
+    <!-- ── Android TV main screen (layout-television, after the TV mock) ── -->
+    <string name="wgk_tv_key_ok" translatable="false">OK</string>
+    <string name="wgk_tv_key_left" translatable="false">◀</string>
+    <string name="wgk_tv_version" translatable="false">v%1$s</string>
+    <string name="wgk_tv_net_wifi" translatable="false">Wi-Fi</string>
+    <string name="wgk_tv_net_ethernet" translatable="false">Ethernet</string>
+    <string name="wgk_tv_net_named" translatable="false">%1$s · %2$s</string>
+    <string name="wgk_tv_hint_connect">Press OK to connect</string>
+    <string name="wgk_tv_hint_disconnect">OK on the remote disconnects</string>
+    <string name="wgk_tv_stage_tunnel">Tunnel</string>
+    <string name="wgk_tv_stage_handshake">Handshake</string>
+    <string name="wgk_tv_stage_routing">Route</string>
+    <string name="wgk_tv_session_title">SESSION</string>
+    <string name="wgk_tv_metric_time">Time</string>
+    <string name="wgk_tv_metric_received">Received</string>
+    <string name="wgk_tv_metric_sent">Sent</string>
+    <string name="wgk_tv_settings_row_value">Mode, transport, updates</string>
+    <string name="wgk_tv_hint_ok_open">open</string>
+    <string name="wgk_tv_hint_left_connect">to the connect button</string>
+    <string name="wgk_tv_net_mobile">Mobile data</string>
+    <string name="wgk_tv_net_none">No network</string>
+    <string name="wgk_tv_subscription_until">Subscription until %1$s</string>
+    <string name="wgk_tv_config_value_auto">%1$s · auto-refresh</string>
+    <string name="wgk_tv_config_refreshing">Refreshing…</string>
+    <string name="wgk_tv_config_refresh_now">Refresh now</string>
+    <string name="wgk_tv_config_auto_turn_on">Turn auto-refresh on</string>
+    <string name="wgk_tv_config_auto_turn_off">Turn auto-refresh off</string>
+
+    <!-- ── Android TV first-run screen (the key and the D-pad keyboard) ── -->
+    <string name="wgk_tv_key_hold" translatable="false">▶▶</string>
+    <string name="wgk_tv_no_key_title">Connect your key</string>
+    <string name="wgk_tv_no_key_subtitle">The key comes from the @wg_key_bot bot in Telegram. Type it on the keyboard on the right.</string>
+    <string name="wgk_tv_key_where_title">Where to get a key</string>
+    <string name="wgk_tv_key_where_body">Open @wg_key_bot on your phone, tap “Get a key” and copy the 32 characters here. Letter case does not matter.</string>
+    <string name="wgk_tv_key_expired_hint">Subscription expired? Renew it in the bot, the key stays the same.</string>
+    <string name="wgk_tv_kb_label">KEY FROM THE BOT</string>
+    <string name="wgk_tv_kb_count">%1$d of %2$d typed</string>
+    <string name="wgk_tv_kb_count_free">%1$d characters typed</string>
+    <string name="wgk_tv_kb_left_cd">Cursor left</string>
+    <string name="wgk_tv_kb_right_cd">Cursor right</string>
+    <string name="wgk_tv_kb_backspace_cd">Delete</string>
+    <string name="wgk_tv_hint_ok_type">type the character</string>
+    <string name="wgk_tv_hint_hold">hold to move fast</string>
+
+    <!-- ── Android TV settings (two panes, layout-television/app_settings_activity) ── -->
+    <string name="wgk_tv_key_right" translatable="false">▶</string>
+    <string name="wgk_tv_key_back" translatable="false">⟵</string>
+    <string name="wgk_tv_value_tcp" translatable="false">TCP</string>
+    <string name="wgk_tv_back_cd">Back</string>
+    <string name="wgk_tv_section_update">Update</string>
+    <string name="wgk_tv_hint_to_options">to the options</string>
+    <string name="wgk_tv_hint_ok_choose">choose</string>
+    <string name="wgk_tv_hint_back_main">to the main screen</string>
+    <string name="wgk_tv_config_auto">Auto</string>
+    <string name="wgk_tv_config_manual">Manual</string>
+    <string name="wgk_tv_value_on">On</string>
+    <string name="wgk_tv_value_off">Off</string>
+    <string name="wgk_tv_config_refresh_desc">Ask the bot for the config, and reconnect if it changed</string>
+    <string name="wgk_tv_update_allow_desc">Opens the system permission screen</string>
+    <string name="wgk_tv_update_allowed">Installation is allowed</string>
+    <string name="wgk_tv_theme_dark_desc">As on Android TV</string>
+    <string name="wgk_tv_pane_mode_help">What to use at the next connection.</string>
+    <string name="wgk_tv_pane_transport_help">How to reach the relays from your network.</string>
+    <string name="wgk_tv_pane_transport_note">Auto: UDP, and TCP on the Rostelecom mobile network. A change is picked up without reconnecting.</string>
+    <string name="wgk_tv_pane_config_help">Updating the config from the bot.</string>
+    <string name="wgk_tv_pane_config_note">Auto-refresh fetches a new config every 12 hours and applies it at the next connection. Refresh now does it on the main screen, straight away.</string>
+    <string name="wgk_tv_pane_theme_help">The TV is always dark.</string>
+    <string name="wgk_tv_pane_theme_note">The light theme is off on TV: the Android TV interface and the apps around it are dark, and a light screen glares in a dark room.</string>
+    <string name="wgk_tv_pane_update_help">The app version, and a check for a newer one.</string>
+    <string name="wgk_tv_pane_update_note">If Android refuses to install, allow unknown sources: Settings → Apps → Security &amp; restrictions → Unknown sources → WGKeyBot.</string>
+    <string name="wgk_tv_pane_expert_help">MTU, DNS and your own VK links.</string>
+    <string name="wgk_tv_pane_expert_note">Turn it on only when support asks you to: a wrong MTU or DNS breaks the connection, and putting it right is harder with a remote than with a phone.</string>
 </resources>

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Android TV only, though it sits in layout/ (lint wants a default for every
+  ~ layout, and only layout-television includes it): one section of the settings list on the left of the TV
+  ~ settings screen, its name and its current value. Focus on it shows its
+  ~ options in the pane beside it, and it stays lit (activated) while focus is
+  ~ out there; AppSettingsActivity wires both. The view is the row plus a focus
+  ~ halo on every side (wgk_tv_focus_section_bg).
+  -->
+<layout xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/wgk_tv_section_view_height"
+        android:background="@drawable/wgk_tv_focus_section_bg"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/wgk_tv_section_view_pad_h"
+        android:paddingEnd="@dimen/wgk_tv_section_view_pad_h">
+
+        <TextView
+            android:id="@+id/wgk_tv_section_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif-medium"
+            android:maxLines="1"
+            android:textColor="@color/wgk_on_surface"
+            android:textSize="@dimen/wgk_tv_text_option_title" />
+
+        <TextView
+            android:id="@+id/wgk_tv_section_value"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/wgk_tv_row_inner_gap"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/wgk_on_surface_variant"
+            android:textSize="@dimen/wgk_tv_text_section_value" />
+    </LinearLayout>
+</layout>

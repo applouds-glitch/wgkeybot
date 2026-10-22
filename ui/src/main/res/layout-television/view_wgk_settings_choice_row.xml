@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Android TV variant of one option of a choice: the mock's radio row, a title
+  ~ over a description and the indicator on the right. IDs and view types must
+  ~ match layout/view_wgk_settings_choice_row.xml (same binding class, the same
+  ~ bind and select code in AppSettingsActivity). The radio is inert and only
+  ~ reports state, as on the phone; saveEnabled=false for the reason given
+  ~ there. The view is the row plus a focus halo on every side (wgk_tv_focus_bg).
+  -->
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <LinearLayout
+        android:id="@+id/wgk_choice_root"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/wgk_tv_focus_bg"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center_vertical"
+        android:minHeight="@dimen/wgk_tv_option_view_min"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/wgk_tv_option_view_pad_h"
+        android:paddingTop="@dimen/wgk_tv_option_view_pad_v"
+        android:paddingEnd="@dimen/wgk_tv_option_view_pad_h"
+        android:paddingBottom="@dimen/wgk_tv_option_view_pad_v">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/wgk_choice_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-medium"
+                android:textColor="@color/wgk_on_surface"
+                android:textSize="@dimen/wgk_tv_text_option_title" />
+
+            <TextView
+                android:id="@+id/wgk_choice_desc"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/wgk_tv_metric_label_gap"
+                android:textColor="@color/wgk_on_surface_variant"
+                android:textSize="@dimen/wgk_tv_text_option_desc" />
+        </LinearLayout>
+
+        <com.google.android.material.radiobutton.MaterialRadioButton
+            android:id="@+id/wgk_choice_radio"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/wgk_tv_option_inner_gap"
+            android:clickable="false"
+            android:focusable="false"
+            android:saveEnabled="false"
+            app:useMaterialThemeColors="false" />
+    </LinearLayout>
+</layout>

@@ -6,7 +6,6 @@ package com.wireguard.android.widget
 
 import android.content.ClipboardManager
 import android.content.Context
-import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
@@ -14,7 +13,6 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.view.isVisible
-import com.google.android.material.button.MaterialButton
 import com.wireguard.android.R
 import com.wireguard.android.util.TokenFormat
 import com.wireguard.android.util.ConnectionLink
@@ -28,6 +26,10 @@ import com.wireguard.android.util.ConnectionLink
  * exactly what the user typed; a complete dashless UUID gets its dashes back on
  * connect (see [TokenFormat.fromKeyboard]) and is grouped `8-4-4-4-12` while it
  * is being typed.
+ *
+ * The look is the TV mock's first-run screen: a nine-column grid of plain
+ * views wearing the one TV focus look (wgk_tv_focus_bg), under the key field
+ * and a count of what has been typed.
  */
 class TvTokenKeyboard(
     private val context: Context,
@@ -35,9 +37,10 @@ class TvTokenKeyboard(
 ) {
     val rootView: View
     private val display: TextView
-    private val caseKey: MaterialButton
-    private val connectKey: MaterialButton
-    private val gridKeys = ArrayList<MaterialButton>(TokenFormat.KEYBOARD_CHARS.length)
+    private val counter: TextView
+    private val caseKey: TextView
+    private val connectKey: TextView
+    private val gridKeys = ArrayList<TextView>(TokenFormat.KEYBOARD_CHARS.length)
     private val token = StringBuilder()
     private var pastedConnectionLink: String? = null
     private var cursor: Int = 0
@@ -47,6 +50,7 @@ class TvTokenKeyboard(
         rootView = LayoutInflater.from(context)
             .inflate(R.layout.view_tv_token_keyboard, null, false)
         display = rootView.findViewById(R.id.tv_keyboard_display)
+        counter = rootView.findViewById(R.id.tv_keyboard_counter)
         caseKey = rootView.findViewById(R.id.tv_key_case)
         connectKey = rootView.findViewById(R.id.tv_key_connect)
 
@@ -80,9 +84,6 @@ class TvTokenKeyboard(
         )
         clear()
         val firstKey = gridKeys.firstOrNull() ?: return
-        // The grid ids are generated, so the way back into it from the Telegram
-        // button can only be wired once the keyboard is mounted.
-        parent.rootView.findViewById<View>(R.id.wgk_bot_link_btn)?.nextFocusRightId = firstKey.id
         // requestFocus() must run after the layout pass; calling it synchronously
         // right after addView() is a no-op on many TV devices (view not measured yet).
         firstKey.post { firstKey.requestFocus() }
@@ -129,27 +130,38 @@ class TvTokenKeyboard(
 
     // ── Grid ───────────────────────────────────────────────────────────────────
 
+    /**
+     * Rows of [GRID_COLUMNS] keys. Each key is its visible size plus a focus halo
+     * on every side, so rows overlap by wgk_tv_key_view_overlap and pad their
+     * ends by wgk_tv_key_row_pad_h, as the editing rows in the XML do: the outer
+     * keys stay inside their row, where nothing clips their halo, and the
+     * visible keys keep the mock's gaps and line up with the field.
+     */
     private fun buildGrid(host: LinearLayout) {
         val inflater = LayoutInflater.from(context)
         val chars = TokenFormat.KEYBOARD_CHARS
-        val rowGap = TypedValue.applyDimension(
-            TypedValue.COMPLEX_UNIT_DIP, GRID_ROW_GAP_DP, context.resources.displayMetrics
-        ).toInt()
+        val res = context.resources
+        val rowOverlap = res.getDimensionPixelOffset(R.dimen.wgk_tv_key_view_overlap)
+        val rowPad = res.getDimensionPixelOffset(R.dimen.wgk_tv_key_row_pad_h)
 
         var index = 0
         while (index < chars.length) {
             val row = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
+                clipToPadding = false
+                setPaddingRelative(rowPad, 0, rowPad, 0)
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = rowGap }
+                ).apply {
+                    if (index > 0) topMargin = rowOverlap
+                }
             }
             host.addView(row)
             var column = 0
             while (column < GRID_COLUMNS && index < chars.length) {
                 val char = chars[index]
-                val key = inflater.inflate(R.layout.view_tv_token_key, row, false) as MaterialButton
+                val key = inflater.inflate(R.layout.view_tv_token_key, row, false) as TextView
                 key.id = View.generateViewId()
                 key.setOnClickListener { appendChar(cased(char)) }
                 row.addView(key)
@@ -163,19 +175,20 @@ class TvTokenKeyboard(
 
     /**
      * The grid ids are generated, so D-pad focus order is wired here rather than
-     * in XML: inside the grid by row/column, off its left edge back to the
-     * Telegram button, and off its bottom edge into the nav row.
+     * in XML: inside the grid by row/column, off its bottom edge into the editing
+     * row. Off its left edge there is no fixed target: the search finds whatever
+     * the screen has on the left (the payment check, when the subscription has
+     * run out) or nothing, and the focus stays.
      */
     private fun wireGridFocus() {
         val navKeys = listOf(
-            R.id.tv_key_left, R.id.tv_key_right, R.id.tv_key_backspace, R.id.tv_key_case
+            R.id.tv_key_left, R.id.tv_key_right, R.id.tv_key_backspace, R.id.tv_key_clear, R.id.tv_key_case
         )
         val lastRowStart = (gridKeys.size - 1) / GRID_COLUMNS * GRID_COLUMNS
 
         for ((index, key) in gridKeys.withIndex()) {
             val column = index % GRID_COLUMNS
-            key.nextFocusLeftId =
-                if (column == 0) R.id.wgk_bot_link_btn else gridKeys[index - 1].id
+            key.nextFocusLeftId = if (column == 0) View.NO_ID else gridKeys[index - 1].id
             val rightNeighbour =
                 if (column < GRID_COLUMNS - 1) gridKeys.getOrNull(index + 1) else null
             key.nextFocusRightId = rightNeighbour?.id ?: key.id
@@ -281,13 +294,22 @@ class TvTokenKeyboard(
     private fun render() {
         display.text = if (pastedConnectionLink != null) context.getString(R.string.wgk_connection_link_ready)
         else TokenFormat.display(token.toString(), cursor)
+        // "24 of 32" while what is typed can still be the bot's key, a UUID of 32
+        // hex digits; a plain count for anything else, which has no fixed length.
+        // Nothing to count for a pasted link, which the field already names.
+        counter.text = when {
+            pastedConnectionLink != null -> ""
+            TokenFormat.isUuidHexSoFar(token.toString()) ->
+                context.getString(R.string.wgk_tv_kb_count, token.length, TokenFormat.UUID_HEX_LENGTH)
+            else -> context.getString(R.string.wgk_tv_kb_count_free, token.length)
+        }
         // A half-typed token would otherwise look like a dead Connect key.
         connectKey.isEnabled = pastedConnectionLink != null || TokenFormat.isValid(TokenFormat.fromKeyboard(token.toString()))
     }
 
     companion object {
-        private const val GRID_COLUMNS = 6
-        private const val GRID_ROW_GAP_DP = 4f
+        /** Four rows for 0-9 a-z, as many as the mock's hex grid has. */
+        private const val GRID_COLUMNS = 9
         private const val CASE_LABEL_LOWER = "abc"
         private const val CASE_LABEL_UPPER = "ABC"
     }

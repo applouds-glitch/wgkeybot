@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-  ~ Android TV variant of the profile card.
-  ~ Larger icon, bigger buttons (52 dp), larger text.
-  ~ IDs must match layout/view_wgk_profile_card.xml (same ViewBinding class).
-  ~ D-pad chain: ↑ → connect button  ↓ → proxy mode row  ↔ auto-refresh ↔ refresh
+  ~ Android TV variant of the profile card. Not shown on TV any more: the TV
+  ~ main screen has no profile card, its loaded time and both of its controls
+  ~ moved into the Конфигурация row of the list (view_wgk_footer_row). The
+  ~ card stays in the layout, inside a hidden frame, because the shared
+  ~ fragment code reaches into it: IDs must match
+  ~ layout/view_wgk_profile_card.xml (same ViewBinding class), and
+  ~ wgk_auto_refresh_btn is TV only. Its buttons are not focusable, so nothing
+  ~ can land on them through a stale chain.
   -->
 <layout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
@@ -80,11 +84,11 @@
                 android:insetLeft="0dp"
                 android:insetRight="0dp"
                 android:layout_marginEnd="8dp"
-                android:focusable="true"
+                android:focusable="false"
                 android:nextFocusUp="@id/wgk_connect_btn"
                 android:nextFocusLeft="@id/wgk_connect_btn"
                 android:nextFocusRight="@id/wgk_refresh_btn"
-                android:nextFocusDown="@id/wgk_connection_mode_btn"
+                android:nextFocusDown="@id/wgk_config_btn"
                 android:contentDescription="@string/wgk_auto_refresh_cd"
                 app:icon="@drawable/ic_auto_renew"
                 app:iconGravity="textTop"
@@ -103,10 +107,10 @@
                 android:insetBottom="0dp"
                 android:insetLeft="0dp"
                 android:insetRight="0dp"
-                android:focusable="true"
+                android:focusable="false"
                 android:nextFocusUp="@id/wgk_connect_btn"
                 android:nextFocusLeft="@id/wgk_auto_refresh_btn"
-                android:nextFocusDown="@id/wgk_connection_mode_btn"
+                android:nextFocusDown="@id/wgk_config_btn"
                 android:contentDescription="@string/wgk_profile_refresh_cd"
                 app:icon="@drawable/ic_refresh"
                 app:iconGravity="textTop"

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Text of the Connect key under the TV keyboard: on the primary fill it is
+  ~ wgk_on_primary, and greyed out on the plain surface it drops to while the
+  ~ token is incomplete (wgk_tv_focus_primary_bg).
+  -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="false" android:color="@color/wgk_outline" />
+    <item android:color="@color/wgk_on_primary" />
+</selector>

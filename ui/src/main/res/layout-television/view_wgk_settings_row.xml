@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Android TV variant of the row that leads somewhere or acts: an option row of
+  ~ the TV settings pane, a title over a value line. IDs and view types must
+  ~ match layout/view_wgk_settings_row.xml (same binding class). The leading
+  ~ icon is kept for the binding but not shown, as the mock's options have none.
+  ~ Also used, through the same name, by the other settings screens a TV can
+  ~ open (the VK links screen), which suits them: it is the TV's row.
+  ~ The view is the row plus a focus halo on every side (wgk_tv_focus_bg).
+  -->
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <LinearLayout
+        android:id="@+id/wgk_row_btn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/wgk_tv_focus_bg"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center_vertical"
+        android:minHeight="@dimen/wgk_tv_option_view_min"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/wgk_tv_option_view_pad_h"
+        android:paddingTop="@dimen/wgk_tv_option_view_pad_v"
+        android:paddingEnd="@dimen/wgk_tv_option_view_pad_h"
+        android:paddingBottom="@dimen/wgk_tv_option_view_pad_v">
+
+        <FrameLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:visibility="gone">
+
+            <ImageView
+                android:id="@+id/wgk_row_icon"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:contentDescription="@null" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/wgk_row_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-medium"
+                android:textColor="@color/wgk_on_surface"
+                android:textSize="@dimen/wgk_tv_text_option_title" />
+
+            <TextView
+                android:id="@+id/wgk_row_value"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/wgk_tv_metric_label_gap"
+                android:maxLines="2"
+                android:textColor="@color/wgk_on_surface_variant"
+                android:textSize="@dimen/wgk_tv_text_option_desc" />
+        </LinearLayout>
+
+        <ImageView
+            android:id="@+id/wgk_row_chevron"
+            android:layout_width="@dimen/wgk_tv_row_chevron"
+            android:layout_height="@dimen/wgk_tv_row_chevron"
+            android:layout_marginStart="@dimen/wgk_tv_option_inner_gap"
+            android:contentDescription="@null"
+            android:src="@drawable/ic_chevron_right"
+            app:tint="@color/wgk_outline" />
+    </LinearLayout>
+</layout>

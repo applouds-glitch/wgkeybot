@@ -453,8 +453,6 @@
     <string name="wgk_connection_mode_title">Режим соединения</string>
     <string name="wgk_connection_mode_standard_value">Основной</string>
     <string name="wgk_connection_mode_reserve_value">Резервный</string>
-    <string name="wgk_connection_mode_standard_option">Основной: быстрее, рекомендуется</string>
-    <string name="wgk_connection_mode_reserve_option">Резервный: медленнее, если основной не работает</string>
     <string name="wgk_connection_mode_standard_desc">Быстрее, рекомендуется</string>
     <string name="wgk_connection_mode_reserve_desc">Медленнее. Включите, если основной не работает</string>
     <string name="wgk_relay_transport_title">Транспорт до релеев</string>
@@ -662,4 +660,67 @@
     <string name="wgk_vk_links_result_captcha">Ссылка %1$d: VK требует капчу, проверить нельзя</string>
     <string name="wgk_vk_links_result_temporary">Ссылка %1$d: VK не ответил, попробуйте позже</string>
     <string name="wgk_vk_links_result_error">Ссылка %1$d: VK отклонил запрос</string>
+
+    <!-- ── Android TV main screen (layout-television, after the TV mock) ── -->
+    <string name="wgk_tv_hint_connect">Нажмите OK, чтобы подключиться</string>
+    <string name="wgk_tv_hint_disconnect">OK на пульте отключает</string>
+    <string name="wgk_tv_stage_tunnel">Туннель</string>
+    <string name="wgk_tv_stage_handshake">Рукопожатие</string>
+    <string name="wgk_tv_stage_routing">Маршрут</string>
+    <string name="wgk_tv_session_title">СЕАНС</string>
+    <string name="wgk_tv_metric_time">Время</string>
+    <string name="wgk_tv_metric_received">Получено</string>
+    <string name="wgk_tv_metric_sent">Отправлено</string>
+    <string name="wgk_tv_settings_row_value">Режим, транспорт, обновление</string>
+    <string name="wgk_tv_hint_ok_open">открыть</string>
+    <string name="wgk_tv_hint_left_connect">к кнопке подключения</string>
+    <string name="wgk_tv_net_mobile">Мобильная сеть</string>
+    <string name="wgk_tv_net_none">Нет сети</string>
+    <string name="wgk_tv_subscription_until">Подписка до %1$s</string>
+    <string name="wgk_tv_config_value_auto">%1$s · автообновление</string>
+    <string name="wgk_tv_config_refreshing">Обновляем…</string>
+    <string name="wgk_tv_config_refresh_now">Обновить сейчас</string>
+    <string name="wgk_tv_config_auto_turn_on">Включить автообновление</string>
+    <string name="wgk_tv_config_auto_turn_off">Выключить автообновление</string>
+
+    <!-- ── Android TV first-run screen (the key and the D-pad keyboard) ── -->
+    <string name="wgk_tv_no_key_title">Подключите ключ</string>
+    <string name="wgk_tv_no_key_subtitle">Ключ выдаёт бот @wg_key_bot в Telegram. Наберите его на клавиатуре справа.</string>
+    <string name="wgk_tv_key_where_title">Где взять ключ</string>
+    <string name="wgk_tv_key_where_body">Откройте @wg_key_bot на телефоне, нажмите «Получить ключ» и перепишите 32 знака. Регистр не важен.</string>
+    <string name="wgk_tv_key_expired_hint">Подписка истекла? Продлите её в боте, ключ менять не нужно.</string>
+    <string name="wgk_tv_kb_label">КЛЮЧ ИЗ БОТА</string>
+    <string name="wgk_tv_kb_count">Введено %1$d из %2$d</string>
+    <string name="wgk_tv_kb_count_free">Введено знаков: %1$d</string>
+    <string name="wgk_tv_kb_left_cd">Курсор влево</string>
+    <string name="wgk_tv_kb_right_cd">Курсор вправо</string>
+    <string name="wgk_tv_kb_backspace_cd">Стереть</string>
+    <string name="wgk_tv_hint_ok_type">ввести знак</string>
+    <string name="wgk_tv_hint_hold">удерживайте для быстрого ввода</string>
+
+    <!-- ── Android TV settings (two panes, layout-television/app_settings_activity) ── -->
+    <string name="wgk_tv_back_cd">Назад</string>
+    <string name="wgk_tv_section_update">Обновление</string>
+    <string name="wgk_tv_hint_to_options">к вариантам</string>
+    <string name="wgk_tv_hint_ok_choose">выбрать</string>
+    <string name="wgk_tv_hint_back_main">на главный</string>
+    <string name="wgk_tv_config_auto">Авто</string>
+    <string name="wgk_tv_config_manual">Вручную</string>
+    <string name="wgk_tv_value_on">Вкл.</string>
+    <string name="wgk_tv_value_off">Выкл.</string>
+    <string name="wgk_tv_config_refresh_desc">Запросить конфиг у бота и переподключиться, если он изменился</string>
+    <string name="wgk_tv_update_allow_desc">Откроет системный экран разрешения</string>
+    <string name="wgk_tv_update_allowed">Установка разрешена</string>
+    <string name="wgk_tv_theme_dark_desc">Как у Android TV</string>
+    <string name="wgk_tv_pane_mode_help">Что использовать при следующем подключении.</string>
+    <string name="wgk_tv_pane_transport_help">Как достучаться до релеев из вашей сети.</string>
+    <string name="wgk_tv_pane_transport_note">Авто: UDP, а в мобильной сети Ростелекома TCP. Переключение подхватывается без переподключения.</string>
+    <string name="wgk_tv_pane_config_help">Обновление конфига из бота.</string>
+    <string name="wgk_tv_pane_config_note">Автообновление подтягивает новый конфиг раз в 12 часов и применяет его при следующем подключении. «Обновить сейчас» делает это сразу, на главном экране.</string>
+    <string name="wgk_tv_pane_theme_help">На телевизоре всегда тёмная тема.</string>
+    <string name="wgk_tv_pane_theme_note">Светлая тема на TV отключена: панель Android TV и соседние приложения тёмные, светлый экран режет глаза в тёмной комнате.</string>
+    <string name="wgk_tv_pane_update_help">Версия приложения и проверка новой.</string>
+    <string name="wgk_tv_pane_update_note">Если Android не даёт установить, разрешите неизвестные источники: Настройки → Приложения → Безопасность и ограничения → Неизвестные источники → WGKeyBot.</string>
+    <string name="wgk_tv_pane_expert_help">MTU, DNS и свои ссылки VK.</string>
+    <string name="wgk_tv_pane_expert_note">Включайте только по просьбе поддержки: неверный MTU или DNS ломает подключение, и восстановить его с пульта труднее, чем с телефона.</string>
 </resources>

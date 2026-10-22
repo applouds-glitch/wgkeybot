@@ -156,9 +156,18 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	}()
 
 	// The downlink loss of each relay, judged against the others; a relay
-	// whose downlink went bad rests and its streams move (relay_rest.go).
+	// whose downlink went bad rests and its streams move (relay_rest.go). The
+	// rests an earlier process gave out are read back before any stream picks
+	// its relay (relay_rest_store.go).
 	setRelayRestPeer(cfg.PeerAddr.String())
+	loadRelayRest(time.Now())
 	go runRelayLossJudge(gCtx)
+
+	// A stream that hears nothing under load while its siblings hear their
+	// relays leaves the rotation at once, ahead of dispatchStaleAfter
+	// (silent_under_load.go); the dispatcher and the WGH1 reporter read the
+	// verdict off the stream.
+	go runSilentUnderLoadJudge(gCtx, allStreams)
 
 	// What the relay connections are doing, for the streams that run over TCP;
 	// asleep while none does (relay_tcp_watch.go).

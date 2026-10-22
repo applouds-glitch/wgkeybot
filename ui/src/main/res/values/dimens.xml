@@ -46,11 +46,6 @@
     <dimen name="wgk_status_gap">16dp</dimen>
     <dimen name="wgk_footer_gap">12dp</dimen>
 
-    <!-- TV keyboard key height. The grid holds 0-9 a-z in 6 rows, so with the
-         display, the nav row and the action row on top of it the whole keyboard
-         is ~7.5 keys tall — it has to fit 540dp of TV screen minus the action
-         bar. Keep the row gap in TvTokenKeyboard.GRID_ROW_GAP_DP in step. -->
-    <dimen name="wgk_tv_key_height">44dp</dimen>
     <!-- Settings screen. The content column is capped rather than stretched:
          the manifest still locks the screen to portrait, but Android 16 ignores
          that lock on sw>=600dp, so tablets and unfolded foldables arrive here in

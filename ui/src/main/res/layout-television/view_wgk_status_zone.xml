@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ Android TV variant of the status zone: what sits under the connect ring in
+  ~ the mock's left column. The state in large type, one line under it, and the
+  ~ three stage bars Туннель · Рукопожатие · Маршрут.
+  ~
+  ~ IDs must match layout/view_wgk_status_zone.xml (same binding class), so the
+  ~ fragment's status code runs here unchanged. Two of them change their job:
+  ~  - wgk_status_sub is the hint line. TunnelListFragment writes the remote
+  ~    hint into it at rest ("OK connects", "OK disconnects") and the usual
+  ~    detail otherwise, a failure reason above all.
+  ~  - The figures (wgk_metrics_container and the three values) are kept for the
+  ~    binding but never shown: on TV they have a card of their own in the right
+  ~    column (view_wgk_tv_session_card), and the stage bars stay here for good,
+  ~    green once connected, as the mock has them.
+  ~ The dots are gone too, the mock has bars and names only.
+  -->
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/wgk_status_headline"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:accessibilityLiveRegion="polite"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:maxLines="2"
+            android:text="@string/wgk_status_disconnected"
+            android:textColor="@color/wgk_on_surface"
+            android:textSize="@dimen/wgk_tv_text_headline" />
+
+        <TextView
+            android:id="@+id/wgk_status_sub"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/wgk_tv_title_gap"
+            android:accessibilityLiveRegion="polite"
+            android:gravity="center"
+            android:maxLines="3"
+            android:text="@string/wgk_tv_hint_connect"
+            android:textColor="@color/wgk_on_surface_variant"
+            android:textSize="@dimen/wgk_tv_text_hint" />
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/wgk_tv_left_gap">
+
+            <LinearLayout
+                android:id="@+id/wgk_stage_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:baselineAligned="false"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <com.google.android.material.progressindicator.LinearProgressIndicator
+                        android:id="@+id/wgk_stage_tunnel_indicator"
+                        style="@style/Widget.WGKeyBot.Tv.StageBar"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content" />
+
+                    <View
+                        android:id="@+id/wgk_dot_tunnel"
+                        android:layout_width="0dp"
+                        android:layout_height="0dp"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/wgk_lbl_tunnel"
+                        style="@style/Widget.WGKeyBot.Tv.StageLabel"
+                        android:text="@string/wgk_tv_stage_tunnel" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/wgk_tv_stage_gap"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <com.google.android.material.progressindicator.LinearProgressIndicator
+                        android:id="@+id/wgk_stage_handshake_indicator"
+                        style="@style/Widget.WGKeyBot.Tv.StageBar"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content" />
+
+                    <View
+                        android:id="@+id/wgk_dot_handshake"
+                        android:layout_width="0dp"
+                        android:layout_height="0dp"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/wgk_lbl_handshake"
+                        style="@style/Widget.WGKeyBot.Tv.StageLabel"
+                        android:text="@string/wgk_tv_stage_handshake" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/wgk_tv_stage_gap"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <com.google.android.material.progressindicator.LinearProgressIndicator
+                        android:id="@+id/wgk_stage_routing_indicator"
+                        style="@style/Widget.WGKeyBot.Tv.StageBar"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content" />
+
+                    <View
+                        android:id="@+id/wgk_dot_routing"
+                        android:layout_width="0dp"
+                        android:layout_height="0dp"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/wgk_lbl_routing"
+                        style="@style/Widget.WGKeyBot.Tv.StageLabel"
+                        android:text="@string/wgk_tv_stage_routing" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Kept for the binding, never shown on TV: see the header. -->
+            <LinearLayout
+                android:id="@+id/wgk_metrics_container"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/wgk_uptime_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <TextView
+                    android:id="@+id/wgk_received_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <TextView
+                    android:id="@+id/wgk_sent_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+        </FrameLayout>
+    </LinearLayout>
+</layout>

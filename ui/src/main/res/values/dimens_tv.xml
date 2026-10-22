@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ Android TV size tokens, from the 1920x1080 TV mock (Main, Settings, Token).
+  ~ Every value here is a mock pixel measure times one factor; the three
+  ~ files differ only in that factor, so the design keeps its proportions
+  ~ whatever density the TV reports (xhdpi: 1920x1080 px is 960x540 dp, one mock pixel is half a dp).
+  ~ The TV layouts use nothing else for size, which is what makes that work.
+  ~ Generated from one table of mock pixels: change a measure in all three
+  ~ files at once, keeping value = px x factor (rounded to half a dp).
+  ~
+  ~ The *_view_* tokens are the halo at work: focus draws a ring and a halo
+  ~ outside the element, as the mock's box-shadow does, and a background
+  ~ cannot paint outside its view. So a focusable view is its visible size
+  ~ plus a halo on every side (the drawables keep the resting look inset by
+  ~ the halo), and neighbours overlap by what the visible gap leaves over.
+  ~ A focusable view never sticks out of its parent, which would clip its
+  ~ halo: the views beside it that do not take focus are moved in by a halo
+  ~ instead, so the visible edges still line up.
+  -->
+<resources>
+    <dimen name="wgk_tv_safe_h">40dp</dimen>
+    <dimen name="wgk_tv_safe_v">28dp</dimen>
+    <dimen name="wgk_tv_header_height">32dp</dimen>
+    <dimen name="wgk_tv_block_gap">20dp</dimen>
+    <dimen name="wgk_tv_zone_gap">40dp</dimen>
+    <dimen name="wgk_tv_left_zone">380dp</dimen>
+    <dimen name="wgk_tv_ring">160dp</dimen>
+    <dimen name="wgk_tv_ring_icon">64dp</dimen>
+    <dimen name="wgk_tv_left_gap">18dp</dimen>
+    <dimen name="wgk_tv_title_gap">6dp</dimen>
+    <dimen name="wgk_tv_stage_width">320dp</dimen>
+    <dimen name="wgk_tv_stage_gap">8dp</dimen>
+    <dimen name="wgk_tv_stage_bar_height">3dp</dimen>
+    <dimen name="wgk_tv_stage_bar_radius">1.5dp</dimen>
+    <dimen name="wgk_tv_stage_label_gap">6dp</dimen>
+    <dimen name="wgk_tv_right_gap">12dp</dimen>
+    <dimen name="wgk_tv_card_radius">12dp</dimen>
+    <dimen name="wgk_tv_card_pad_v">14dp</dimen>
+    <dimen name="wgk_tv_card_pad_h">16dp</dimen>
+    <dimen name="wgk_tv_card_gap">10dp</dimen>
+    <dimen name="wgk_tv_metric_gap">12dp</dimen>
+    <dimen name="wgk_tv_metric_label_gap">3dp</dimen>
+    <dimen name="wgk_tv_row_height">46dp</dimen>
+    <dimen name="wgk_tv_row_radius">10dp</dimen>
+    <dimen name="wgk_tv_row_gap">7dp</dimen>
+    <dimen name="wgk_tv_row_pad_h">14dp</dimen>
+    <dimen name="wgk_tv_row_icon">17dp</dimen>
+    <dimen name="wgk_tv_row_inner_gap">12dp</dimen>
+    <dimen name="wgk_tv_row_chevron">15dp</dimen>
+    <dimen name="wgk_tv_pill_height">28dp</dimen>
+    <dimen name="wgk_tv_pill_radius">14dp</dimen>
+    <dimen name="wgk_tv_pill_pad_h">11dp</dimen>
+    <dimen name="wgk_tv_pill_icon">14dp</dimen>
+    <dimen name="wgk_tv_pill_inner_gap">6dp</dimen>
+    <dimen name="wgk_tv_pills_gap">8dp</dimen>
+    <dimen name="wgk_tv_brand_gap">8dp</dimen>
+    <dimen name="wgk_tv_keycap_min_width">22dp</dimen>
+    <dimen name="wgk_tv_keycap_pad_h">5dp</dimen>
+    <dimen name="wgk_tv_keycap_pad_v">1dp</dimen>
+    <dimen name="wgk_tv_keycap_radius">5dp</dimen>
+    <dimen name="wgk_tv_keycap_stroke">1dp</dimen>
+    <dimen name="wgk_tv_keycap_gap">4dp</dimen>
+    <dimen name="wgk_tv_hint_gap">16dp</dimen>
+    <dimen name="wgk_tv_back_btn">32dp</dimen>
+    <dimen name="wgk_tv_back_icon">17dp</dimen>
+    <dimen name="wgk_tv_back_gap">12dp</dimen>
+    <dimen name="wgk_tv_section_width">280dp</dimen>
+    <dimen name="wgk_tv_pane_gap">32dp</dimen>
+    <dimen name="wgk_tv_section_height">44dp</dimen>
+    <dimen name="wgk_tv_section_gap">6dp</dimen>
+    <dimen name="wgk_tv_section_pad_h">14dp</dimen>
+    <dimen name="wgk_tv_option_min">56dp</dimen>
+    <dimen name="wgk_tv_option_pad_v">10dp</dimen>
+    <dimen name="wgk_tv_option_pad_h">16dp</dimen>
+    <dimen name="wgk_tv_option_gap">7dp</dimen>
+    <dimen name="wgk_tv_option_inner_gap">14dp</dimen>
+    <dimen name="wgk_tv_pane_title_gap">4dp</dimen>
+    <dimen name="wgk_tv_pane_block_gap">12dp</dimen>
+    <dimen name="wgk_tv_note_pad_v">12dp</dimen>
+    <dimen name="wgk_tv_note_pad_h">16dp</dimen>
+    <dimen name="wgk_tv_token_left_zone">410dp</dimen>
+    <dimen name="wgk_tv_token_left_gap">16dp</dimen>
+    <dimen name="wgk_tv_token_right_gap">10dp</dimen>
+    <dimen name="wgk_tv_key_card_pad">14dp</dimen>
+    <dimen name="wgk_tv_key_card_gap">14dp</dimen>
+    <dimen name="wgk_tv_key_tile">80dp</dimen>
+    <dimen name="wgk_tv_key_tile_icon">40dp</dimen>
+    <dimen name="wgk_tv_field_height">48dp</dimen>
+    <dimen name="wgk_tv_field_pad_h">14dp</dimen>
+    <dimen name="wgk_tv_key_height">42dp</dimen>
+    <dimen name="wgk_tv_key_gap">6dp</dimen>
+    <dimen name="wgk_tv_action_height">46dp</dimen>
+    <dimen name="wgk_tv_focus_ring">2dp</dimen>
+    <dimen name="wgk_tv_focus_halo">6dp</dimen>
+    <dimen name="wgk_tv_text_brand">18sp</dimen>
+    <dimen name="wgk_tv_text_version">11sp</dimen>
+    <dimen name="wgk_tv_text_pill">12sp</dimen>
+    <dimen name="wgk_tv_text_headline">24sp</dimen>
+    <dimen name="wgk_tv_text_hint">14sp</dimen>
+    <dimen name="wgk_tv_text_mono_label">11sp</dimen>
+    <dimen name="wgk_tv_text_metric_label">11sp</dimen>
+    <dimen name="wgk_tv_text_metric_value">17sp</dimen>
+    <dimen name="wgk_tv_text_row_title">15sp</dimen>
+    <dimen name="wgk_tv_text_row_value">13sp</dimen>
+    <dimen name="wgk_tv_text_remote">11sp</dimen>
+    <dimen name="wgk_tv_text_screen_title">20sp</dimen>
+    <dimen name="wgk_tv_text_pane_title">18sp</dimen>
+    <dimen name="wgk_tv_text_pane_help">13sp</dimen>
+    <dimen name="wgk_tv_text_option_title">15sp</dimen>
+    <dimen name="wgk_tv_text_option_desc">12sp</dimen>
+    <dimen name="wgk_tv_text_note">12sp</dimen>
+    <dimen name="wgk_tv_text_section_value">12sp</dimen>
+    <dimen name="wgk_tv_text_token_body">14sp</dimen>
+    <dimen name="wgk_tv_text_key_card_title">14sp</dimen>
+    <dimen name="wgk_tv_text_key_card_body">12sp</dimen>
+    <dimen name="wgk_tv_text_field">17sp</dimen>
+    <dimen name="wgk_tv_text_key">17sp</dimen>
+    <dimen name="wgk_tv_text_key_action">15sp</dimen>
+    <dimen name="wgk_tv_text_key_small">13sp</dimen>
+    <dimen name="wgk_tv_text_paste">14sp</dimen>
+    <dimen name="wgk_tv_text_connect">15sp</dimen>
+    <dimen name="wgk_tv_focus_ring_inset">4dp</dimen>
+    <dimen name="wgk_tv_focus_ring_radius">12dp</dimen>
+    <dimen name="wgk_tv_focus_halo_radius">16dp</dimen>
+    <dimen name="wgk_tv_halo_neg">-6dp</dimen>
+    <dimen name="wgk_tv_ring_frame">172dp</dimen>
+    <dimen name="wgk_tv_row_view_height">58dp</dimen>
+    <dimen name="wgk_tv_row_view_pad_h">20dp</dimen>
+    <dimen name="wgk_tv_row_view_overlap">-5dp</dimen>
+    <dimen name="wgk_tv_section_view_height">56dp</dimen>
+    <dimen name="wgk_tv_section_view_pad_h">20dp</dimen>
+    <dimen name="wgk_tv_section_view_overlap">-6dp</dimen>
+    <dimen name="wgk_tv_option_view_min">68dp</dimen>
+    <dimen name="wgk_tv_option_view_pad_v">16dp</dimen>
+    <dimen name="wgk_tv_option_view_pad_h">22dp</dimen>
+    <dimen name="wgk_tv_option_view_overlap">-5dp</dimen>
+    <dimen name="wgk_tv_back_view">44dp</dimen>
+    <dimen name="wgk_tv_key_view_height">54dp</dimen>
+    <dimen name="wgk_tv_action_view_height">58dp</dimen>
+    <dimen name="wgk_tv_left_gap_ring">12dp</dimen>
+    <dimen name="wgk_tv_right_gap_row">6dp</dimen>
+    <dimen name="wgk_tv_zone_gap_halo">34dp</dimen>
+    <dimen name="wgk_tv_pane_gap_halo">20dp</dimen>
+    <dimen name="wgk_tv_pane_block_gap_halo">6dp</dimen>
+    <dimen name="wgk_tv_token_right_gap_halo">4dp</dimen>
+    <dimen name="wgk_tv_key_card_gap_halo">8dp</dimen>
+    <dimen name="wgk_tv_key_view_overlap">-6dp</dimen>
+    <dimen name="wgk_tv_key_view_margin_h">-3dp</dimen>
+    <dimen name="wgk_tv_key_row_pad_h">3dp</dimen>
+    <dimen name="wgk_tv_token_action_gap">-2dp</dimen>
+    <dimen name="wgk_tv_section_column">292dp</dimen>
+    <dimen name="wgk_tv_block_gap_halo">14dp</dimen>
+    <dimen name="wgk_tv_back_gap_halo">6dp</dimen>
+    <dimen name="wgk_tv_ring_arc">148dp</dimen>
+</resources>

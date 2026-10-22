@@ -199,7 +199,7 @@ func TestOutageOrderStepsAroundACrowdedRelayOnlyAmongThoseThatCarried(t *testing
 	crowded := map[string]bool{electTestB: true}
 	heads := map[string]int{}
 	for id := 0; id < 6; id++ {
-		got := assignRelaysAround(addrs, id, time.Now(), crowded)
+		got := assignRelaysAround(addrs, id, time.Now(), crowded, nil)
 		if got[2] != electTestB {
 			t.Fatalf("stream %d got %v: want the crowded relay behind the two others that carried", id, got)
 		}
@@ -215,7 +215,7 @@ func TestOutageOrderStepsAroundACrowdedRelayOnlyAmongThoseThatCarried(t *testing
 	proveServer(electTestB, 10*time.Second)
 	noteServerDemotedAt(electTestB, time.Now())
 	for id := 0; id < 4; id++ {
-		got := assignRelaysAround([]string{electTestA, electTestB}, id, time.Now(), map[string]bool{electTestA: true})
+		got := assignRelaysAround([]string{electTestA, electTestB}, id, time.Now(), map[string]bool{electTestA: true}, nil)
 		if got[0] != electTestA {
 			t.Fatalf("stream %d got %v: a crowded relay went behind the one that eats the data plane", id, got)
 		}

@@ -74,18 +74,21 @@ func fetchCreds(ctx context.Context, link string, groupID int) (user, pass strin
 // Returns a fresh slice — addrs may alias the cached ServerAddrs slice (returned
 // by reference on a cache hit), so it must not be mutated in place.
 func assignRelays(addrs []string, streamID int, now time.Time) []string {
-	return assignRelaysAround(addrs, streamID, now, nil)
+	return assignRelaysAround(addrs, streamID, now, nil, nil)
 }
 
 // assignRelaysAround is assignRelays with the relays in crowded — full of a
-// credential's ghosts (orphaned_allocations.go) — put behind the rest. The
-// streams are spread over the rest, rotated among them: rotated first and moved
-// after, every crowded relay would hand its streams to the relay behind it, the
-// heads of six streams over A…F with B C D crowded coming out A E E E E F
-// instead of A E F A E F. Periodic-download run 18.10, the dark at 21:30: with
-// one relay crowded and two more marked, 5 of the 10 streams came back on one
-// of the three left.
-func assignRelaysAround(addrs []string, streamID int, now time.Time, crowded map[string]bool) []string {
+// credential's ghosts (orphaned_allocations.go) — put behind the rest, and those
+// in lossy — losing downlink in the window a session was moved off a rested
+// relay in (relay_move.go) — behind the clean ones, ahead of the crowded: a
+// window's loss is a moment's evidence, the ghosts hold the relay's quota for
+// the allocation lifetime. The streams are spread over each tier, rotated among
+// its relays: rotated first and moved after, every crowded relay would hand its
+// streams to the relay behind it, the heads of six streams over A…F with B C D
+// crowded coming out A E E E E F instead of A E F A E F. Periodic-download run
+// 18.10, the dark at 21:30: with one relay crowded and two more marked, 5 of
+// the 10 streams came back on one of the three left.
+func assignRelaysAround(addrs []string, streamID int, now time.Time, crowded, lossy map[string]bool) []string {
 	sorted := append([]string(nil), addrs...)
 	sort.Strings(sorted)
 	sorted = slices.Compact(sorted)
@@ -101,18 +104,24 @@ func assignRelaysAround(addrs []string, streamID int, now time.Time, crowded map
 	if len(live) == 0 {
 		return outageOrder(sorted, streamID, crowded)
 	}
-	var clean, full []string
+	var clean, losing, full []string
 	for _, addr := range live {
-		if crowded[addr] {
+		switch {
+		case crowded[addr]:
 			full = append(full, addr)
-		} else {
+		case lossy[addr]:
+			losing = append(losing, addr)
+		default:
 			clean = append(clean, addr)
 		}
 	}
-	if len(clean) == 0 || len(full) == 0 {
-		return rotateServers(live, streamID%len(live))
+	out := make([]string, 0, len(live))
+	for _, tier := range [][]string{clean, losing, full} {
+		if len(tier) > 0 {
+			out = append(out, rotateServers(tier, streamID%len(tier))...)
+		}
 	}
-	return append(rotateServers(clean, streamID%len(clean)), rotateServers(full, streamID%len(full))...)
+	return out
 }
 
 // relayUsable reports whether addr has no verdict against it: not demoted, not
@@ -136,8 +145,15 @@ func hasOtherUsableRelay(relays []string, addr string, now time.Time) bool {
 // dials addrs in: its own relay first (assignRelays), with the relays crowded
 // with the credential's ghosts behind the rest.
 func streamAttemptOrder(user string, addrs []string, streamID int, cfg WorkerGroupConfig, now time.Time) []string {
+	return streamAttemptOrderAround(user, addrs, streamID, cfg, now, nil)
+}
+
+// streamAttemptOrderAround is streamAttemptOrder with the relays in lossy
+// dialed after the others that are not crowded: the attempt of a stream just
+// moved off a rested relay (relay_move.go).
+func streamAttemptOrderAround(user string, addrs []string, streamID int, cfg WorkerGroupConfig, now time.Time, lossy map[string]bool) []string {
 	crowded := crowdedRelays(user, addrs, now)
-	order := assignRelaysAround(addrs, streamID, now, crowded)
+	order := assignRelaysAround(addrs, streamID, now, crowded, lossy)
 	announceCrowded(user, crowded, order, now)
 	return order
 }

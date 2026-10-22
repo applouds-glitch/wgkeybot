@@ -195,6 +195,10 @@ type stream struct {
 	// handshake verdict to turn_server_health.go; it is rewritten on every
 	// attempt and read only by the single goroutine driving this stream.
 	serverAddr string
+	// allocateRTT is the Dial→Allocate latency of the session on serverAddr
+	// (winner.rtt), set alongside it and read the same way: the relay proof over
+	// UDP sizes its window by it (relayProofLimit).
+	allocateRTT time.Duration
 	// overTCP is published before ready; the dispatcher also reads it when
 	// deciding whether this stream accepts priority packets.
 	overTCP atomic.Bool
@@ -214,6 +218,10 @@ type stream struct {
 	// whether it has another to go to. Set and cleared by attemptOnce.
 	attempt atomic.Pointer[networkAttempt]
 	relays  atomic.Pointer[[]string]
+	// moveLossy is set when the stream's session is moved off a rested relay:
+	// the relays losing downlink at the time, for its next attempt to dial
+	// last (relay_move.go).
+	moveLossy atomic.Pointer[relayMove]
 
 	// kaPhase is this stream's offset within the shared keepalive grid window,
 	// derived from id and the total stream count at startup (see keepalivePhase).
@@ -284,10 +292,11 @@ func sameRelayPeer(from net.Addr, peer *net.UDPAddr, peerStr string) bool {
 }
 
 // dispatchStale reports whether the stream's relay has been silent for longer
-// than dispatchStaleAfter and so should be skipped by the dispatcher while a
-// fresher sibling exists (see dispatchPacket). Only ready streams are asked; a
-// session that has not published its clock yet counts as fresh — the ready
-// flag is the gate there, not this.
+// than dispatchStaleAfter — or, under load, for silentUnderLoadAfter while its
+// siblings were heard (silent_under_load.go) — and so should be skipped by the
+// dispatcher while a fresher sibling exists (see dispatchPacket). Only ready
+// streams are asked; a session that has not published its clock yet counts as
+// fresh — the ready flag is the gate there, not this.
 //
 // It reads the last packet that really arrived (heardAge), not the detector's
 // clock (rxAge): a thaw resets that clock for every stream at once, and for
@@ -298,7 +307,7 @@ func sameRelayPeer(from net.Addr, peer *net.UDPAddr, peerStr string) bool {
 // goes out at once; from the first echo on, only proven streams are used.
 func (s *stream) dispatchStale(now time.Time) bool {
 	a := s.activity.Load()
-	return a != nil && a.heardAge(now) > dispatchStaleAfter
+	return a != nil && a.stale(now)
 }
 
 const iPacketBuffMaxSize = 2048
@@ -312,6 +321,10 @@ type deadStreamError struct {
 	// periodic detector's; listened is what it listened through.
 	probe    bool
 	listened time.Duration
+	// froze: a host freeze fell inside the silence (frozeSinceHeard). Across
+	// one a NAT may forget the flow, which says nothing about the relay
+	// (relay_deaf.go).
+	froze bool
 }
 
 func (e *deadStreamError) Error() string {
@@ -328,7 +341,9 @@ func (e *deadStreamError) Error() string {
 // packets and their echoes occupy one short radio-active window — staggered
 // inside that window by the stream's phase (see keepalivePhase), so one lost
 // burst cannot starve every sibling's liveness clock at the same instant. A
-// failed write may retry early; after success the stream rejoins the grid.
+// failed write may retry early; after success the stream rejoins the grid. A
+// keepalive that nothing answers is sent once more, keepaliveEchoRetry after
+// it (keepalive_policy.go).
 // Only a validated inbound packet proves liveness, except after a host freeze,
 // where a stale clock says nothing about the path and is reset (see freezeSlack)
 // — and the relay is then asked whether the stream survived the freeze at all
@@ -339,6 +354,10 @@ func (e *deadStreamError) Error() string {
 // cancelled, the dead-stream detector fires or the probe finds the relay gone.
 func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, reportErr func(error), send func(tick int) error, probe func(seq uint64) error) {
 	var retryAt time.Time
+	// echoAt is when the keepalive sent at echoFor goes out again unless
+	// something has arrived by then (keepaliveEchoRetry); zero = none pending.
+	// retriedAt is when one went out again, for the line at the next wake.
+	var echoAt, echoFor, retriedAt time.Time
 	tick := 0
 	var probeSeq uint64
 	var lastProbeAt time.Time
@@ -372,7 +391,8 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 		lastProbeAt = now
 		wake.served = covered
 		if !alive {
-			reportErr(&deadStreamError{silent: activity.heardAge(wakeProbeClock()), probe: true, listened: wakeProbeWindow})
+			reportErr(&deadStreamError{silent: activity.heardAge(wakeProbeClock()), probe: true, listened: wakeProbeWindow,
+				froze: activity.frozeSinceHeard()})
 		}
 		return alive
 	}
@@ -398,7 +418,7 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 			continue
 		}
 
-		deadline, wakeReason := activity.nextDeadline(time.Now(), retryAt)
+		deadline, wakeReason := activity.nextDeadline(time.Now(), retryAt, echoAt)
 		before := time.Now()
 		woke, ok := waitUntilOrWake(ctx, deadline, wakeCh)
 		if !ok {
@@ -415,6 +435,9 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 		if slept := now.Sub(before); slept > keepaliveInterval+freezeSlack {
 			turnLog("[STREAM %d] keepalive: slept %v (freeze) — resetting liveness clock", s.id, slept.Round(time.Second))
 			activity.resetLiveness(now)
+			// A repeat pending from before the freeze is stale: the keepalive and
+			// the probe below ask for themselves.
+			echoAt = time.Time{}
 			// The relay's own answer comes within a round trip, and pion
 			// retransmits what the radio drops (alloc_check.go).
 			s.runAllocCheck("thaw")
@@ -451,12 +474,40 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 			turnLog("[STREAM %d] dead-stream detector: no RX for %v — closing", s.id, rxAge.Round(time.Second))
 			// heardAge, not rxAge: a freeze reset restarts the detector's clock,
 			// not the silence the relay is answerable for.
-			reportErr(&deadStreamError{silent: activity.heardAge(now)})
+			reportErr(&deadStreamError{silent: activity.heardAge(now), froze: activity.frozeSinceHeard()})
 			return
 		}
 		// An RX that arrived after the timer was armed may make an old liveness
 		// deadline harmless. Recalculate instead of emitting an off-grid packet.
 		if wakeReason == keepaliveDeadCheckWake {
+			continue
+		}
+		if !retriedAt.IsZero() {
+			// What the repeat did, told at the next wake: the RX goroutine keeps
+			// the clock, this loop only reads it. A repeat goes out only when
+			// nothing arrived for keepaliveEchoRetry, so what is heard next is
+			// its echo as often as not; nothing heard is told by the dispatcher
+			// and the detector.
+			if heard := atomicTimestamp(&activity.lastHeard); heard.After(retriedAt) {
+				turnLog("[STREAM %d] keepalive sent again %v after one that drew no echo — heard %v after that",
+					s.id, keepaliveEchoRetry, heard.Sub(retriedAt).Round(time.Millisecond))
+			}
+			retriedAt = time.Time{}
+		}
+		if wakeReason == keepaliveEchoRetryWake {
+			echoAt = time.Time{}
+			if !activity.echoMissed(echoFor) {
+				continue // its echo, or data: the path answered
+			}
+			// The grid's WireGuard keepalive went out with the first one; only
+			// the TURN keepalive is repeated, and only this once (keepaliveEchoRetry).
+			if err := send(tick); err != nil {
+				turnLog("[STREAM %d] keepalive send error: %v", s.id, err)
+				retryAt = now.Add(keepaliveSendRetry)
+				continue
+			}
+			tick++
+			retriedAt = now
 			continue
 		}
 		if wakeReason == keepaliveGridWake {
@@ -470,9 +521,14 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 		if err != nil {
 			turnLog("[STREAM %d] keepalive send error: %v", s.id, err)
 			retryAt = now.Add(keepaliveSendRetry)
+			echoAt = time.Time{}
 			continue
 		}
 		retryAt = time.Time{}
+		// Over UDP, sent again in keepaliveEchoRetry unless something arrives.
+		if !s.overTCP.Load() {
+			echoFor, echoAt = now, now.Add(keepaliveEchoRetry)
+		}
 	}
 }
 
@@ -533,9 +589,25 @@ const (
 	// measures 130-220ms, so a single round trip has an order of magnitude of
 	// headroom here.
 	//
-	// That is over UDP, where a probe that is not answered was lost. Over TCP it
-	// cannot be lost, only late: see relayProofLimit.
+	// That is over UDP, where a probe that is not answered was lost — on a path
+	// that answers in the usual time. On one measured slower it is late, and the
+	// window over UDP grows with that path: this is its floor. Over TCP a probe
+	// cannot be lost, only late. See relayProofLimit for both.
 	relayProofTimeout = 2 * time.Second
+
+	// relayProofRTTs is how many of the session's measured round trips the
+	// relay proof over UDP waits (udpRelayProofLimit). The proof needs one: the
+	// probe out through the relay to the server and the echo back, the leg
+	// between relay and server being short next to a congested cell. The second
+	// is for the queue the probe waits in, which keeps growing while it waits:
+	// on 20.10 three permissions on one stream in a row took 1.6s, 2.3s and 2.6s.
+	//
+	// The sample is the larger of the Allocate and the CreatePermission
+	// (runNoDTLS), and the Allocate is two round trips on its own — pion sends
+	// it unauthenticated, takes the 401 challenge and sends it again. So the
+	// window is at least two round trips at the latest pace, and four at the
+	// Allocate's: for 20.10's 3.0-3.3s Allocates, 6.0-6.6s.
+	relayProofRTTs = 2
 
 	// relayProbeInterval re-sends the probe (and the session header with it, in
 	// case that is what was lost) while waiting. UDP loses packets; one silent
@@ -715,7 +787,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				if a == nil {
 					continue
 				}
-				downlinkRelayLoss.observe(plain[:m], relayAddr, time.Now())
+				observeDownlink(plain[:m], relayAddr)
 				if _, err := s.out.WriteTo(plain[:m], *a); err != nil {
 					noDtlsRxErrorCount.Add(1)
 					reportErr(fmt.Errorf("TUN write: %w", err))
@@ -738,7 +810,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				if a == nil {
 					continue
 				}
-				downlinkRelayLoss.observe(wire[:n], relayAddr, time.Now())
+				observeDownlink(wire[:n], relayAddr)
 				if _, err := s.out.WriteTo(wire[:n], *a); err != nil {
 					noDtlsRxErrorCount.Add(1)
 					reportErr(fmt.Errorf("TUN write: %w", err))
@@ -798,23 +870,48 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	}()
 
 	if sessionHS != nil {
-		if err := s.awaitRelayProof(sCtx, proofCh, func() error {
+		// The round trips this session has already timed on its relay, which the
+		// proof's window over UDP grows with (relayProofLimit): its Allocate, and
+		// the CreatePermission the header burst above waited on.
+		pathRTT := max(s.allocateRTT, permissionGrantedIn(relayConn))
+		if err := s.awaitRelayProof(sCtx, proofCh, pathRTT, func() error {
 			return s.probeRelay(relayConn, peer, sessionHS, hasWrap)
 		}); err != nil {
+			// A goroutine that already failed knows better than the timeout why
+			// nothing came back; either way the stream never carried traffic.
+			//
+			// What it said is taken here, before sCancel, and not after wg.Wait:
+			// the cancel closes relayConn, the RX goroutine's ReadFrom then fails
+			// with "use of closed network connection" — our own teardown — and
+			// that took the empty slot in place of the verdict. A relay that never
+			// answered failed its stream as if the socket had broken, without
+			// errRelayNeverAnswered in the chain (host test, 20.10), and a probe
+			// the socket refused lost its errno the same way. A goroutine that
+			// failed first has its error in the slot by now: it reports before
+			// its deferred sCancel, and that cancel is what ended the wait.
+			//
+			// So pathWideFailure and parksInTheDark see a proof unanswered as the
+			// silence it is, as they already saw the DTLS and SRTP handshakes'
+			// timeouts — the worker wakes on a sibling's proof, and a scout's
+			// verdict is "dark" — and relayNotToBlame sees a probe refused by the
+			// phone's own stack. Nothing read the closed connection itself:
+			// sessionOutcome reads errDataPlaneHandshake, which wraps both, and
+			// classifyCredError finds no credential in either.
+			var cause error
+			select {
+			case cause = <-firstErr:
+			default:
+			}
 			sCancel()
 			wg.Wait()
 			if ctx.Err() != nil {
 				// Our own teardown, not the relay's silence.
 				return err
 			}
-			// A goroutine that already failed knows better than the timeout why
-			// nothing came back; either way the stream never carried traffic.
-			select {
-			case cause := <-firstErr:
-				return fmt.Errorf("%w: %w", errDataPlaneHandshake, cause)
-			default:
-				return fmt.Errorf("%w: %w", errDataPlaneHandshake, err)
+			if cause != nil {
+				err = cause
 			}
+			return fmt.Errorf("%w: %w", errDataPlaneHandshake, err)
 		}
 		noteServerHandshakeOK(s.serverAddr)
 		s.notePathProven()
@@ -865,7 +962,9 @@ func (s *stream) probeRelay(relayConn net.PacketConn, peer net.Addr, sessionHS [
 	return err
 }
 
-// relayProofLimit is how long this stream waits for its relay proof.
+// relayProofLimit is how long this stream waits for its relay proof. pathRTT is
+// the slowest round trip the session has already timed on its relay, 0 if none
+// (see runNoDTLS).
 //
 // Over TCP the probe sits in a byte stream: it arrives, late, or the connection
 // dies — and on the network that needs TCP "late" is the usual case, flows hang
@@ -876,24 +975,58 @@ func (s *stream) probeRelay(relayConn net.PacketConn, peer net.Addr, sessionHS [
 // limit over TCP is the one DTLS and SRTP already have on the same path,
 // dataPlaneHandshakeTimeout — past the hangs that were seen to clear, and still
 // a third of the connect budget.
-func (s *stream) relayProofLimit() time.Duration {
+//
+// Over UDP an unanswered probe is usually lost, and relayProbeInterval sends
+// another — but on a congested cell it is late, as over TCP. Field log 20.10
+// (TECNO LI6, cellular, wireguard with WRAP, ten streams on two relays): just
+// after a reconnect, with the apps catching up behind it, Allocate took
+// 3.0-3.3s (once 7.4s), and stream 8 failed its proof three times in a row,
+// the relay having granted the permission in 1.6s, 2.3s and 2.6s — a single
+// round trip that took most of the 2s window, or more than all of it. Those
+// failures stood both relays down for five minutes while the other nine
+// streams were carrying traffic over them, and stream 8 was back only a minute
+// later. So over UDP the window grows with the round trip the session measured
+// (udpRelayProofLimit), and stays at relayProofTimeout on a path that answers
+// in the usual time.
+func (s *stream) relayProofLimit(pathRTT time.Duration) time.Duration {
 	if s.overTCP.Load() {
 		return relayProofTimeoutTCP
 	}
-	return relayProofTimeout
+	return udpRelayProofLimit(pathRTT)
 }
 
 // A var for the host tests that wait it out.
 var relayProofTimeoutTCP = dataPlaneHandshakeTimeout
 
+// udpRelayProofLimit is the relay proof window over UDP for a session whose
+// slowest timed round trip to its relay was pathRTT: relayProofRTTs of them,
+// no less than relayProofTimeout and no more than dataPlaneHandshakeTimeout.
+//
+// The floor keeps a fast path as fast as it was: an Allocate on a good path
+// answers in about 200ms (see dialAndAllocate and relayWriteProbe), so the
+// window moves off relayProofTimeout only once the round trip passes a second,
+// and a relay that allocates and swallows everything is still out of the way in
+// 2s. The ceiling is the window DTLS, SRTP and TCP already have on the same
+// path, a third of the connect budget; a longer one is the regression
+// dataPlaneHandshakeTimeout describes, the verdict on a dead relay coming after
+// the tunnel had been torn down. A round trip not timed (0) gets the floor.
+func udpRelayProofLimit(pathRTT time.Duration) time.Duration {
+	// Compared before multiplying, so no round trip can overflow into a short
+	// window.
+	if pathRTT >= dataPlaneHandshakeTimeout/relayProofRTTs {
+		return dataPlaneHandshakeTimeout
+	}
+	return max(relayProofTimeout, relayProofRTTs*pathRTT)
+}
+
 // awaitRelayProof probes until the relay answers, the context dies, or
 // relayProofLimit runs out. Returning an error means the stream never proved
 // its data path and must not be offered to the dispatcher.
-func (s *stream) awaitRelayProof(ctx context.Context, proof <-chan struct{}, probe func() error) error {
+func (s *stream) awaitRelayProof(ctx context.Context, proof <-chan struct{}, pathRTT time.Duration, probe func() error) error {
 	if err := probe(); err != nil {
 		return err
 	}
-	limit := s.relayProofLimit()
+	limit := s.relayProofLimit(pathRTT)
 	deadline := time.NewTimer(limit)
 	defer deadline.Stop()
 	ticker := time.NewTicker(relayProbeInterval)
@@ -906,7 +1039,7 @@ func (s *stream) awaitRelayProof(ctx context.Context, proof <-chan struct{}, pro
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return fmt.Errorf("%w in %v", errRelayNeverAnswered, limit)
+			return fmt.Errorf("%w in %v", errRelayNeverAnswered, limit.Round(time.Millisecond))
 		case <-ticker.C:
 			if err := probe(); err != nil {
 				return err
@@ -1162,7 +1295,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 				continue
 			}
 			if a := s.peer.Load(); a != nil {
-				downlinkRelayLoss.observe(buf[:n], relayAddr, time.Now())
+				observeDownlink(buf[:n], relayAddr)
 				if _, err := s.out.WriteTo(buf[:n], *a); err != nil {
 					dtlsRxErrorCount.Add(1)
 					reportErr(fmt.Errorf("TUN write: %w", err))
@@ -1334,7 +1467,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 				continue
 			}
 			if a := s.peer.Load(); a != nil {
-				downlinkRelayLoss.observe(buf[:n], relayAddr, time.Now())
+				observeDownlink(buf[:n], relayAddr)
 				if _, err := s.out.WriteTo(buf[:n], *a); err != nil {
 					dtlsRxErrorCount.Add(1)
 					reportErr(fmt.Errorf("TUN write: %w", err))
@@ -1588,6 +1721,11 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	}
 	setStreamsPerCred(perCred)
 
+	// The credentials an earlier process fetched for these links, for the slots
+	// that have none of their own: the process dies between sessions on some
+	// devices, the credential lives for hours (turn_creds_store.go).
+	loadTurnCreds(links, mode, extraRelays, time.Now())
+
 	// Peer and WRAP are said once here rather than on every stream session:
 	// they cannot change until the next start.
 	turnLog("[PROXY] Starting: listen=%s StreamNum=%d streamsPerGroup=%d links=%d actualTotal=%d mode=%s peerType=%s peer=%s wrap=%v watchdog=%ds",
@@ -1767,8 +1905,9 @@ func wgTurnProxyStop() {
 		}
 	}
 	// Credential caches are intentionally preserved across stops so an immediate
-	// reconnect gets a cache hit and avoids a fresh VK API round-trip (and captcha).
-	// If old TURN allocations lingered (drain timed out) and the quota is exhausted,
+	// reconnect gets a cache hit and avoids a fresh VK API round-trip (and captcha)
+	// — and on disk across the process's death, for the same reason
+	// (turn_creds_store.go). If old TURN allocations lingered (drain timed out) and the quota is exhausted,
 	// a worker hitting 486 calls refreshGroupCreds → its next reconnect re-fetches
 	// a fresh credential automatically.
 }

@@ -1,65 +1,56 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-  ~ Android TV variant of the circular connect button.
-  ~ Adds a bright accent stroke ring when the button gains D-pad focus.
-  ~ IDs must match layout/view_wgk_connect_button.xml (same binding class).
+  ~ Android TV variant of the round connect button: the mock's 320 px disc
+  ~ with a 128 px power icon, and nothing around it at rest.
+  ~ IDs must match layout/view_wgk_connect_button.xml (same binding class); the
+  ~ three halo rings of the phone are left out, the fragment never touches them.
+  ~
+  ~ The frame is the button plus a halo on every side and draws the shared TV
+  ~ focus look as an oval (wgk_tv_focus_oval_bg): the button paints its own
+  ~ fill, animated from code, so the ring cannot be part of the button's
+  ~ background. addStatesFromChildren hands the frame the button's focus.
+  ~
+  ~ D-pad: right or down goes to the first row of the list, the configuration;
+  ~ up and left stay, there is nothing there.
   -->
 <layout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <FrameLayout
-        android:layout_width="260dp"
-        android:layout_height="260dp">
+        android:layout_width="@dimen/wgk_tv_ring_frame"
+        android:layout_height="@dimen/wgk_tv_ring_frame"
+        android:addStatesFromChildren="true"
+        android:background="@drawable/wgk_tv_focus_oval_bg">
 
-        <!-- Same IDs and themed alpha styles as the phone layout. -->
-        <View
-            android:id="@+id/wgk_ring_outer"
-            style="@style/Widget.WGKeyBot.ConnectRing.Outer"
-            android:layout_width="260dp"
-            android:layout_height="260dp"
-            android:layout_gravity="center"
-            android:background="@drawable/wgk_ring_outer" />
-
-        <View
-            android:id="@+id/wgk_ring_mid"
-            style="@style/Widget.WGKeyBot.ConnectRing.Middle"
-            android:layout_width="224dp"
-            android:layout_height="224dp"
-            android:layout_gravity="center"
-            android:background="@drawable/wgk_ring_mid" />
-
-        <View
-            android:id="@+id/wgk_ring_inner"
-            style="@style/Widget.WGKeyBot.ConnectRing.Inner"
-            android:layout_width="192dp"
-            android:layout_height="192dp"
-            android:layout_gravity="center"
-            android:background="@drawable/wgk_ring_inner" />
-
-        <!-- 194dp lands the arc centreline on the 192dp inner ring. -->
-        <com.google.android.material.progressindicator.CircularProgressIndicator
-            android:id="@+id/wgk_busy_arc"
-            android:layout_width="194dp"
-            android:layout_height="194dp"
-            android:layout_gravity="center"
-            android:indeterminate="true"
-            android:visibility="gone"
-            app:indicatorColor="@color/wgk_primary"
-            app:indicatorSize="194dp"
-            app:trackColor="@android:color/transparent"
-            app:trackThickness="3dp"
-            app:indeterminateAnimationType="disjoint" />
-
-        <!-- TV: uses ConnectButton.Tv style with accent stroke on focus.
-             nextFocusDown/Right land on the profile card controls. -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/wgk_connect_btn"
             style="@style/Widget.WGKeyBot.ConnectButton.Tv"
             android:layout_gravity="center"
-            android:nextFocusDown="@id/wgk_auto_refresh_btn"
-            android:nextFocusRight="@id/wgk_auto_refresh_btn"
-            android:contentDescription="@string/wgk_headline_disconnected"
+            android:contentDescription="@string/wgk_connect_cd_connect"
+            android:nextFocusDown="@id/wgk_config_btn"
+            android:nextFocusLeft="@id/wgk_connect_btn"
+            android:nextFocusRight="@id/wgk_config_btn"
+            android:nextFocusUp="@id/wgk_connect_btn"
             app:backgroundTint="@color/wgk_connect_btn_background_tint"
             app:icon="@drawable/ic_power"
             app:iconTint="@color/wgk_connect_btn_icon_tint" />
+
+        <!-- On the button's rim and in the busy content colour, not outside it in
+             primary as on the phone: the busy fill is primary, and so is the focus
+             ring that takes the band outside the button whenever it is focused,
+             which on this screen is most of the time. Over the button it shows in
+             either case. Drawn after the button so the fill does not cover it. -->
+        <com.google.android.material.progressindicator.CircularProgressIndicator
+            android:id="@+id/wgk_busy_arc"
+            android:layout_width="@dimen/wgk_tv_ring_arc"
+            android:layout_height="@dimen/wgk_tv_ring_arc"
+            android:layout_gravity="center"
+            android:importantForAccessibility="no"
+            android:indeterminate="true"
+            android:visibility="gone"
+            app:indeterminateAnimationType="disjoint"
+            app:indicatorColor="@color/wgk_connect_busy_content"
+            app:indicatorSize="@dimen/wgk_tv_ring_arc"
+            app:trackColor="@android:color/transparent"
+            app:trackThickness="@dimen/wgk_tv_stage_bar_height" />
     </FrameLayout>
 </layout>

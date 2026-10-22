@@ -4,14 +4,22 @@
  */
 package com.wireguard.android.activity
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.text.InputType
 import android.os.Bundle
 import android.util.Log
+import android.view.View
+import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.ColorRes
+import androidx.annotation.RequiresApi
+import androidx.annotation.StringRes
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
@@ -31,7 +39,9 @@ import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
 import com.wireguard.android.databinding.AppSettingsActivityBinding
 import com.wireguard.android.databinding.ViewWgkSettingsChoiceRowBinding
+import com.wireguard.android.databinding.ViewWgkTvSectionRowBinding
 import com.wireguard.android.fragment.TetherSheet
+import com.wireguard.android.fragment.TunnelListFragment
 import com.wireguard.android.fragment.TunnelState
 import com.wireguard.android.tether.TetherRouting
 import com.wireguard.android.tether.TetherSettings
@@ -51,6 +61,8 @@ import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.ThemeMode
 import com.wireguard.android.util.applicationScope
 import com.wireguard.android.util.localeWrapped
+import com.wireguard.android.util.isTv
+import com.wireguard.android.util.lockPortraitOnPhone
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -91,6 +103,7 @@ class AppSettingsActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lockPortraitOnPhone()
         // Edge to edge on every API level, not just on 15+ where the platform
         // forces it: one inset path is far easier to reason about than two. This
         // also hands the bars their transparency and icon contrast, leaving only
@@ -113,6 +126,8 @@ class AppSettingsActivity : AppCompatActivity() {
         bindTheme()
         bindUpdateCheck()
         bindExpert()
+        bindTvPanes()
+        focusFirstRowOnTv()
         if (bindTether()) {
             observeTether()
             // Arrived from the chip on the connect screen, which is the sharing
@@ -123,6 +138,22 @@ class AppSettingsActivity : AppCompatActivity() {
                 openTetherSheet()
             }
         }
+    }
+
+    /**
+     * On a TV the window hands its first focus to the first focusable view, which
+     * is the back arrow: a screen that opens with "leave" selected reads as if
+     * there were nothing to do here. Focus is moved to the first row of the list
+     * instead (on the TV layout, the first section shown), after the layout pass
+     * has settled which sections are there.
+     * Back on the remote still closes the screen through the default key
+     * handling, so the arrow is one way out, not the only one. Not on a phone:
+     * touch mode keeps the rows unfocusable until a key is pressed, and the
+     * request would be refused anyway.
+     */
+    private fun focusFirstRowOnTv() {
+        if (!isTv()) return
+        binding.wgkSettingsColumn.post { binding.wgkSettingsColumn.requestFocus(View.FOCUS_DOWN) }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -204,6 +235,7 @@ class AppSettingsActivity : AppCompatActivity() {
         // No choice to show for a config without a reserve mode (SRTP).
         val offered = ConnectionMode.isOffered()
         binding.wgkConnectionSection.isVisible = offered
+        renderTvSections()
         if (!offered) return
         val reserve = ConnectionMode.isReserve(this)
         binding.wgkChoiceStandard.select(!reserve, R.color.wgk_primary)
@@ -251,6 +283,7 @@ class AppSettingsActivity : AppCompatActivity() {
     }
 
     private fun renderRelayTransport() {
+        renderTvSections()
         val mode = RelayTransport.mode(this)
         binding.wgkTransportAuto.select(mode == RelayTransport.Mode.AUTO, R.color.wgk_primary)
         binding.wgkTransportUdp.select(mode == RelayTransport.Mode.UDP, R.color.wgk_primary)
@@ -299,6 +332,7 @@ class AppSettingsActivity : AppCompatActivity() {
                 val enabled = !auth.isAutoRefreshEnabled()
                 auth.setAutoRefreshEnabled(enabled)
                 wgkSwitch.isChecked = enabled
+                renderTvSections()
             }
         }
     }
@@ -346,7 +380,9 @@ class AppSettingsActivity : AppCompatActivity() {
     }
 
     private fun renderTheme() {
-        val mode = AuthStore.getInstance(this).getThemeMode()
+        // The TV is always dark (Application forces night mode there), whatever
+        // is stored, so its one option shows as chosen.
+        val mode = if (binding.wgkTvSectionTheme != null) ThemeMode.DARK else AuthStore.getInstance(this).getThemeMode()
         binding.wgkThemeSystem.select(mode == ThemeMode.SYSTEM, R.color.wgk_primary)
         binding.wgkThemeLight.select(mode == ThemeMode.LIGHT, R.color.wgk_primary)
         binding.wgkThemeDark.select(mode == ThemeMode.DARK, R.color.wgk_primary)
@@ -495,6 +531,7 @@ class AppSettingsActivity : AppCompatActivity() {
     }
 
     private fun renderExpert() {
+        renderTvSections()
         val enabled = expert.isEnabled()
         binding.wgkExpertSwitchRow.wgkSwitch.isChecked = enabled
         binding.wgkExpertRows.isVisible = enabled
@@ -650,13 +687,206 @@ class AppSettingsActivity : AppCompatActivity() {
         prompt.setOnDismissListener { if (expertDialog === prompt) expertDialog = null }
     }
 
+    // ── Android TV: two panes ──────────────────────────────────────────────────
+
+    /** A section of the TV list, its pane, and the option rows in the pane. */
+    private class TvSection(val row: ViewWgkTvSectionRowBinding, val pane: View, val options: List<View>) {
+        /** Shown in the list: the mode and the update sections can be hidden through their wrappers. */
+        fun listed(): Boolean = row.root.isVisible && (row.root.parent as? View)?.isVisible != false
+    }
+
+    private var tvSections: List<TvSection> = emptyList()
+    private var tvSelected: TvSection? = null
+
+    /**
+     * The panes of the TV layout (layout-television/app_settings_activity.xml):
+     * the sections on the left, the options of the one in focus on the right.
+     * Focus on a section shows its pane; right goes to its first option, left
+     * from an option comes back; OK on a section does what right does.
+     *
+     * Only the panes are wired here. The option rows in them are the phone's,
+     * under the phone's ids, bound by the code above, so nothing is stored or
+     * decided twice. Does nothing on the phone layout, which has none of these
+     * views.
+     */
+    private fun bindTvPanes() {
+        val b = binding
+        b.wgkTvSettingsBack?.setOnClickListener { finish() }
+        tvSections = listOfNotNull(
+            tvSection(b.wgkTvSectionMode, b.wgkTvPaneMode, R.string.wgk_connection_mode_title,
+                b.wgkChoiceStandard.root, b.wgkChoiceReserve.root),
+            tvSection(b.wgkTvSectionTransport, b.wgkTvPaneTransport, R.string.wgk_relay_transport_title,
+                b.wgkTransportAuto.root, b.wgkTransportUdp.root, b.wgkTransportTcp.root),
+            tvSection(b.wgkTvSectionConfig, b.wgkTvPaneConfig, R.string.wgk_profile_name,
+                b.wgkAutoRefreshRow.root, b.wgkTvConfigRefreshRow?.root),
+            tvSection(b.wgkTvSectionTheme, b.wgkTvPaneTheme, R.string.wgk_settings_section_appearance,
+                b.wgkThemeDark.root),
+            tvSection(b.wgkTvSectionUpdate, b.wgkTvPaneUpdate, R.string.wgk_tv_section_update,
+                b.wgkUpdateRow.root, b.wgkTvUpdateAllowRow?.root),
+            tvSection(b.wgkTvSectionExpert, b.wgkTvPaneExpert, R.string.wgk_expert_section,
+                b.wgkExpertSwitchRow.root, b.wgkExpertMtuRow.root, b.wgkExpertDnsRow.root, b.wgkExpertLinksRow.root),
+        )
+        if (tvSections.isEmpty()) return
+
+        bindTvTheme()
+        bindTvConfigRefresh()
+        bindTvUpdateAllow()
+        for (section in tvSections) {
+            val root = section.row.root
+            root.setOnFocusChangeListener { _, hasFocus -> if (hasFocus) selectTvSection(section) }
+            root.setOnClickListener { tvFirstOption(section)?.requestFocus() }
+            for (option in section.options) option.nextFocusLeftId = root.id
+        }
+        tvSections.firstOrNull { it.listed() }?.let(::selectTvSection)
+        renderTvSections()
+    }
+
+    private fun tvSection(
+        row: ViewWgkTvSectionRowBinding?,
+        pane: View?,
+        @StringRes title: Int,
+        vararg options: View?,
+    ): TvSection? {
+        if (row == null || pane == null) return null
+        row.wgkTvSectionTitle.setText(title)
+        return TvSection(row, pane, options.filterNotNull())
+    }
+
+    /** The option right lands on: the first one that can take focus (the theme's cannot). */
+    private fun tvFirstOption(section: TvSection): View? = section.options.firstOrNull {
+        it.isFocusable && it.isVisible && (it.parent as? View)?.isVisible != false
+    }
+
+    private fun selectTvSection(section: TvSection) {
+        tvSelected = section
+        for (s in tvSections) {
+            s.pane.isVisible = s === section
+            // Lit while focus is out in its pane, so the user sees where they are.
+            s.row.root.isActivated = s === section
+        }
+        section.row.root.nextFocusRightId = tvFirstOption(section)?.id ?: section.row.root.id
+        binding.wgkSettingsScroll.scrollTo(0, 0)
+    }
+
+    /**
+     * The value beside each section, read back from storage like everything
+     * else here, and the selection kept on a section that is shown: the mode's
+     * goes away for a config without a reserve mode, and its pane with it.
+     * Called from each render of a setting; a no-op until the panes are bound.
+     */
+    private fun renderTvSections() {
+        if (tvSections.isEmpty()) return
+        val b = binding
+        b.wgkTvSectionMode?.wgkTvSectionValue?.setText(
+            if (ConnectionMode.isReserve(this)) R.string.wgk_connection_mode_reserve_value
+            else R.string.wgk_connection_mode_standard_value
+        )
+        b.wgkTvSectionTransport?.wgkTvSectionValue?.setText(when (RelayTransport.mode(this)) {
+            RelayTransport.Mode.AUTO -> R.string.wgk_relay_transport_auto_value
+            RelayTransport.Mode.UDP -> R.string.wgk_relay_transport_udp_value
+            // Not "TCP (Rostelecom)": the section row has room for a word.
+            RelayTransport.Mode.TCP -> R.string.wgk_tv_value_tcp
+        })
+        b.wgkTvSectionConfig?.wgkTvSectionValue?.setText(
+            if (AuthStore.getInstance(this).isAutoRefreshEnabled()) R.string.wgk_tv_config_auto
+            else R.string.wgk_tv_config_manual
+        )
+        b.wgkTvSectionTheme?.wgkTvSectionValue?.setText(R.string.wgk_theme_dark_value)
+        b.wgkTvSectionUpdate?.wgkTvSectionValue?.text = getString(R.string.wgk_tv_version, BuildConfig.VERSION_NAME)
+        b.wgkTvSectionExpert?.wgkTvSectionValue?.setText(
+            if (expert.isEnabled()) R.string.wgk_tv_value_on else R.string.wgk_tv_value_off
+        )
+
+        val selected = tvSelected ?: return
+        if (selected.listed()) return
+        val next = tvSections.firstOrNull { it.listed() } ?: return
+        val focusWasThere = selected.row.root.hasFocus() || selected.pane.hasFocus()
+        selectTvSection(next)
+        if (focusWasThere) next.row.root.requestFocus()
+    }
+
+    /** Dark, chosen and not choosable: there is nothing else on a TV. */
+    private fun bindTvTheme() {
+        binding.wgkThemeDark.apply {
+            wgkChoiceDesc.setText(R.string.wgk_tv_theme_dark_desc)
+            wgkChoiceDesc.isVisible = true
+            wgkChoiceRoot.setOnClickListener(null)
+            wgkChoiceRoot.isClickable = false
+            wgkChoiceRoot.isFocusable = false
+        }
+    }
+
+    /**
+     * "Refresh now" belongs to the main screen: the refresh is its code, with
+     * its progress in the configuration row and its snackbar at the end. So the
+     * row asks for one there and goes back to watch it, rather than running a
+     * second copy here.
+     */
+    private fun bindTvConfigRefresh() {
+        binding.wgkTvConfigRefreshRow?.apply {
+            wgkRowLabel.setText(R.string.wgk_tv_config_refresh_now)
+            wgkRowValue.setText(R.string.wgk_tv_config_refresh_desc)
+            wgkRowChevron.isVisible = false
+            wgkRowBtn.setOnClickListener {
+                TunnelListFragment.requestConfigRefresh()
+                finish()
+            }
+        }
+    }
+
+    /**
+     * The installer asks for "install unknown apps" before an update goes in,
+     * and on a TV the way to that switch is deep in the system settings (the
+     * pane's note spells it out). The row opens it directly. Before Android 8
+     * there is no per-app switch to open, so no row.
+     */
+    private fun bindTvUpdateAllow() {
+        val row = binding.wgkTvUpdateAllowRow ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            row.root.isVisible = false
+            return
+        }
+        row.wgkRowLabel.setText(R.string.wgk_update_allow)
+        row.wgkRowBtn.setOnClickListener { openUnknownSourcesSettings() }
+        renderTvUpdateAllow()
+    }
+
+    private fun renderTvUpdateAllow() {
+        val row = binding.wgkTvUpdateAllowRow ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        row.wgkRowValue.setText(
+            if (packageManager.canRequestPackageInstalls()) R.string.wgk_tv_update_allowed
+            else R.string.wgk_tv_update_allow_desc
+        )
+    }
+
+    /** This app's page first; the general list where a TV's settings have no per-app page. */
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun openUnknownSourcesSettings() {
+        val intents = listOf(
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")),
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES),
+        )
+        for (intent in intents) {
+            try {
+                startActivity(intent)
+                return
+            } catch (_: ActivityNotFoundException) {
+                // try the next one
+            }
+        }
+        Toast.makeText(this, R.string.wgk_update_settings_unavailable, Toast.LENGTH_LONG).show()
+    }
+
     // ── Internet sharing ───────────────────────────────────────────────────────
 
     /** Returns whether the section exists at all on this device. */
     private fun bindTether(): Boolean {
         // Sharing needs API 26 for startLocalOnlyHotspot; below that there is no
         // way to raise an access point at all, so the section is simply absent.
-        val supported = Application.getTetherManager().isSupported
+        // Absent on a TV too, as the main screen's sharing panel already is: a
+        // box has no radio to raise an access point on.
+        val supported = Application.getTetherManager().isSupported && !isTv()
         binding.wgkTetherSection.isVisible = supported
         if (!supported) return false
 
@@ -771,6 +1001,8 @@ class AppSettingsActivity : AppCompatActivity() {
         if (Application.getTetherManager().isSupported) renderRoutingSummary()
         // Likewise the links screen and the expert rows.
         renderExpert()
+        // And the install permission, which the TV row sends the user off to grant.
+        renderTvUpdateAllow()
     }
 
     override fun onDestroy() {

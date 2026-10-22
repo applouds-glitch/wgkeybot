@@ -341,6 +341,14 @@ public final class TurnBackend {
     public static native void wgTurnProxyStop();
 
     /**
+     * Names the app's private directory where native keeps what has to outlive
+     * the process: the relays it rested from a server's traffic (relay_rest_store.go)
+     * and the TURN credentials VK handed out, good for hours (turn_creds_store.go).
+     * Once, before the first {@link #wgTurnProxyStart}; until then nothing is kept.
+     */
+    public static native void wgSetStateDir(String dir);
+
+    /**
      * The user has just unlocked the device: every native stream asks its relay
      * whether its allocation survived the pause and listens for a probe's echo,
      * so a stream whose NAT mapping died in the pause is recycled in about a

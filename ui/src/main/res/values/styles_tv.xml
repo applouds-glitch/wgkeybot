@@ -1,0 +1,250 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ Android TV: the pieces the TV layouts repeat, after the 1920×1080 TV mock.
+  ~ Every size comes from dimens_tv.xml, which is what lets the design follow
+  ~ the density the TV reports. The TV is always dark (Application forces
+  ~ night mode there), so the colours are the dark wgk_* tokens in effect.
+  -->
+<resources>
+
+    <!-- A row of the one D-pad list on the right of the main screen. The view
+         is the row plus a halo on every side (see wgk_tv_focus_bg), so stacked
+         rows overlap by wgk_tv_row_view_overlap. -->
+    <style name="Widget.WGKeyBot.Tv.Row" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">@dimen/wgk_tv_row_view_height</item>
+        <item name="android:background">@drawable/wgk_tv_focus_bg</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:orientation">horizontal</item>
+        <item name="android:paddingStart">@dimen/wgk_tv_row_view_pad_h</item>
+        <item name="android:paddingEnd">@dimen/wgk_tv_row_view_pad_h</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.RowIcon" parent="">
+        <item name="android:layout_width">@dimen/wgk_tv_row_icon</item>
+        <item name="android:layout_height">@dimen/wgk_tv_row_icon</item>
+        <item name="android:importantForAccessibility">no</item>
+        <item name="tint">@color/wgk_on_surface_variant</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.RowTitle" parent="">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:layout_marginStart">@dimen/wgk_tv_row_inner_gap</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_row_title</item>
+        <item name="android:textColor">@color/wgk_on_surface</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.RowValue" parent="">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginStart">@dimen/wgk_tv_row_inner_gap</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_row_value</item>
+        <item name="android:textColor">@color/wgk_on_surface_variant</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.RowChevron" parent="">
+        <item name="android:layout_width">@dimen/wgk_tv_row_chevron</item>
+        <item name="android:layout_height">@dimen/wgk_tv_row_chevron</item>
+        <item name="android:layout_marginStart">@dimen/wgk_tv_row_inner_gap</item>
+        <item name="android:importantForAccessibility">no</item>
+        <item name="android:src">@drawable/ic_chevron_right</item>
+        <item name="tint">@color/wgk_outline</item>
+    </style>
+
+    <!-- The header pills: network and subscription. Read-only, not focusable. -->
+    <style name="Widget.WGKeyBot.Tv.Pill" parent="">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">@dimen/wgk_tv_pill_height</item>
+        <item name="android:background">@drawable/wgk_tv_pill_bg</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:orientation">horizontal</item>
+        <item name="android:paddingStart">@dimen/wgk_tv_pill_pad_h</item>
+        <item name="android:paddingEnd">@dimen/wgk_tv_pill_pad_h</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.PillIcon" parent="">
+        <item name="android:layout_width">@dimen/wgk_tv_pill_icon</item>
+        <item name="android:layout_height">@dimen/wgk_tv_pill_icon</item>
+        <item name="android:importantForAccessibility">no</item>
+        <item name="tint">@color/wgk_on_surface_variant</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.PillText" parent="">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginStart">@dimen/wgk_tv_pill_inner_gap</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_pill</item>
+        <item name="android:textColor">@color/wgk_on_surface_variant</item>
+    </style>
+
+    <!-- Monospace captions: the version, СЕАНС, the stage names, КЛЮЧ ИЗ БОТА.
+         The mock tracks them 2 px at 22 px, about 0.09 em. -->
+    <style name="Widget.WGKeyBot.Tv.MonoLabel" parent="">
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_mono_label</item>
+        <item name="android:textColor">@color/wgk_on_surface_variant</item>
+        <item name="android:letterSpacing">0.09</item>
+    </style>
+
+    <!-- A stage bar under the TV connect ring: the mock's 6 px strip. The
+         colour and the fill are the fragment's, as on the phone. -->
+    <style name="Widget.WGKeyBot.Tv.StageBar" parent="">
+        <item name="android:importantForAccessibility">no</item>
+        <item name="android:indeterminate">false</item>
+        <item name="android:max">100</item>
+        <item name="indicatorColor">@color/wgk_primary</item>
+        <item name="trackColor">@color/wgk_outline_variant</item>
+        <item name="trackThickness">@dimen/wgk_tv_stage_bar_height</item>
+        <item name="trackCornerRadius">@dimen/wgk_tv_stage_bar_radius</item>
+        <item name="indicatorTrackGapSize">0dp</item>
+        <item name="trackStopIndicatorSize">0dp</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.StageLabel" parent="Widget.WGKeyBot.Tv.MonoLabel">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">@dimen/wgk_tv_stage_label_gap</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.MetricLabel" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_metric_label</item>
+        <item name="android:textColor">@color/wgk_on_surface_variant</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.MetricValue" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">@dimen/wgk_tv_metric_label_gap</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:text">@string/wgk_status_metric_empty</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_metric_value</item>
+        <item name="android:textColor">@color/wgk_on_surface</item>
+    </style>
+
+    <!-- A key of the TV keyboard. A TextView rather than a button: the look is
+         wgk_tv_focus_bg like every other focusable on the TV, which a
+         MaterialButton would paint over with its own shape. -->
+    <style name="Widget.WGKeyBot.Tv.Key" parent="">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">@dimen/wgk_tv_key_view_height</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:layout_marginStart">@dimen/wgk_tv_key_view_margin_h</item>
+        <item name="android:layout_marginEnd">@dimen/wgk_tv_key_view_margin_h</item>
+        <item name="android:background">@drawable/wgk_tv_focus_bg</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+        <item name="android:gravity">center</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_key</item>
+        <item name="android:textColor">@color/wgk_on_surface</item>
+    </style>
+
+    <!-- The editing keys and the two action keys: the same key, the text in the
+         quieter colour and sans-serif, as the mock draws them. -->
+    <style name="Widget.WGKeyBot.Tv.Key.Action">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_key_action</item>
+        <item name="android:textColor">@color/wgk_on_surface_variant</item>
+    </style>
+
+    <!-- One pane of the TV settings: the options of one section. The activity
+         shows one at a time. The non-focusable text in it is moved in by a halo
+         to line up with the visible option rows, which carry theirs. -->
+    <style name="Widget.WGKeyBot.Tv.Pane" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">match_parent</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:visibility">gone</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.PaneTitle" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginStart">@dimen/wgk_tv_focus_halo</item>
+        <item name="android:layout_marginTop">@dimen/wgk_tv_focus_halo</item>
+        <item name="android:layout_marginEnd">@dimen/wgk_tv_focus_halo</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_pane_title</item>
+        <item name="android:textColor">@color/wgk_on_surface</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.PaneHelp" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginStart">@dimen/wgk_tv_focus_halo</item>
+        <item name="android:layout_marginTop">@dimen/wgk_tv_pane_title_gap</item>
+        <item name="android:layout_marginEnd">@dimen/wgk_tv_focus_halo</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_pane_help</item>
+        <item name="android:textColor">@color/wgk_on_surface_variant</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.PaneSpace" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">0dp</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:minHeight">@dimen/wgk_tv_pane_block_gap_halo</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.PaneNote" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginStart">@dimen/wgk_tv_focus_halo</item>
+        <item name="android:layout_marginEnd">@dimen/wgk_tv_focus_halo</item>
+        <item name="android:layout_marginBottom">@dimen/wgk_tv_focus_halo</item>
+        <item name="android:background">@drawable/wgk_tv_note_bg</item>
+        <item name="android:lineSpacingMultiplier">1.4</item>
+        <item name="android:paddingStart">@dimen/wgk_tv_note_pad_h</item>
+        <item name="android:paddingTop">@dimen/wgk_tv_note_pad_v</item>
+        <item name="android:paddingEnd">@dimen/wgk_tv_note_pad_h</item>
+        <item name="android:paddingBottom">@dimen/wgk_tv_note_pad_v</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_note</item>
+        <item name="android:textColor">@color/wgk_on_surface_variant</item>
+    </style>
+
+    <!-- The remote hint at the foot of a screen: a drawn key and what it does. -->
+    <style name="Widget.WGKeyBot.Tv.Keycap" parent="">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginEnd">@dimen/wgk_tv_keycap_gap</item>
+        <item name="android:minWidth">@dimen/wgk_tv_keycap_min_width</item>
+        <item name="android:background">@drawable/wgk_tv_keycap_bg</item>
+        <item name="android:gravity">center</item>
+        <item name="android:paddingStart">@dimen/wgk_tv_keycap_pad_h</item>
+        <item name="android:paddingEnd">@dimen/wgk_tv_keycap_pad_h</item>
+        <item name="android:paddingTop">@dimen/wgk_tv_keycap_pad_v</item>
+        <item name="android:paddingBottom">@dimen/wgk_tv_keycap_pad_v</item>
+        <item name="android:importantForAccessibility">no</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_remote</item>
+        <item name="android:textColor">@color/wgk_outline</item>
+    </style>
+
+    <style name="Widget.WGKeyBot.Tv.RemoteHint" parent="">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginEnd">@dimen/wgk_tv_hint_gap</item>
+        <item name="android:textSize">@dimen/wgk_tv_text_remote</item>
+        <item name="android:textColor">@color/wgk_outline</item>
+    </style>
+
+</resources>

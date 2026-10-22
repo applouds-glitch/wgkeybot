@@ -94,6 +94,11 @@ class TurnProxyManager(private val context: Context) {
     )
 
     init {
+        // Before any start: native reads the relays it rested back from here.
+        // Android killed the process 40-95 s after almost every disconnect on one
+        // tablet (field log 2026-10-20), and each connect then went straight back
+        // to the relay the judge had just rested (relay_rest_store.go).
+        TurnBackend.wgSetStateDir(context.filesDir.absolutePath)
         networkMonitor.start()
 
         // Android's validation of the network is logged and nothing else. It used to

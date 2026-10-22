@@ -74,14 +74,25 @@ func (v sessionVerdict) String() string {
 // What is left of such a session, if it is short, is no verdict at all rather
 // than a failure. One stream going deaf does not say whose fault it was — its
 // allocation, its path, the server behind the relay or the relay — and telling
-// them apart takes a witness: over UDP every stream shares the one relay, so
-// three deaf ones would stand it down under those still running. Both ways of
-// picking the witness were tried and dropped on 2026-09-21: any neighbour heard
-// lately lets streams that reconnect in turn vouch for one another on the
-// strength of their handshakes alone, and only a neighbour with traffic since
-// its handshake leaves a healthy relay without witnesses for half a minute
-// after every reconnect. A relay that is really gone still earns its strikes
-// where the evidence is its own: on the redial, at the Allocate or the handshake.
+// them apart takes a witness. While UDP put every stream on the one relay, the
+// witness could only be a neighbour there, asked to excuse the death, and three
+// deaf streams would have stood the relay down under those still running. Both
+// ways of picking the neighbour were tried and dropped on 2026-09-21: any
+// neighbour heard lately lets streams that reconnect in turn vouch for one
+// another on the strength of their handshakes alone, and only a neighbour with
+// traffic since its handshake leaves a healthy relay without witnesses for half
+// a minute after every reconnect. A relay that is really gone still earns its
+// strikes where the evidence is its own: on the redial, at the Allocate or the
+// handshake.
+//
+// Since 2026-10-10 UDP spreads the streams over the relays (assignRelays), and
+// there is a witness to be had on ANOTHER relay: a stream there that has heard
+// its own through the whole silence says the path was up. That is weighed apart
+// from this grade (relay_deaf.go), and what it leads to is a rest, not a strike:
+// in the field logs of 2026-10-20/21 one relay of a pair went deaf under nine
+// sessions in a few minutes, its streams redialing it straight back each time,
+// and most of those sessions had carried for over a minute before the silence —
+// graded here as successes, which wipe a relay's strikes.
 func sessionOutcome(cancelled, blackholed bool, dur time.Duration, err error) sessionVerdict {
 	var dead *deadStreamError
 	deaf := errors.As(err, &dead)
@@ -737,13 +748,16 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// (noteServerHandshakeOK), which is what lets a sibling's success vouch for
 	// the uplink when another server fails its handshake in the same window.
 	s.serverAddr = w.addr
+	s.allocateRTT = w.rtt
 	// Whether this session's flow has a fate of its own, and who else is on the
 	// relay to vouch for it if its handshake fails (relay_heard_by_others.go).
 	s.overTCP.Store(relayFlow(w.raw) != nil)
 	defer trackLiveSession(w.addr, s)()
 
-	// Only for the log line below: which side of the relay a failed data-plane
-	// handshake died on (see relayWriteProbe).
+	// For the log line below: which side of the relay a failed data-plane
+	// handshake died on (see relayWriteProbe). And for the relay proof of the
+	// noDTLS transport, whose window over UDP grows with the time the permission
+	// took (relayProofLimit).
 	relay := newRelayWriteProbe(w.relay)
 
 	// The allocation check for this session (alloc_check.go): the peer the
@@ -803,6 +817,12 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 		noteServerHandshakeFailure(w.addr, started)
 	case verdictFailure:
 		noteServerFailure(w.addr)
+	}
+	// A session that went deaf while a stream on another relay kept hearing its
+	// own counts toward resting this relay (relay_deaf.go). Not one the
+	// blackhole watchdog ended: that is graded above as the failure it is.
+	if !w.perm.fired() {
+		noteDeafSession(s, w.addr, ctx.Err() != nil, err, started, time.Now())
 	}
 
 	// A blackhole teardown surfaces as "use of closed network connection", which

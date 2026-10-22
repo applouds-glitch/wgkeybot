@@ -29,6 +29,7 @@ import com.wireguard.android.tether.formatRoutingDate
 import com.wireguard.android.tether.formatTetherBytes
 import com.wireguard.android.util.applicationScope
 import com.wireguard.android.util.localeWrapped
+import com.wireguard.android.util.lockPortraitOnPhone
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -62,6 +63,7 @@ class RoutingSettingsActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lockPortraitOnPhone()
         enableEdgeToEdge()
         binding = RoutingSettingsActivityBinding.inflate(layoutInflater)
         setContentView(binding.root)

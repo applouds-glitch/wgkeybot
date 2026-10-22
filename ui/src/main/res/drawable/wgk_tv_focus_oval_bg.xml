@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  ~ The shared TV focus look for the round connect button. The button paints
+  ~ its own fill (its colour is animated from code), so the ring and the halo
+  ~ are drawn by the frame around it, which takes the button's focus through
+  ~ addStatesFromChildren and is the button plus a halo on every side.
+  ~ Transparent at rest.
+  -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item android:state_focused="true">
+        <layer-list>
+            <item>
+                <shape android:shape="oval">
+                    <solid android:color="@color/wgk_primary_18" />
+                </shape>
+            </item>
+            <item
+                android:bottom="@dimen/wgk_tv_focus_ring_inset"
+                android:left="@dimen/wgk_tv_focus_ring_inset"
+                android:right="@dimen/wgk_tv_focus_ring_inset"
+                android:top="@dimen/wgk_tv_focus_ring_inset">
+                <shape android:shape="oval">
+                    <solid android:color="@color/wgk_primary" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+</selector>

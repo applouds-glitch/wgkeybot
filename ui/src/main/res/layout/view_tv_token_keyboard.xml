@@ -1,113 +1,174 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-  ~ TV keyboard for D-pad token input.
-  ~ Plain LinearLayout root (not <merge>) so it can be inflated standalone
-  ~ by TvTokenKeyboard and added into an arbitrary host container.
+  ~ The D-pad keyboard of the Android TV first-run screen (TvTokenKeyboard),
+  ~ after the TV mock's right column: a caption, the key field, a count, the
+  ~ character grid, a row of editing keys, then Paste and Connect.
+  ~ TV only, though it sits in layout/: TvTokenKeyboard is only ever built on a
+  ~ TV, and a default is what lint asks of a layout named from code.
+  ~ Plain LinearLayout root (not <merge>) so it can be inflated standalone and
+  ~ added into an arbitrary host container.
   ~
-  ~ The character grid is built at runtime from TokenFormat.KEYBOARD_CHARS
-  ~ (see view_tv_token_key.xml) — widening the token charset must not mean
-  ~ hand-editing buttons here.
+  ~ The character grid is built at runtime from TokenFormat.KEYBOARD_CHARS (see
+  ~ view_tv_token_key.xml) — widening the token charset must not mean
+  ~ hand-editing buttons here. The mock shows sixteen hex keys in four columns;
+  ~ the grid here is nine columns of 0-9 a-z, also four rows, because a token is
+  ~ not always a UUID and everything TokenFormat accepts has to be typeable.
+  ~
+  ~ Every key is its visible size plus a focus halo on every side (see
+  ~ wgk_tv_focus_bg): rows and keys overlap by the wgk_tv_key_* tokens so the
+  ~ visible keys keep the mock's gaps, each row pads its ends so its outer keys
+  ~ stay inside it, and the caption, the field and the count are moved in by a
+  ~ halo to line up with the visible keys.
   -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical">
 
-    <!-- Token display with `|` cursor marker -->
+    <TextView
+        android:id="@+id/tv_keyboard_label"
+        style="@style/Widget.WGKeyBot.Tv.MonoLabel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/wgk_tv_focus_halo"
+        android:layout_marginEnd="@dimen/wgk_tv_focus_halo"
+        android:labelFor="@id/tv_keyboard_display"
+        android:text="@string/wgk_tv_kb_label" />
+
+    <!-- The token as typed, with a `|` cursor; not focusable, the keys write into it. -->
     <TextView
         android:id="@+id/tv_keyboard_display"
         android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:layout_marginBottom="12dp"
-        android:background="@drawable/wgk_token_field_bg"
+        android:layout_height="@dimen/wgk_tv_field_height"
+        android:layout_marginStart="@dimen/wgk_tv_focus_halo"
+        android:layout_marginEnd="@dimen/wgk_tv_focus_halo"
+        android:layout_marginTop="@dimen/wgk_tv_token_right_gap"
+        android:background="@drawable/wgk_tv_field_bg"
         android:ellipsize="start"
         android:fontFamily="monospace"
-        android:gravity="center"
+        android:gravity="center_vertical|start"
         android:hint="@string/wgk_token_hint"
+        android:letterSpacing="0.03"
         android:maxLines="1"
+        android:paddingStart="@dimen/wgk_tv_field_pad_h"
+        android:paddingEnd="@dimen/wgk_tv_field_pad_h"
         android:textColor="@color/wgk_on_surface"
         android:textColorHint="@color/wgk_on_surface_variant"
-        android:textSize="14sp" />
+        android:textSize="@dimen/wgk_tv_text_field" />
+
+    <TextView
+        android:id="@+id/tv_keyboard_counter"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/wgk_tv_focus_halo"
+        android:layout_marginEnd="@dimen/wgk_tv_focus_halo"
+        android:layout_marginTop="@dimen/wgk_tv_token_right_gap"
+        android:maxLines="1"
+        android:textColor="@color/wgk_outline"
+        android:textSize="@dimen/wgk_tv_text_remote" />
 
     <!-- Character grid mounts here at runtime -->
     <LinearLayout
         android:id="@+id/tv_keyboard_grid"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/wgk_tv_token_right_gap_halo"
         android:orientation="vertical" />
 
-    <!-- Nav row: ← → ⌫ abc/ABC -->
+    <!-- Editing keys: ← → ⌫ Clear abc/ABC. The case key covers the upper half
+         of the token alphabet; the mock has none, as its tokens are hex. -->
     <LinearLayout
         android:id="@+id/tv_keyboard_nav_row"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="4dp"
-        android:orientation="horizontal">
+        android:layout_marginTop="@dimen/wgk_tv_key_view_overlap"
+        android:clipToPadding="false"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/wgk_tv_key_row_pad_h"
+        android:paddingEnd="@dimen/wgk_tv_key_row_pad_h">
 
-        <com.google.android.material.button.MaterialButton
+        <TextView
             android:id="@+id/tv_key_left"
-            style="@style/TvKeyButton.Action"
+            style="@style/Widget.WGKeyBot.Tv.Key.Action"
+            android:contentDescription="@string/wgk_tv_kb_left_cd"
+            android:nextFocusLeft="@id/tv_key_left"
             android:nextFocusRight="@id/tv_key_right"
-            android:nextFocusDown="@id/tv_key_clear"
+            android:nextFocusDown="@id/tv_key_paste"
             android:text="←" />
 
-        <com.google.android.material.button.MaterialButton
+        <TextView
             android:id="@+id/tv_key_right"
-            style="@style/TvKeyButton.Action"
+            style="@style/Widget.WGKeyBot.Tv.Key.Action"
+            android:contentDescription="@string/wgk_tv_kb_right_cd"
             android:nextFocusLeft="@id/tv_key_left"
             android:nextFocusRight="@id/tv_key_backspace"
-            android:nextFocusDown="@id/tv_key_clear"
+            android:nextFocusDown="@id/tv_key_paste"
             android:text="→" />
 
-        <com.google.android.material.button.MaterialButton
+        <TextView
             android:id="@+id/tv_key_backspace"
-            style="@style/TvKeyButton.Action"
+            style="@style/Widget.WGKeyBot.Tv.Key.Action"
+            android:contentDescription="@string/wgk_tv_kb_backspace_cd"
             android:nextFocusLeft="@id/tv_key_right"
-            android:nextFocusRight="@id/tv_key_case"
-            android:nextFocusDown="@id/tv_key_paste"
+            android:nextFocusRight="@id/tv_key_clear"
+            android:nextFocusDown="@id/tv_key_connect"
             android:text="⌫" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/tv_key_case"
-            style="@style/TvKeyButton.Action"
-            android:contentDescription="@string/wgk_tv_kb_case"
+        <TextView
+            android:id="@+id/tv_key_clear"
+            style="@style/Widget.WGKeyBot.Tv.Key.Action"
             android:nextFocusLeft="@id/tv_key_backspace"
-            android:nextFocusDown="@id/tv_key_paste" />
+            android:nextFocusRight="@id/tv_key_case"
+            android:nextFocusDown="@id/tv_key_connect"
+            android:text="@string/tv_keyboard_clear"
+            android:textSize="@dimen/wgk_tv_text_key_small" />
+
+        <TextView
+            android:id="@+id/tv_key_case"
+            style="@style/Widget.WGKeyBot.Tv.Key.Action"
+            android:contentDescription="@string/wgk_tv_kb_case"
+            android:nextFocusLeft="@id/tv_key_clear"
+            android:nextFocusRight="@id/tv_key_case"
+            android:nextFocusDown="@id/tv_key_connect"
+            android:textSize="@dimen/wgk_tv_text_key_small" />
     </LinearLayout>
 
-    <!-- Action row: Clear | Paste | Connect (1 : 1 : 2 weighted) -->
+    <!-- Paste (one share, outlined) and Connect (two shares, filled). -->
     <LinearLayout
         android:id="@+id/tv_keyboard_action_row"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal">
+        android:layout_marginTop="@dimen/wgk_tv_token_action_gap"
+        android:clipToPadding="false"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/wgk_tv_key_row_pad_h"
+        android:paddingEnd="@dimen/wgk_tv_key_row_pad_h">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/tv_key_clear"
-            style="@style/TvKeyButton.Action"
-            android:layout_weight="1"
-            android:nextFocusUp="@id/tv_key_left"
-            android:nextFocusRight="@id/tv_key_paste"
-            android:nextFocusDown="@id/tv_key_clear"
-            android:text="@string/tv_keyboard_clear" />
-
-        <com.google.android.material.button.MaterialButton
+        <TextView
             android:id="@+id/tv_key_paste"
-            style="@style/TvKeyButton.Action"
-            android:layout_weight="1"
-            android:nextFocusUp="@id/tv_key_backspace"
-            android:nextFocusLeft="@id/tv_key_clear"
+            style="@style/Widget.WGKeyBot.Tv.Key.Action"
+            android:layout_height="@dimen/wgk_tv_action_view_height"
+            android:background="@drawable/wgk_tv_focus_outline_bg"
+            android:nextFocusUp="@id/tv_key_left"
             android:nextFocusRight="@id/tv_key_connect"
             android:nextFocusDown="@id/tv_key_paste"
-            android:text="@string/wgk_tv_kb_paste" />
+            android:text="@string/wgk_tv_kb_paste"
+            android:textColor="@color/wgk_on_surface"
+            android:textSize="@dimen/wgk_tv_text_paste" />
 
-        <com.google.android.material.button.MaterialButton
+        <TextView
             android:id="@+id/tv_key_connect"
-            style="@style/TvKeyButton.Connect"
+            style="@style/Widget.WGKeyBot.Tv.Key.Action"
+            android:layout_height="@dimen/wgk_tv_action_view_height"
             android:layout_weight="2"
-            android:nextFocusUp="@id/tv_key_case"
+            android:background="@drawable/wgk_tv_focus_primary_bg"
+            android:fontFamily="sans-serif-medium"
+            android:nextFocusUp="@id/tv_key_clear"
             android:nextFocusLeft="@id/tv_key_paste"
+            android:nextFocusRight="@id/tv_key_connect"
             android:nextFocusDown="@id/tv_key_connect"
-            android:text="@string/wgk_connect_action" />
+            android:text="@string/wgk_connect_action"
+            android:textColor="@color/wgk_tv_connect_key_text"
+            android:textSize="@dimen/wgk_tv_text_connect" />
     </LinearLayout>
 
 </LinearLayout>

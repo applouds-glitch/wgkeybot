@@ -1,12 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-  ~ Android TV variant of tunnel_list_fragment.
-  ~ Landscape two-column layout with overscan-safe padding. Resolved only on
-  ~ devices reporting uiMode=television; phones/tablets keep layout/tunnel_list_fragment.xml.
-  ~ Must keep every @id present in the default layout so the generated
-  ~ TunnelListFragmentBinding fields stay non-null.
+  ~ Android TV variant of tunnel_list_fragment, after the TV mock (Main, Token):
+  ~ a header across the top, and under it either the control state — the
+  ~ connect ring on the left, the session card and the one D-pad list on the
+  ~ right — or the first-run state that asks for a key.
+  ~
+  ~ Resolved only on devices reporting uiMode=television; phones and tablets
+  ~ keep layout/tunnel_list_fragment.xml. Every @id of the default layout is
+  ~ kept so the generated TunnelListFragmentBinding fields stay non-null;
+  ~ what the TV does not show sits in the hidden frame at the bottom. Views
+  ~ named wgk_tv_* are TV only (nullable fields), and the fragment treats a
+  ~ non-null one as "this is the TV layout".
+  ~
+  ~ All sizes are wgk_tv_* tokens (dimens_tv.xml), so the screen keeps the
+  ~ mock's proportions whatever density the TV reports.
   -->
 <layout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto">
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <androidx.coordinatorlayout.widget.CoordinatorLayout
         android:id="@+id/main_container"
@@ -14,243 +24,427 @@
         android:layout_height="match_parent"
         android:background="@color/wgk_background">
 
-        <androidx.constraintlayout.widget.ConstraintLayout
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:paddingHorizontal="48dp"
-            android:paddingVertical="27dp">
+            android:orientation="vertical"
+            android:paddingStart="@dimen/wgk_tv_safe_h"
+            android:paddingTop="@dimen/wgk_tv_safe_v"
+            android:paddingEnd="@dimen/wgk_tv_safe_h"
+            android:paddingBottom="@dimen/wgk_tv_safe_v">
 
-            <!-- Splits the screen into a left (control) and right (info) zone -->
-            <androidx.constraintlayout.widget.Guideline
-                android:id="@+id/wgk_tv_guideline"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                app:layout_constraintGuide_percent="0.45" />
+            <!-- ════════ Header: name and version, network and subscription ════════ -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/wgk_tv_header_height"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-            <!-- ════════ Connected / control state ════════ -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:letterSpacing="0.014"
+                    android:text="@string/app_name"
+                    android:textColor="@color/wgk_on_surface"
+                    android:textSize="@dimen/wgk_tv_text_brand"
+                    android:textStyle="bold" />
 
-            <!-- Connect button (260dp circle) centred in the left zone -->
-            <include
-                android:id="@+id/wgk_connect_button_view"
-                layout="@layout/view_wgk_connect_button"
-                android:layout_width="260dp"
-                android:layout_height="260dp"
-                app:layout_constraintBottom_toTopOf="@id/wgk_headline"
-                app:layout_constraintEnd_toStartOf="@id/wgk_tv_guideline"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toTopOf="parent"
-                app:layout_constraintVertical_chainStyle="packed" />
+                <TextView
+                    android:id="@+id/wgk_tv_version"
+                    style="@style/Widget.WGKeyBot.Tv.MonoLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/wgk_tv_brand_gap"
+                    android:letterSpacing="0"
+                    android:textSize="@dimen/wgk_tv_text_version" />
 
-            <TextView
-                android:id="@+id/wgk_headline"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="20dp"
-                android:gravity="center"
-                android:text="@string/wgk_headline_disconnected"
-                android:textAppearance="?attr/textAppearanceTitleLarge"
-                android:textColor="@color/wgk_on_surface_variant"
-                app:layout_constraintBottom_toBottomOf="parent"
-                app:layout_constraintEnd_toStartOf="@id/wgk_tv_guideline"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toBottomOf="@id/wgk_connect_button_view" />
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_weight="1" />
 
-            <!-- Right zone: profile + status + footer, scrollable for small TVs -->
-            <ScrollView
-                android:layout_width="0dp"
-                android:layout_height="0dp"
-                android:layout_marginStart="28dp"
-                android:scrollbars="none"
-                app:layout_constraintBottom_toBottomOf="parent"
-                app:layout_constraintEnd_toEndOf="parent"
-                app:layout_constraintStart_toEndOf="@id/wgk_tv_guideline"
-                app:layout_constraintTop_toTopOf="parent">
+                <!-- Filled in by the fragment; hidden until there is a key. -->
+                <LinearLayout
+                    android:id="@+id/wgk_tv_net_pill"
+                    style="@style/Widget.WGKeyBot.Tv.Pill"
+                    android:visibility="gone">
+
+                    <ImageView
+                        android:id="@+id/wgk_tv_net_icon"
+                        style="@style/Widget.WGKeyBot.Tv.PillIcon"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_tv_wifi" />
+
+                    <TextView
+                        android:id="@+id/wgk_tv_net_label"
+                        style="@style/Widget.WGKeyBot.Tv.PillText" />
+                </LinearLayout>
 
                 <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:paddingVertical="4dp">
+                    android:id="@+id/wgk_tv_sub_pill"
+                    style="@style/Widget.WGKeyBot.Tv.Pill"
+                    android:layout_marginStart="@dimen/wgk_tv_pills_gap"
+                    android:visibility="gone">
 
-                    <include
-                        android:id="@+id/wgk_profile_card"
-                        layout="@layout/view_wgk_profile_card"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content" />
+                    <ImageView
+                        style="@style/Widget.WGKeyBot.Tv.PillIcon"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_key" />
 
-                    <include
-                        android:id="@+id/wgk_status_zone"
-                        layout="@layout/view_wgk_status_zone"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="16dp" />
-
-                    <include
-                        android:id="@+id/wgk_footer_row"
-                        layout="@layout/view_wgk_footer_row"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="16dp" />
-
+                    <TextView
+                        android:id="@+id/wgk_tv_sub_label"
+                        style="@style/Widget.WGKeyBot.Tv.PillText" />
                 </LinearLayout>
-            </ScrollView>
+            </LinearLayout>
 
-            <!-- ════════ No-config / no-auth state ════════ -->
-
-            <LinearLayout
-                android:id="@+id/wgk_no_config_container"
-                android:layout_width="0dp"
+            <FrameLayout
+                android:layout_width="match_parent"
                 android:layout_height="0dp"
-                android:orientation="horizontal"
-                android:visibility="gone"
-                app:layout_constraintBottom_toBottomOf="parent"
-                app:layout_constraintEnd_toEndOf="parent"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toTopOf="parent">
+                android:layout_marginTop="@dimen/wgk_tv_block_gap"
+                android:layout_weight="1">
 
-                <!-- Left: instructions + Telegram bot link -->
-                <ScrollView
-                    android:layout_width="0dp"
+                <!-- ════════ Control state ════════ -->
+                <LinearLayout
+                    android:id="@+id/wgk_tv_control"
+                    android:layout_width="match_parent"
                     android:layout_height="match_parent"
-                    android:layout_weight="1"
-                    android:paddingEnd="28dp"
-                    android:scrollbars="none">
+                    android:baselineAligned="false"
+                    android:orientation="horizontal">
+
+                    <!-- Left: the ring, the state, the stages, centred. The status
+                         zone's top margin leaves out the halo the ring's frame
+                         already carries below the disc. -->
+                    <LinearLayout
+                        android:layout_width="@dimen/wgk_tv_left_zone"
+                        android:layout_height="match_parent"
+                        android:gravity="center"
+                        android:orientation="vertical">
+
+                        <!-- Sized here, not wrap_content: an include's layout_width and
+                             layout_height replace those of the included root, and
+                             wrap_content shrank the 172dp frame to the 160dp button,
+                             hiding the focus ring that the frame draws around it
+                             (seen on the Haier TV, 21.10). -->
+                        <include
+                            android:id="@+id/wgk_connect_button_view"
+                            layout="@layout/view_wgk_connect_button"
+                            android:layout_width="@dimen/wgk_tv_ring_frame"
+                            android:layout_height="@dimen/wgk_tv_ring_frame" />
+
+                        <include
+                            android:id="@+id/wgk_status_zone"
+                            layout="@layout/view_wgk_status_zone"
+                            android:layout_width="@dimen/wgk_tv_stage_width"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/wgk_tv_left_gap_ring" />
+                    </LinearLayout>
+
+                    <!-- Right: the session card, the list, the remote hint. A scroll
+                         view only as a fallback for a large font scale; at the
+                         mock's sizes it does not scroll. The rows span it edge to
+                         edge, their halos included, and the card and the hint
+                         are moved in by a halo to line up with the rows' visible
+                         edges (see dimens_tv.xml). -->
+                    <ScrollView
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_marginStart="@dimen/wgk_tv_zone_gap_halo"
+                        android:layout_weight="1"
+                        android:fillViewport="true"
+                        android:scrollbars="none">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical">
+
+                            <!-- Its three values share their ids with the status zone's on
+                             purpose: each include is a binding of its own. -->
+                            <include
+                                android:id="@+id/wgk_tv_session"
+                                layout="@layout/view_wgk_tv_session_card"
+                                tools:ignore="DuplicateIncludedIds"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="@dimen/wgk_tv_focus_halo"
+                                android:layout_marginEnd="@dimen/wgk_tv_focus_halo" />
+
+                            <include
+                                android:id="@+id/wgk_footer_row"
+                                layout="@layout/view_wgk_footer_row"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="@dimen/wgk_tv_right_gap_row" />
+
+                            <Space
+                                android:layout_width="match_parent"
+                                android:layout_height="0dp"
+                                android:layout_weight="1"
+                                android:minHeight="@dimen/wgk_tv_right_gap" />
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="@dimen/wgk_tv_focus_halo"
+                                android:layout_marginEnd="@dimen/wgk_tv_focus_halo"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    style="@style/Widget.WGKeyBot.Tv.Keycap"
+                                    android:text="@string/wgk_tv_key_ok" />
+
+                                <TextView
+                                    style="@style/Widget.WGKeyBot.Tv.RemoteHint"
+                                    android:text="@string/wgk_tv_hint_ok_open" />
+
+                                <TextView
+                                    style="@style/Widget.WGKeyBot.Tv.Keycap"
+                                    android:text="@string/wgk_tv_key_left" />
+
+                                <TextView
+                                    style="@style/Widget.WGKeyBot.Tv.RemoteHint"
+                                    android:text="@string/wgk_tv_hint_left_connect" />
+                            </LinearLayout>
+                        </LinearLayout>
+                    </ScrollView>
+                </LinearLayout>
+
+                <!-- ════════ First run: no key, or the subscription has run out ════════
+                     The mock's Token screen. Left: what to do and where the key
+                     comes from; right: the D-pad keyboard, mounted at runtime into
+                     wgk_tv_keyboard_host by TvTokenKeyboard. No QR code: the app has
+                     no way to take a key from one. The phone's input row, Connect
+                     and Telegram buttons stay for the shared binding, hidden. -->
+                <LinearLayout
+                    android:id="@+id/wgk_no_config_container"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:baselineAligned="false"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
 
                     <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:gravity="center"
-                        android:minHeight="400dp"
-                        android:orientation="vertical"
-                        android:paddingVertical="16dp">
+                        android:layout_width="@dimen/wgk_tv_token_left_zone"
+                        android:layout_height="match_parent"
+                        android:orientation="vertical">
 
-                        <FrameLayout
-                            android:layout_width="80dp"
-                            android:layout_height="80dp"
-                            android:background="@drawable/wgk_no_key_icon_bg">
-
-                            <ImageView
-                                android:layout_width="36dp"
-                                android:layout_height="36dp"
-                                android:layout_gravity="center"
-                                android:contentDescription="@null"
-                                android:src="@drawable/ic_key"
-                                app:tint="@color/wgk_primary" />
-                        </FrameLayout>
+                        <Space
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1" />
 
                         <TextView
                             android:id="@+id/wgk_no_key_title"
-                            android:layout_width="wrap_content"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="24dp"
-                            android:gravity="center"
-                            android:text="@string/wgk_no_key_title"
-                            android:textAppearance="?attr/textAppearanceHeadlineSmall"
-                            android:textColor="@color/wgk_on_surface" />
+                            android:fontFamily="sans-serif-medium"
+                            android:text="@string/wgk_tv_no_key_title"
+                            android:textColor="@color/wgk_on_surface"
+                            android:textSize="@dimen/wgk_tv_text_headline" />
 
                         <TextView
                             android:id="@+id/wgk_no_key_subtitle"
-                            android:layout_width="wrap_content"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:gravity="center"
+                            android:layout_marginTop="@dimen/wgk_tv_title_gap"
                             android:lineSpacingMultiplier="1.4"
-                            android:text="@string/wgk_no_key_subtitle"
-                            android:textAppearance="?attr/textAppearanceBodyLarge"
-                            android:textColor="@color/wgk_on_surface_variant" />
+                            android:text="@string/wgk_tv_no_key_subtitle"
+                            android:textColor="@color/wgk_on_surface_variant"
+                            android:textSize="@dimen/wgk_tv_text_token_body" />
 
-                        <!-- Hidden on TV (D-pad keyboard is used) but kept so the
-                             shared fragment code can still reference these ids. -->
-                        <FrameLayout
-                            android:id="@+id/wgk_token_input_wrapper"
+                        <!-- Where the key comes from. Not focusable: there is
+                             nothing to do with it on the TV. -->
+                        <LinearLayout
+                            android:id="@+id/wgk_tv_key_card"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="24dp"
-                            android:visibility="gone">
+                            android:layout_marginTop="@dimen/wgk_tv_token_left_gap"
+                            android:background="@drawable/wgk_tv_card_bg"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal"
+                            android:padding="@dimen/wgk_tv_key_card_pad">
 
-                            <EditText
-                                android:id="@+id/wgk_token_input"
-                                android:layout_width="match_parent"
+                            <FrameLayout
+                                android:layout_width="@dimen/wgk_tv_key_tile"
+                                android:layout_height="@dimen/wgk_tv_key_tile"
+                                android:background="@drawable/wgk_tv_key_tile_bg">
+
+                                <ImageView
+                                    android:layout_width="@dimen/wgk_tv_key_tile_icon"
+                                    android:layout_height="@dimen/wgk_tv_key_tile_icon"
+                                    android:layout_gravity="center"
+                                    android:contentDescription="@null"
+                                    android:src="@drawable/ic_key"
+                                    app:tint="@color/wgk_primary" />
+                            </FrameLayout>
+
+                            <LinearLayout
+                                android:layout_width="0dp"
                                 android:layout_height="wrap_content"
-                                android:background="@drawable/wgk_token_field_bg"
-                                android:fontFamily="monospace"
-                                android:hint="@string/wgk_token_hint"
-                                android:inputType="textNoSuggestions"
-                                android:maxLines="1"
-                                android:paddingStart="14dp"
-                                android:paddingTop="14dp"
-                                android:paddingEnd="52dp"
-                                android:paddingBottom="14dp"
-                                android:textColor="@color/wgk_on_surface"
-                                android:textColorHint="@color/wgk_on_surface_variant" />
+                                android:layout_marginStart="@dimen/wgk_tv_key_card_gap"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
 
-                            <ImageButton
-                                android:id="@+id/wgk_paste_btn"
-                                android:layout_width="44dp"
-                                android:layout_height="44dp"
-                                android:layout_gravity="end|center_vertical"
-                                android:background="?attr/selectableItemBackgroundBorderless"
-                                android:contentDescription="@string/wgk_paste_cd"
-                                android:src="@drawable/ic_content_paste"
-                                app:tint="@color/wgk_on_surface_variant" />
+                                <TextView
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:fontFamily="sans-serif-medium"
+                                    android:text="@string/wgk_tv_key_where_title"
+                                    android:textColor="@color/wgk_on_surface"
+                                    android:textSize="@dimen/wgk_tv_text_key_card_title" />
 
-                        </FrameLayout>
+                                <TextView
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="@dimen/wgk_tv_title_gap"
+                                    android:lineSpacingMultiplier="1.4"
+                                    android:text="@string/wgk_tv_key_where_body"
+                                    android:textColor="@color/wgk_on_surface_variant"
+                                    android:textSize="@dimen/wgk_tv_text_key_card_body" />
+                            </LinearLayout>
+                        </LinearLayout>
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/wgk_connect_with_token_btn"
-                            style="@style/Widget.Material3.Button"
+                        <TextView
+                            android:id="@+id/wgk_tv_key_footnote"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="12dp"
-                            android:text="@string/wgk_connect_action"
-                            android:textColor="@color/wgk_on_primary"
-                            android:visibility="gone"
-                            app:backgroundTint="@color/wgk_primary"
-                            app:cornerRadius="24dp" />
+                            android:layout_marginTop="@dimen/wgk_tv_token_left_gap"
+                            android:text="@string/wgk_tv_key_expired_hint"
+                            android:textColor="@color/wgk_outline"
+                            android:textSize="@dimen/wgk_tv_text_key_card_body" />
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/wgk_bot_link_btn"
-                            style="@style/Widget.Material3.Button"
-                            android:layout_width="wrap_content"
-                            android:layout_height="52dp"
-                            android:layout_marginTop="28dp"
-                            android:focusable="true"
-                            android:text="@string/wgk_no_key_action"
-                            android:textColor="@color/wgk_on_primary"
-                            app:backgroundTint="@color/wgk_primary"
-                            app:cornerRadius="24dp"
-                            app:icon="@drawable/ic_send"
-                            app:iconGravity="textStart"
-                            app:iconPadding="8dp"
-                            app:iconSize="18dp"
-                            app:iconTint="@color/wgk_on_primary" />
-
+                        <!-- Shown once the subscription has run out: asks the
+                             server again, as on the phone. The left of the
+                             keyboard reaches it by plain focus search. -->
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/wgk_check_subscription_btn"
-                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="@dimen/wgk_tv_row_view_height"
+                            android:layout_marginTop="@dimen/wgk_tv_key_card_gap_halo"
+                            android:background="@drawable/wgk_tv_focus_outline_bg"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minWidth="0dp"
+                            android:paddingStart="@dimen/wgk_tv_row_view_pad_h"
+                            android:paddingEnd="@dimen/wgk_tv_row_view_pad_h"
+                            android:text="@string/wgk_check_subscription_action"
+                            android:textAllCaps="false"
+                            android:textColor="@color/wgk_on_surface"
+                            android:textSize="@dimen/wgk_tv_text_row_value"
+                            android:visibility="gone"
+                            app:backgroundTint="@null"
+                            app:rippleColor="@android:color/transparent" />
+
+                        <Space
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal">
+
+                            <TextView
+                                style="@style/Widget.WGKeyBot.Tv.Keycap"
+                                android:text="@string/wgk_tv_key_ok" />
+
+                            <TextView
+                                style="@style/Widget.WGKeyBot.Tv.RemoteHint"
+                                android:text="@string/wgk_tv_hint_ok_type" />
+
+                            <TextView
+                                style="@style/Widget.WGKeyBot.Tv.Keycap"
+                                android:text="@string/wgk_tv_key_hold" />
+
+                            <TextView
+                                style="@style/Widget.WGKeyBot.Tv.RemoteHint"
+                                android:layout_width="0dp"
+                                android:layout_weight="1"
+                                android:ellipsize="end"
+                                android:maxLines="1"
+                                android:text="@string/wgk_tv_hint_hold" />
+                        </LinearLayout>
+
+                        <!-- Phone input, hidden on TV (the D-pad keyboard is used)
+                             but kept so the shared fragment code can still
+                             reference these ids. -->
+                        <FrameLayout
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="12dp"
-                            android:text="@string/wgk_check_subscription_action"
-                            android:visibility="gone"
-                            app:cornerRadius="24dp"
-                            app:strokeColor="@color/wgk_outline" />
+                            android:visibility="gone">
 
+                            <FrameLayout
+                                android:id="@+id/wgk_token_input_wrapper"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content">
+
+                                <EditText
+                                    android:id="@+id/wgk_token_input"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:hint="@string/wgk_token_hint"
+                                    android:importantForAutofill="no"
+                                    android:inputType="textNoSuggestions" />
+
+                                <ImageButton
+                                    android:id="@+id/wgk_paste_btn"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:contentDescription="@string/wgk_paste_cd"
+                                    android:src="@drawable/ic_content_paste" />
+                            </FrameLayout>
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/wgk_connect_with_token_btn"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/wgk_connect_action" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/wgk_bot_link_btn"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/wgk_no_key_action" />
+                        </FrameLayout>
                     </LinearLayout>
-                </ScrollView>
 
-                <!-- Right: D-pad hex keyboard mounts here at runtime -->
-                <LinearLayout
-                    android:id="@+id/wgk_tv_keyboard_host"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1.1"
-                    android:gravity="center_vertical"
-                    android:orientation="vertical" />
+                    <!-- Right: the keyboard. The keys' halos reach a halo past
+                         the visible keys, hence the gap less one halo. -->
+                    <LinearLayout
+                        android:id="@+id/wgk_tv_keyboard_host"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_marginStart="@dimen/wgk_tv_zone_gap_halo"
+                        android:layout_weight="1"
+                        android:gravity="center_vertical"
+                        android:orientation="vertical" />
+                </LinearLayout>
+            </FrameLayout>
 
-            </LinearLayout>
+            <!-- ════════ Phone views the TV does not show ════════
+                 Kept for the shared binding (non-null fields) and hidden for good
+                 by their frame, whatever the fragment does with their own
+                 visibility: the profile card's place is the Конфигурация row, and
+                 the headline's job is done by the status zone's hint line. -->
+            <FrameLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:visibility="gone">
 
-        </androidx.constraintlayout.widget.ConstraintLayout>
+                <include
+                    android:id="@+id/wgk_profile_card"
+                    layout="@layout/view_wgk_profile_card"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <TextView
+                    android:id="@+id/wgk_headline"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </FrameLayout>
+        </LinearLayout>
     </androidx.coordinatorlayout.widget.CoordinatorLayout>
 </layout>
