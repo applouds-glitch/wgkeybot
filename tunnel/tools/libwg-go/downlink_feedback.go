@@ -190,12 +190,17 @@ func (r *downlinkReporter) logTransition(excluded []int, ready int) {
 func runDownlinkFeedback(ctx context.Context, streams []*stream) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	// This second is also the clock the judge of silence under load tells a
+	// freeze by while it has no tick of its own (silentUnderLoadClock): it
+	// runs for as long as the proxy does, and must; the proxy starts the
+	// clock before this goroutine and the judge's (init_groups.go).
 	var r downlinkReporter
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			noteReporterTurn(time.Now())
 			r.update(streams, now)
 		}
 	}

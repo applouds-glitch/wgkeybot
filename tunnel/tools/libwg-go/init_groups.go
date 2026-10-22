@@ -147,7 +147,11 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	}
 
 	// One reporter for the whole session UUID, across every credential group:
-	// the server keeps a single downstream-health mask per session.
+	// the server keeps a single downstream-health mask per session. Its clock
+	// starts here, ahead of its goroutine, the judge of silence under load and
+	// the workers, so that a freeze before its first second is seen too
+	// (silentUnderLoadClock).
+	startReporterClock(time.Now())
 	feedbackCtx, feedbackCancel := context.WithCancel(gCtx)
 	feedbackDone := make(chan struct{})
 	go func() {

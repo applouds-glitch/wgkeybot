@@ -276,3 +276,31 @@ func TestRelayOrderHoleOpenedAfterTheLateCounterCameIsNoAge(t *testing.T) {
 		t.Fatalf("late %d, hole max %dµs; want 1, 0", s.late, s.hole.max)
 	}
 }
+
+// The RX goroutines book a datagram in both books of the downlink — loss and
+// order — under one lock, the header parsed once; what is no transport message
+// reaches neither (review 2026-10-22).
+func TestObserveDownlinkBooksBothUnderOneLock(t *testing.T) {
+	if downlinkRelayLoss.mu != &downlinkMu || downlinkRelayOrder.mu != &downlinkMu {
+		t.Fatal("the downlink's books are not under downlinkMu together")
+	}
+	now := time.Now()
+	downlinkRelayLoss.reset()
+	downlinkRelayOrder.reset(now)
+	t.Cleanup(func() {
+		downlinkRelayLoss.reset()
+		downlinkRelayOrder.reset(time.Now())
+	})
+	for ctr := uint64(0); ctr < 10; ctr++ {
+		observeDownlink(wgTransport(7, ctr), "A")
+	}
+	observeDownlink([]byte{1, 2, 3}, "A")
+	observeDownlink(wgTransport(7, 10), "")
+	samples, _ := downlinkRelayLoss.take(now.Add(time.Minute))
+	if len(samples) != 1 || samples[0].relay != "A" || samples[0].rx != 10 || samples[0].lost != 0 {
+		t.Fatalf("loss book: %+v, want 10 through A and nothing lost", samples)
+	}
+	if order := downlinkRelayOrder.take(now.Add(time.Minute)); order.got != 10 || order.late != 0 {
+		t.Fatalf("order book: got %d late %d, want 10 in order", order.got, order.late)
+	}
+}

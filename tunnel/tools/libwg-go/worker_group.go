@@ -309,6 +309,8 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 	pathAtStart := darkEpoch()
 	attempt := beginAttempt(ctx, cfg)
 	defer attempt.end()
+	s.user.Store(&user)
+	defer s.user.Store(nil)
 	s.attempt.Store(attempt.a)
 	s.relays.Store(&addrs)
 	defer s.attempt.Store(nil)
@@ -324,10 +326,15 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 		return s.parkInTheDark(ctx, attempt, st)
 	}
 
-	// Just moved off a rested relay: the relays losing in that window last
-	// (relay_move.go).
+	// Just moved off a rested relay: the head the move picked first, the relays
+	// losing in that window last (relay_move.go).
 	now := time.Now()
-	ordered := streamAttemptOrderAround(user, addrs, s.id, attemptCfg, now, s.takeMoveLossy(now))
+	ordered := streamAttemptOrderAround(user, addrs, s.id, attemptCfg, now, s.takeMove(now))
+	// A relay this stream's handshakes keep failing on while others hear it:
+	// last, for this stream only (relay_heard_by_others.go).
+	if avoid := s.avoidedRelay(); avoid != "" {
+		ordered = relayLast(ordered, avoid)
+	}
 	attemptHead := ordered[0]
 
 	// The session and its race get a context of their own, ended with them: a

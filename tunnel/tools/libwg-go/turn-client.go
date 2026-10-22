@@ -218,10 +218,18 @@ type stream struct {
 	// whether it has another to go to. Set and cleared by attemptOnce.
 	attempt atomic.Pointer[networkAttempt]
 	relays  atomic.Pointer[[]string]
-	// moveLossy is set when the stream's session is moved off a rested relay:
-	// the relays losing downlink at the time, for its next attempt to dial
-	// last (relay_move.go).
-	moveLossy atomic.Pointer[relayMove]
+	// flowFails is the stream's run of handshakes failed on one relay others
+	// were hearing (relay_heard_by_others.go); from flowFailsBeforeAvoid on it
+	// dials that relay last.
+	flowFails atomic.Pointer[flowFailRun]
+	// user is the TURN username the attempt dials with, for a move off a
+	// rested relay to tell where the credential has room (relay_move.go). Set
+	// and cleared by attemptOnce.
+	user atomic.Pointer[string]
+	// move is set when the stream's session is moved off a rested relay: the
+	// relay its next attempt dials first and the relays losing downlink at the
+	// time, which it dials last (relay_move.go).
+	move atomic.Pointer[relayMove]
 
 	// kaPhase is this stream's offset within the shared keepalive grid window,
 	// derived from id and the total stream count at startup (see keepalivePhase).
@@ -418,9 +426,13 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 			continue
 		}
 
-		deadline, wakeReason := activity.nextDeadline(time.Now(), retryAt, echoAt)
+		start := time.Now()
+		deadline, wakeReason := activity.nextDeadline(start, retryAt, echoAt)
+		// The grid point due at the end of this wait or after it: a wake for
+		// anything else that comes only past it serves it first (below).
+		gridAt := nextKeepaliveGrid(start, activity.phase)
 		before := time.Now()
-		woke, ok := waitUntilOrWake(ctx, deadline, wakeCh)
+		woke, ok := keepaliveWait(ctx, deadline, wakeCh)
 		if !ok {
 			return
 		}
@@ -477,6 +489,18 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 			reportErr(&deadStreamError{silent: activity.heardAge(now), froze: activity.frozeSinceHeard()})
 			return
 		}
+		// A wake for the repeat, a write retry or the dead-stream check that
+		// came only after the grid point it was due before — the process held
+		// up past it, short of a freeze — serves that grid point first: left
+		// to the next turn, the grid is counted again from now and the next
+		// point is a whole interval away, ~50 s without a keepalive and the
+		// stream benched from the 35th (codex review 2026-10-22: the repeat
+		// whose keepalive had its echo did just that). The grid's keepalive
+		// arms its own repeat.
+		if wakeReason != keepaliveGridWake && !now.Before(gridAt) {
+			wakeReason = keepaliveGridWake
+			echoAt = time.Time{}
+		}
 		// An RX that arrived after the timer was armed may make an old liveness
 		// deadline harmless. Recalculate instead of emitting an off-grid packet.
 		if wakeReason == keepaliveDeadCheckWake {
@@ -525,10 +549,9 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 			continue
 		}
 		retryAt = time.Time{}
-		// Over UDP, sent again in keepaliveEchoRetry unless something arrives.
-		if !s.overTCP.Load() {
-			echoFor, echoAt = now, now.Add(keepaliveEchoRetry)
-		}
+		// Sent again in keepaliveEchoRetry unless something arrives, over
+		// either transport (keepalive_policy.go).
+		echoFor, echoAt = now, now.Add(keepaliveEchoRetry)
 	}
 }
 
@@ -927,6 +950,9 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	}
 
 	s.ready.Store(true)
+	// The judge of silence under load takes this stream's row now, not on the
+	// next packet anyone hears (silent_under_load.go).
+	wakeSilentUnderLoadJudge()
 	// Ask right away rather than at the next grid tick, so the reporter can use
 	// this stream as soon as the server has answered.
 	if control != nil {
@@ -1240,6 +1266,9 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	defer s.control.CompareAndSwap(control, nil)
 
 	s.ready.Store(true)
+	// The judge of silence under load takes this stream's row now, not on the
+	// next packet anyone hears (silent_under_load.go).
+	wakeSilentUnderLoadJudge()
 	// Ask right away rather than at the next grid tick, so the reporter can use
 	// this stream as soon as the server has answered.
 	if control != nil {
@@ -1411,6 +1440,9 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	defer s.control.CompareAndSwap(control, nil)
 
 	s.ready.Store(true)
+	// The judge of silence under load takes this stream's row now, not on the
+	// next packet anyone hears (silent_under_load.go).
+	wakeSilentUnderLoadJudge()
 	// Ask right away rather than at the next grid tick, so the reporter can use
 	// this stream as soon as the server has answered.
 	if control != nil {

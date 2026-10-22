@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -88,13 +89,104 @@ const (
 	// silentUnderLoadWitnesses: two streams, so that one stream's good fortune
 	// — a chunk that fell back to it from a full queue — convicts nobody.
 	silentUnderLoadWitnesses = 2
-	// silentUnderLoadTick is how often the judge looks; the verdict comes
-	// within a tick of the silence reaching silentUnderLoadAfter.
+	// silentUnderLoadTick is how often the judge looks while a verdict is
+	// possible; the verdict comes within a tick of the silence reaching
+	// silentUnderLoadAfter — which turn lands in a window narrower than a
+	// tick is the tick's phase, as it always was. While idle
+	// (silentUnderLoadJudge.idle) it has no tick: no stream has heard three
+	// chunks lately, so no turn could convict, and the next packet any
+	// stream hears, or a stream come ready, wakes it
+	// (wakeSilentUnderLoadJudge). A tunnel at rest hears keepalive echoes,
+	// one a stream per keepaliveInterval, and at this tick the judge was two
+	// wakeups a second on top of the WGH1 reporter's one, all night (review
+	// 2026-10-22); a rarer tick instead lost verdicts — the witnesses out of
+	// the echo by the turn after their burst, a row taken late with their
+	// chunks already in it (codex review) — where a turn on the packet itself
+	// takes the row the moment it arrives.
 	silentUnderLoadTick = 500 * time.Millisecond
 	// silentUnderLoadFreeze: a turn this much later than its tick was a host
 	// freeze, not scheduler jitter.
 	silentUnderLoadFreeze = time.Second
 )
+
+// silentUnderLoadWake is how a packet heard (noteRx), or a stream come ready,
+// wakes the idle judge: wakeSilentUnderLoadJudge offers one token, never
+// blocking, and the runner takes it while idle. Full while the judge ticks
+// instead, at no cost to the offer.
+var silentUnderLoadWake = make(chan struct{}, 1)
+
+func wakeSilentUnderLoadJudge() {
+	select {
+	case silentUnderLoadWake <- struct{}{}:
+	default:
+	}
+}
+
+// silentUnderLoadClock is the judge's sentinel of a freeze while it is idle,
+// with no tick of its own to be late for: the WGH1 reporter turns every second
+// for as long as the proxy runs (downlink_feedback.go) and notes each turn
+// here, a turn silentUnderLoadFreeze late being a freeze. The judge takes for
+// a freeze an idle gap in which the reporter was late, or at whose end it has
+// not turned for its second and that long — after a thaw either goroutine may
+// run first, and the gap is taken once whichever way (reporterFroze). One
+// snapshot, published whole and read whole, its times with their monotonic
+// reading: a wall clock set back brings no old freeze back. Started by the
+// proxy before its judge and workers (init_groups.go), and a reporter of a
+// proxy stopped publishes nothing over the next one's (codex review
+// 2026-10-22).
+var silentUnderLoadClock atomic.Pointer[reporterClock]
+
+type reporterClock struct {
+	turn   time.Time // the reporter's latest turn, or its start
+	froze  time.Time // its latest turn that came late; zero: none
+	before time.Time // the turn before that one: where the gap it closed began
+}
+
+// startReporterClock is the reporter starting at now: a clock from here, the
+// proxy before forgotten, and a freeze before its first second seen.
+func startReporterClock(now time.Time) {
+	silentUnderLoadClock.Store(&reporterClock{turn: now})
+}
+
+// noteReporterTurn is the reporter's turn at now.
+func noteReporterTurn(now time.Time) { reporterTurn(silentUnderLoadClock.Load(), now) }
+
+// reporterTurn publishes the reporter's turn at now over the clock it read as
+// c — unless the clock has been started anew since, the next proxy's, which
+// is not this reporter's to set (a Stop that timed out leaves it running a
+// while). It reports whether the turn was published.
+func reporterTurn(c *reporterClock, now time.Time) bool {
+	next := &reporterClock{turn: now}
+	if c != nil {
+		next.froze, next.before = c.froze, c.before
+		if now.Sub(c.turn) > time.Second+silentUnderLoadFreeze {
+			next.froze, next.before = now, c.turn
+		}
+	}
+	return silentUnderLoadClock.CompareAndSwap(c, next)
+}
+
+// reporterFroze reports whether the reporter's clock shows a freeze since the
+// judge's last turn that the judge has not taken yet: a turn of the reporter's
+// that came late after it, or none for longer than its second and
+// silentUnderLoadFreeze by now. A gap is one freeze however it is seen — stale
+// first on a turn before the reporter's, then as the late turn's mark — so the
+// judge keeps the gap's beginning, the reporter's turn it is measured from.
+func (j *silentUnderLoadJudge) reporterFroze(now time.Time) bool {
+	c := silentUnderLoadClock.Load()
+	if c == nil {
+		return false
+	}
+	switch {
+	case c.froze.After(j.last) && !c.before.Equal(j.frozeGap):
+		j.frozeGap = c.before
+	case now.Sub(c.turn) > time.Second+silentUnderLoadFreeze && !c.turn.Equal(j.frozeGap):
+		j.frozeGap = c.turn
+	default:
+		return false
+	}
+	return true
+}
 
 // silentUnderLoadJudge keeps, per stream, what every sibling had heard when
 // the stream's present silence was first seen, and gives the verdict once the
@@ -116,6 +208,26 @@ type silentUnderLoadJudge struct {
 	act   []*streamActivity
 	heard []int64
 	count []uint64
+
+	// idle is the judge's word on its last turn: no stream had heard
+	// silentUnderLoadPackets since prior was taken, dispatchStaleAfter or
+	// more ago (the judge's start, before its first take) — the least a
+	// witness needs, over the longest a judged silence lasts — so nothing
+	// could be convicted, and the runner waits for a packet instead of its
+	// tick. base and prior are every stream's session and packets heard at
+	// the two latest takes, base becoming prior at the first turn
+	// dispatchStaleAfter after it was taken; a session newer than prior has
+	// heard all of its packets since.
+	idle              bool
+	basedAt           time.Time
+	baseAct, priorAct []*streamActivity
+	base, prior       []uint64
+
+	// frozeGap is where the gap last taken for a freeze on the reporter's
+	// clock began (reporterFroze).
+	frozeGap time.Time
+
+	turns atomic.Uint64 // the runner's turns so far, for its test
 }
 
 // silentUnderLoadVerdict is one stream found silent under load.
@@ -144,6 +256,10 @@ func newSilentUnderLoadJudge(n int) *silentUnderLoadJudge {
 		act:      make([]*streamActivity, n),
 		heard:    make([]int64, n),
 		count:    make([]uint64, n),
+		baseAct:  make([]*streamActivity, n),
+		priorAct: make([]*streamActivity, n),
+		base:     make([]uint64, n),
+		prior:    make([]uint64, n),
 	}
 }
 
@@ -154,8 +270,19 @@ func (j *silentUnderLoadJudge) judge(streams []*stream, now time.Time) (verdicts
 	n := j.n
 	// A turn that comes long after its tick is a freeze the process slept
 	// through: what the siblings heard before it says nothing about a stream
-	// silent across it. Every row is taken afresh.
-	froze := !j.last.IsZero() && now.Sub(j.last) > silentUnderLoadTick+silentUnderLoadFreeze
+	// silent across it. Every row is taken afresh. An idle turn has no tick
+	// to be late for — it comes on a packet, after any gap — so there the
+	// reporter's clock tells a freeze from a quiet spell (silentUnderLoadClock);
+	// under the tick the judge's own clock rules, and a reporter late on its
+	// own resets nothing (codex review 2026-10-22).
+	var froze bool
+	if !j.last.IsZero() {
+		if j.idle {
+			froze = j.reporterFroze(now)
+		} else {
+			froze = now.Sub(j.last) > silentUnderLoadTick+silentUnderLoadFreeze
+		}
+	}
 	j.last = now
 
 	for i, st := range streams {
@@ -169,6 +296,7 @@ func (j *silentUnderLoadJudge) judge(streams []*stream, now time.Time) (verdicts
 			j.count[i] = a.heardCount()
 		}
 	}
+	j.idle = j.quiet(now)
 
 	for i, st := range streams {
 		a := j.act[i]
@@ -220,6 +348,37 @@ func (j *silentUnderLoadJudge) judge(streams []*stream, now time.Time) (verdicts
 	return verdicts, back
 }
 
+// quiet takes this turn's counts as base once base is dispatchStaleAfter old,
+// the base before it becoming prior, and reports whether no ready stream has
+// heard silentUnderLoadPackets since prior was taken: the tunnel at rest, as
+// far as a witness of this turn is concerned (idle).
+func (j *silentUnderLoadJudge) quiet(now time.Time) bool {
+	if j.basedAt.IsZero() || now.Sub(j.basedAt) >= dispatchStaleAfter {
+		if j.basedAt.IsZero() {
+			copy(j.base, j.count)
+			copy(j.baseAct, j.act)
+		}
+		copy(j.prior, j.base)
+		copy(j.priorAct, j.baseAct)
+		copy(j.base, j.count)
+		copy(j.baseAct, j.act)
+		j.basedAt = now
+	}
+	for i, a := range j.act {
+		if a == nil {
+			continue
+		}
+		heard := j.count[i]
+		if j.priorAct[i] == a {
+			heard -= j.prior[i]
+		}
+		if heard >= silentUnderLoadPackets {
+			return false
+		}
+	}
+	return true
+}
+
 // line is the verdict for the log: the silence, the witnesses and what they
 // got, and how much sooner than the age rule this came.
 func (v silentUnderLoadVerdict) line() string {
@@ -228,23 +387,53 @@ func (v silentUnderLoadVerdict) line() string {
 		(dispatchStaleAfter - v.silent).Round(time.Second), dispatchStaleAfter)
 }
 
-// runSilentUnderLoadJudge judges streams every silentUnderLoadTick until ctx
-// ends and logs each verdict as it is given, and each return. The dispatcher
-// and the WGH1 reporter read the verdict off the stream (dispatchStale); the
-// watch of stale transitions (staleWatch) leaves both lines to this.
+// runSilentUnderLoadJudge judges streams until ctx ends and logs each verdict
+// as it is given, and each return. The dispatcher and the WGH1 reporter read
+// the verdict off the stream (dispatchStale); the watch of stale transitions
+// (staleWatch) leaves both lines to this.
 func runSilentUnderLoadJudge(ctx context.Context, streams []*stream) {
-	j := newSilentUnderLoadJudge(len(streams))
+	newSilentUnderLoadJudge(len(streams)).run(ctx, streams)
+}
+
+// run takes the judge's turns: the first at once, then one every
+// silentUnderLoadTick while a stream has three chunks since the take, and
+// while idle one on each packet a stream hears — the ticker stopped, a tunnel
+// at rest costs it nothing.
+func (j *silentUnderLoadJudge) run(ctx context.Context, streams []*stream) {
 	tick := time.NewTicker(silentUnderLoadTick)
 	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
+	ticking := true
+	for first := true; ; first = false {
+		if !first && j.idle {
+			select {
+			case <-ctx.Done():
+				return
+			case <-silentUnderLoadWake:
+				if ctx.Err() != nil {
+					// Both were ready, and the token is the next proxy's
+					// judge's: hand it back.
+					wakeSilentUnderLoadJudge()
+					return
+				}
+			}
+		} else if !first {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
 		}
 		// The clock, not the tick's stamp: a tick that waited out a freeze in
 		// the channel carries the time it was due.
 		verdicts, back := j.judge(streams, time.Now())
+		j.turns.Add(1)
+		if j.idle && ticking {
+			tick.Stop()
+			ticking = false
+		} else if !j.idle && !ticking {
+			tick.Reset(silentUnderLoadTick)
+			ticking = true
+		}
 		for _, r := range back {
 			turnLog("[DISPATCH] stream %d heard its relay again after %v — back in rotation", r.id, r.silent.Round(time.Second))
 		}

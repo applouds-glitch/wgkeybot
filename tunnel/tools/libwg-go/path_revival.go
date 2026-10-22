@@ -84,6 +84,7 @@ func nextPathProof(overTCP bool) <-chan struct{} {
 // its first round trip through the relay.
 func (s *stream) notePathProven() {
 	s.pathProofs.Add(1)
+	s.flowFails.Store(nil) // a session of its own got through (relay_heard_by_others.go)
 	litPath(s.overTCP.Load())
 	i := proofTransport(s.overTCP.Load())
 	proofWaits.Lock()

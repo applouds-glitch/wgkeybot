@@ -70,8 +70,8 @@ const (
 // A var for the host tests, which cannot wait 90s.
 var deadStreamTimeout = 90 * time.Second
 
-// keepaliveEchoRetry: over UDP a ready stream sends its keepalive once more
-// this long after one that nothing answered — no echo, no data.
+// keepaliveEchoRetry: a ready stream sends its keepalive once more this long
+// after one that nothing answered — no echo, no data — over either transport.
 //
 // Field log of 2026-10-18/20 (Lenovo TB-X705L, Android 9, v2.2.0, home Wi-Fi):
 // 75 times in ~30 h a single stream fell silent for 50 s — two keepalive
@@ -84,11 +84,21 @@ var deadStreamTimeout = 90 * time.Second
 // at under 35 it is never benched. One packet of 20 bytes, inside the radio's
 // tail timer (5-10 s) of the grid burst, so no extra wake of the radio.
 //
+// Over TCP too (22.10). It was left out there as "the kernel retransmits a
+// lost segment, so a missing echo means the relay or the server did not
+// answer" — but TCP covers only the leg to the relay; from the relay to the
+// server and back the keepalive and its echo are UDP whatever the phone dials
+// with. Bench of 2026-10-22 evening (Pixel 6a, Rostelecom mobile, TCP chosen,
+// ten streams on four relays): the downlink lost 4-9% on every relay alike
+// with the flows to the relays retransmitting 0-0.5%, so beyond the relays;
+// and idle, a stream went silent for 36-49 s and was benched several times a
+// minute — `[TCP] … last data from the relay 36s ago, last ACK 1.4s ago` — an
+// echo lost there, waiting for the grid. Repeated, a lost one costs 3 s there
+// as over UDP. A flow that is stalled itself only queues a few bytes more.
+//
 // Once per keepalive: a second miss is the path, not the packet, and the grid
-// comes round 22 s later anyway. Not over TCP, where the kernel retransmits a
-// lost segment and a missing echo means the relay or the server did not
-// answer. Not for the keepalive sent at a thaw, which the post-wake probe
-// follows with pings of its own (wake_probe.go).
+// comes round 22 s later anyway. Not for the keepalive sent at a thaw, which
+// the post-wake probe follows with pings of its own (wake_probe.go).
 //
 // A var for the host tests, which cannot wait 3 s.
 var keepaliveEchoRetry = 3 * time.Second
@@ -222,6 +232,9 @@ func (a *streamActivity) noteRx(now time.Time) {
 	a.lastHeard.Store(now.UnixNano())
 	a.lastRx.Store(now.UnixNano())
 	a.rxCount.Add(1)
+	// The judge of silence under load, if idle, turns on this packet
+	// (silent_under_load.go); never waited for.
+	wakeSilentUnderLoadJudge()
 }
 
 // heardCount is how many packets this session has really heard.
@@ -379,6 +392,10 @@ func waitUntil(ctx context.Context, deadline time.Time) bool {
 
 // waitUntilOrWake is waitUntil that also returns, with woke = true, when a
 // host wake is broadcast (hostWakeChannel). ok = false means ctx is done.
+// keepaliveWait is the keepalive loop's wait: waitUntilOrWake, a var for the
+// host tests to hold a wake up past the grid point it was due before.
+var keepaliveWait = waitUntilOrWake
+
 func waitUntilOrWake(ctx context.Context, deadline time.Time, wake <-chan struct{}) (woke, ok bool) {
 	delay := time.Until(deadline)
 	if delay <= 0 {

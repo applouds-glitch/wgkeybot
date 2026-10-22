@@ -82,7 +82,7 @@ func (s relayLossSample) rate() float64 {
 }
 
 type relayLoss struct {
-	mu sync.Mutex
+	mu *sync.Mutex // its own, or the downlink's, shared with the order book (downlinkMu)
 
 	receiver uint32
 	have     bool
@@ -109,10 +109,23 @@ type relayLoss struct {
 	lastSec []int64
 }
 
-var downlinkRelayLoss = newRelayLoss()
+var downlinkRelayLoss = newRelayLossUnder(&downlinkMu)
 
-func newRelayLoss() *relayLoss {
-	return &relayLoss{index: map[string]uint16{}}
+func newRelayLoss() *relayLoss { return newRelayLossUnder(new(sync.Mutex)) }
+
+// newRelayLossUnder is a book guarded by mu, which may guard another book too.
+func newRelayLossUnder(mu *sync.Mutex) *relayLoss {
+	return &relayLoss{mu: mu, index: map[string]uint16{}}
+}
+
+// wgTransportHeader is the receiver index and counter of a WireGuard transport
+// message heard through relay — anything else is not booked, and nor is a
+// datagram with no relay to its name.
+func wgTransportHeader(pkt []byte, relay string) (receiver uint32, ctr uint64, ok bool) {
+	if len(pkt) < 16 || pkt[0] != 4 || relay == "" {
+		return 0, 0, false
+	}
+	return binary.LittleEndian.Uint32(pkt[4:8]), binary.LittleEndian.Uint64(pkt[8:16]), true
 }
 
 // reset forgets everything: a new proxy, new relays. Field by field — the
@@ -132,14 +145,15 @@ func (t *relayLoss) reset() {
 // observe books one downlink datagram that arrived through relay. Anything but
 // a WireGuard transport message is ignored.
 func (t *relayLoss) observe(pkt []byte, relay string, now time.Time) {
-	if len(pkt) < 16 || pkt[0] != 4 || relay == "" {
-		return
+	if receiver, ctr, ok := wgTransportHeader(pkt, relay); ok {
+		t.mu.Lock()
+		t.observeLocked(receiver, ctr, relay, now)
+		t.mu.Unlock()
 	}
-	receiver := binary.LittleEndian.Uint32(pkt[4:8])
-	ctr := binary.LittleEndian.Uint64(pkt[8:16])
+}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
+// observeLocked is observe with the header parsed, under mu.
+func (t *relayLoss) observeLocked(receiver uint32, ctr uint64, relay string, now time.Time) {
 	t.lastAt = now
 	if !t.have || receiver != t.receiver {
 		// A straggler of a keypair we have already left. The counter alone

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -386,5 +387,371 @@ func TestSilentUnderLoadThresholds(t *testing.T) {
 	}
 	if ticks := int(silentUnderLoadAfter / silentUnderLoadTick); packetsATick*ticks != silentUnderLoadPackets {
 		t.Fatalf("%d packets a tick over %d ticks is not %d", packetsATick, ticks, silentUnderLoadPackets)
+	}
+}
+
+// The judge is idle while no stream has heard three chunks since a take
+// dispatchStaleAfter or more ago, which no witness of a turn could do without.
+// A tunnel at rest hears keepalive echoes, one a stream per keepaliveInterval:
+// idle on those; busy from a stream's three chunks for dispatchStaleAfter at
+// the least after them, idle again within twice that; and a session begun
+// since the take has heard all of its packets since — its own count, not a
+// wrapped one.
+func TestSilentUnderLoadJudgeIdlesOnKeepaliveEchoes(t *testing.T) {
+	start := time.Now()
+	streams, j := loadedStreams(start)
+	if !j.idle {
+		t.Fatal("busy on the first turn, with nothing heard")
+	}
+	at := start
+	turn := func(d time.Duration, hear func(time.Time)) {
+		at = at.Add(d)
+		if hear != nil {
+			hear(at)
+		}
+		j.judge(streams, at)
+	}
+	echoes := func(now time.Time) {
+		for _, s := range streams {
+			hear(s, 1, now)
+		}
+	}
+	// Three minutes of echoes, a turn on each as the runner takes them.
+	for at.Sub(start) < 3*time.Minute {
+		turn(keepaliveInterval, echoes)
+		if !j.idle {
+			t.Fatalf("busy on keepalive echoes %v in", at.Sub(start))
+		}
+	}
+
+	turn(time.Second, func(now time.Time) { hear(streams[1], silentUnderLoadPackets, now) })
+	if j.idle {
+		t.Fatal("idle with three chunks just heard")
+	}
+	chunks := at
+	for !j.idle {
+		turn(silentUnderLoadTick, nil)
+		if at.Sub(chunks) > 2*dispatchStaleAfter+silentUnderLoadTick {
+			t.Fatalf("still busy %v after the chunks", at.Sub(chunks))
+		}
+	}
+	if since := at.Sub(chunks); since < dispatchStaleAfter {
+		t.Fatalf("idle %v after the chunks, want %v at the least", since, dispatchStaleAfter)
+	}
+
+	// A new session on stream 1, with fewer packets than the take holds for
+	// the old one.
+	streams[1].activity.Store(newStreamActivity(at, 0))
+	turn(time.Second, func(now time.Time) { hear(streams[1], silentUnderLoadPackets-1, now) })
+	if !j.idle {
+		t.Fatal("busy on a new session short of three chunks")
+	}
+	turn(time.Second, func(now time.Time) { hear(streams[1], 1, now) })
+	if j.idle {
+		t.Fatal("idle with a new session's three chunks")
+	}
+}
+
+// A gap between idle turns is no freeze: idle, the judge turns on the packets
+// heard, so none fell inside the gap, and what the siblings heard before it
+// counts — the turn that finds their third chunk convicts with the two before.
+func TestSilentUnderLoadIdleGapIsNoFreeze(t *testing.T) {
+	start := time.Now()
+	streams, j := loadedStreams(start)
+
+	at := start.Add(silentUnderLoadAfter)
+	hear(streams[1], 2*relayLossChunk, at)
+	hear(streams[2], 2*relayLossChunk, at)
+	if v, _ := j.judge(streams, at); len(v) != 0 || !j.idle {
+		t.Fatalf("two chunks a witness: verdicts %+v, idle %v; want none and idle", v, j.idle)
+	}
+
+	at = at.Add(silentUnderLoadAfter)
+	hear(streams[1], relayLossChunk, at)
+	hear(streams[2], relayLossChunk, at)
+	v, _ := j.judge(streams, at)
+	if len(v) != 1 || v[0].id != 0 || v[0].silent != at.Sub(start) || v[0].packets != 2*silentUnderLoadPackets || j.idle {
+		t.Fatalf("the third chunk %v later: verdicts %+v, idle %v; want stream 0 silent %v on %d packets, and busy",
+			silentUnderLoadAfter, v, j.idle, at.Sub(start), 2*silentUnderLoadPackets)
+	}
+}
+
+// A burst while idle — three chunks on two witnesses, then nothing — wakes the
+// judge, which convicts on that turn: at a rarer tick instead the witnesses
+// were out of the echo by the turn after (codex review 2026-10-22).
+func TestSilentUnderLoadBurstWhileIdleConvictsAtOnce(t *testing.T) {
+	start := time.Now()
+	streams, j := loadedStreams(start)
+	at := start.Add(silentUnderLoadAfter + silentUnderLoadTick/2)
+	hear(streams[1], silentUnderLoadPackets, at)
+	hear(streams[2], silentUnderLoadPackets, at)
+	v, _ := j.judge(streams, at)
+	if len(v) != 1 || v[0].id != 0 || v[0].silent != at.Sub(start) || j.idle {
+		t.Fatalf("the turn on the burst: verdicts %+v, idle %v; want stream 0 silent %v and busy", v, j.idle, at.Sub(start))
+	}
+}
+
+// The row of a stream heard while idle is taken on that packet — the judge
+// turns on it — not at a later tick with the siblings' chunks since already in
+// it (codex review 2026-10-22: a 2 s tick took the row with the whole burst
+// inside, and the episode went without a verdict).
+func TestSilentUnderLoadRowIsTakenOnTheStreamsOwnPacket(t *testing.T) {
+	start := time.Now()
+	streams, j := loadedStreams(start)
+	heard := start.Add(100 * time.Millisecond)
+	hear(streams[0], 1, heard)
+	j.judge(streams, heard)
+	burst := start.Add(750 * time.Millisecond)
+	hear(streams[1], silentUnderLoadPackets, burst)
+	hear(streams[2], silentUnderLoadPackets, burst)
+	if v, _ := j.judge(streams, burst); len(v) != 0 || j.idle {
+		t.Fatalf("on the burst: verdicts %+v, idle %v; want none yet, and busy", v, j.idle)
+	}
+
+	// Ticking from the burst: one packet more a witness, and the silence
+	// reaching four seconds — the verdict counts the burst.
+	more := burst.Add(6 * silentUnderLoadTick)
+	v, _ := judgeEvery(j, streams, burst, burst.Add(7*silentUnderLoadTick), func(now time.Time) {
+		if now.Equal(more) {
+			hear(streams[1], 1, now)
+			hear(streams[2], 1, now)
+		}
+	})
+	convicted := burst.Add(7 * silentUnderLoadTick)
+	if len(v) != 1 || v[0].id != 0 || v[0].silent != convicted.Sub(heard) || v[0].packets != 2*(silentUnderLoadPackets+1) {
+		t.Fatalf("verdicts %+v; want stream 0 silent %v on %d packets", v, convicted.Sub(heard), 2*(silentUnderLoadPackets+1))
+	}
+}
+
+// The runner, in real time: a first turn at once, none while the tunnel
+// rests, one on a packet heard while idle, one on a stream come ready, and
+// ticks once a stream has three chunks since the take — with room for the
+// scheduler.
+func TestSilentUnderLoadRunnerRestsWithTheTunnel(t *testing.T) {
+	select {
+	case <-silentUnderLoadWake: // a token left by another test's packets
+	default:
+	}
+	start := time.Now()
+	streams := []*stream{dispatchStream(0, true, start, 8), dispatchStream(1, true, start, 8), dispatchStream(2, false, start, 8)}
+	j := newSilentUnderLoadJudge(len(streams))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		j.run(ctx, streams)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	turnsReach := func(n uint64) bool {
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			if j.turns.Load() >= n {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !turnsReach(1) {
+		t.Fatal("no first turn")
+	}
+	time.Sleep(4 * silentUnderLoadTick)
+	if n := j.turns.Load(); n != 1 {
+		t.Fatalf("%d turns with nothing heard, want the first alone", n)
+	}
+	hear(streams[1], 1, time.Now())
+	if !turnsReach(2) {
+		t.Fatal("a packet heard while idle did not wake the judge")
+	}
+	time.Sleep(4 * silentUnderLoadTick)
+	if n := j.turns.Load(); n != 2 {
+		t.Fatalf("%d turns after one packet, want two: no tick while idle", n)
+	}
+	// A stream's proof is heard before it is ready (NoDTLS): the turn on the
+	// packet finds it not ready, and coming ready wakes the judge again.
+	hear(streams[2], 1, time.Now())
+	if !turnsReach(3) {
+		t.Fatal("a packet on a stream not ready did not wake the judge")
+	}
+	streams[2].ready.Store(true)
+	wakeSilentUnderLoadJudge()
+	if !turnsReach(4) {
+		t.Fatal("a stream come ready did not wake the judge")
+	}
+	hear(streams[1], silentUnderLoadPackets, time.Now())
+	if !turnsReach(5) {
+		t.Fatal("three chunks did not wake the judge")
+	}
+	time.Sleep(4 * silentUnderLoadTick)
+	if n := j.turns.Load(); n < 7 {
+		t.Fatalf("%d turns in %v of three chunks since the take, want ticks", n, 4*silentUnderLoadTick)
+	}
+}
+
+// A freeze while the judge is idle — no tick of its own to come late — is told
+// by the WGH1 reporter's second: a turn of the reporter's that came late since
+// the judge's last turn, or none at all for that long, resets the rows as a
+// late tick does, so what the witnesses had before the freeze counts for
+// nothing (codex review 2026-10-22). The reporter's clock quiet, a gap is a
+// quiet spell, and what came before it counts. Under the tick the judge's own
+// clock rules: a reporter late on its own resets nothing.
+func TestSilentUnderLoadIdleFreezeIsToldByTheReportersClock(t *testing.T) {
+	seconds := func(from, to time.Time) {
+		for at := from; !at.After(to); at = at.Add(time.Second) {
+			noteReporterTurn(at)
+		}
+	}
+	// The witnesses a packet short of three chunks at last, the judge idle on
+	// them; the gap; the packet more a witness at now, and the judge's turn on
+	// it — with the reporter's turns in between as each case has them.
+	cases := map[string]struct {
+		reporter func(start, last, now time.Time)
+		froze    bool
+	}{
+		"the reporter has not turned since the judge's last turn": {func(start, last, now time.Time) {
+			startReporterClock(start)
+		}, true},
+		"the reporter's first second came after the thaw": {func(start, last, now time.Time) {
+			startReporterClock(start)
+			noteReporterTurn(now.Add(-50 * time.Millisecond))
+		}, true},
+		"the reporter turned on time throughout": {func(start, last, now time.Time) {
+			startReporterClock(start)
+			seconds(start.Add(time.Second), now)
+		}, false},
+		"the reporter was late once, before the judge's last turn": {func(start, last, now time.Time) {
+			startReporterClock(start.Add(-3 * time.Second))
+			noteReporterTurn(start) // two seconds late: a freeze, before last
+			seconds(start.Add(time.Second), now)
+		}, false},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Cleanup(func() { silentUnderLoadClock.Store(nil) })
+			start := time.Now()
+			streams, j := loadedStreams(start)
+			last := start.Add(500 * time.Millisecond)
+			hear(streams[1], silentUnderLoadPackets-1, last)
+			hear(streams[2], silentUnderLoadPackets-1, last)
+			if v, _ := j.judge(streams, last); len(v) != 0 || !j.idle {
+				t.Fatalf("setup: verdicts %+v, idle %v", v, j.idle)
+			}
+			now := last.Add(silentUnderLoadAfter + 100*time.Millisecond)
+			c.reporter(start, last, now)
+			hear(streams[1], 1, now)
+			hear(streams[2], 1, now)
+			v, _ := j.judge(streams, now)
+			if got := len(v) == 0; got != c.froze {
+				t.Fatalf("verdicts %+v; want a freeze %v", v, c.froze)
+			}
+			if !c.froze {
+				return
+			}
+			// The rows taken afresh at the thaw: three chunks a witness from
+			// there convict, with those alone.
+			later := now.Add(silentUnderLoadTick)
+			noteReporterTurn(later)
+			hear(streams[1], silentUnderLoadPackets, later)
+			hear(streams[2], silentUnderLoadPackets, later)
+			v, _ = j.judge(streams, later)
+			if len(v) != 1 || v[0].id != 0 || v[0].packets != 2*silentUnderLoadPackets {
+				t.Fatalf("after the thaw: verdicts %+v; want stream 0 on %d packets", v, 2*silentUnderLoadPackets)
+			}
+		})
+	}
+
+	t.Run("under the tick the judge's own clock rules", func(t *testing.T) {
+		t.Cleanup(func() { silentUnderLoadClock.Store(nil) })
+		start := time.Now()
+		streams, j := loadedStreams(start)
+		startReporterClock(start)
+		noteReporterTurn(start.Add(time.Second))
+		// Three chunks a witness on the first tick and a packet more on each
+		// after, the judge ticking all along; the reporter stalled on its own
+		// from its second on. The verdict comes as the silence reaches four
+		// seconds, on everything the witnesses heard.
+		loaded := start.Add(silentUnderLoadAfter)
+		v, _ := judgeEvery(j, streams, start, loaded, func(now time.Time) {
+			n := 1
+			if now.Equal(start.Add(silentUnderLoadTick)) {
+				n = silentUnderLoadPackets
+			}
+			hear(streams[1], n, now)
+			hear(streams[2], n, now)
+		})
+		ticks := int(silentUnderLoadAfter / silentUnderLoadTick)
+		if len(v) != 1 || v[0].silent != silentUnderLoadAfter || v[0].packets != 2*(silentUnderLoadPackets+ticks-1) {
+			t.Fatalf("verdicts %+v; want stream 0 silent %v on %d packets", v, silentUnderLoadAfter, 2*(silentUnderLoadPackets+ticks-1))
+		}
+	})
+}
+
+// One freeze is one freeze: seen stale on the judge's turn before the
+// reporter's, the reporter's late turn that marks it afterwards resets nothing
+// again — the witnesses' chunks since the first reset convict (codex review
+// 2026-10-22). And the next freeze is the next: seen again.
+func TestSilentUnderLoadTakesAGapForAFreezeOnce(t *testing.T) {
+	t.Cleanup(func() { silentUnderLoadClock.Store(nil) })
+	start := time.Now()
+	streams, j := loadedStreams(start)
+	startReporterClock(start)
+
+	// The freeze, the judge first after it on a packet a witness, the reporter
+	// marking it a moment later, then the witnesses' three chunks.
+	thaw := start.Add(silentUnderLoadAfter + 600*time.Millisecond)
+	hear(streams[1], 1, thaw)
+	hear(streams[2], 1, thaw)
+	if v, _ := j.judge(streams, thaw); len(v) != 0 || !j.idle {
+		t.Fatalf("at the thaw: verdicts %+v, idle %v", v, j.idle)
+	}
+	noteReporterTurn(thaw.Add(50 * time.Millisecond))
+	chunks := thaw.Add(100 * time.Millisecond)
+	hear(streams[1], silentUnderLoadPackets, chunks)
+	hear(streams[2], silentUnderLoadPackets, chunks)
+	// (The packet a witness at the thaw went into the rows taken afresh there.)
+	v, _ := j.judge(streams, chunks)
+	if len(v) != 1 || v[0].id != 0 || v[0].packets != 2*silentUnderLoadPackets {
+		t.Fatalf("after the mark of the freeze already taken: verdicts %+v; want stream 0 on %d packets", v, 2*silentUnderLoadPackets)
+	}
+
+	// Heard again, silent again, and a second freeze with chunks before it:
+	// that one resets.
+	heard := chunks.Add(time.Second)
+	hear(streams[0], 1, heard)
+	noteReporterTurn(heard)
+	j.judge(streams, heard)
+	before := heard.Add(500 * time.Millisecond)
+	hear(streams[1], silentUnderLoadPackets-1, before)
+	hear(streams[2], silentUnderLoadPackets-1, before)
+	if v, _ := j.judge(streams, before); len(v) != 0 {
+		t.Fatalf("before the second freeze: verdicts %+v", v)
+	}
+	again := before.Add(silentUnderLoadAfter + 100*time.Millisecond)
+	hear(streams[1], 1, again)
+	hear(streams[2], 1, again)
+	if v, _ := j.judge(streams, again); len(v) != 0 {
+		t.Fatalf("the second freeze, the reporter not turned since: verdicts %+v; want none", v)
+	}
+}
+
+// A reporter left running by a Stop that timed out publishes nothing over the
+// clock the next proxy started: its turn, read before that start, is dropped.
+func TestAStoppedProxysReporterLeavesTheNextOnesClockAlone(t *testing.T) {
+	t.Cleanup(func() { silentUnderLoadClock.Store(nil) })
+	start := time.Now()
+	startReporterClock(start)
+	old := silentUnderLoadClock.Load()
+	restarted := start.Add(10 * time.Second)
+	startReporterClock(restarted)
+	if reporterTurn(old, restarted.Add(time.Second)) {
+		t.Fatal("the old reporter's turn was published over the new clock")
+	}
+	if c := silentUnderLoadClock.Load(); !c.turn.Equal(restarted) || !c.froze.IsZero() {
+		t.Fatalf("clock %+v; want the new proxy's start untouched", c)
+	}
+	if !reporterTurn(silentUnderLoadClock.Load(), restarted.Add(time.Second)) {
+		t.Fatal("the new reporter's own turn was not published")
 	}
 }

@@ -135,13 +135,14 @@ func (r *chunkRotor) advance() {
 // an episode shorter than its interval altogether.
 type staleWatch struct {
 	stale    []bool
-	early    []bool // stale by the judge of silence under load, whose lines they are
+	early    []bool            // stale by the judge of silence under load, whose lines they are
+	acts     []*streamActivity // the session each stream's stale and early are about
 	allStale bool
 	lastScan time.Time
 }
 
 func newStaleWatch(n int) *staleWatch {
-	return &staleWatch{stale: make([]bool, n), early: make([]bool, n)}
+	return &staleWatch{stale: make([]bool, n), early: make([]bool, n), acts: make([]*streamActivity, n)}
 }
 
 // observe re-evaluates every stream at most once per staleWatchInterval and
@@ -157,11 +158,22 @@ func (w *staleWatch) observe(streams []*stream, now time.Time) []string {
 	for i, st := range streams {
 		if !st.ready.Load() {
 			// A torn-down stream leaves the picture without a line of its own:
-			// the dead-stream detector or the worker already said why.
-			w.stale[i] = false
+			// the dead-stream detector or the worker already said why. A
+			// verdict of silence under load it died under went with its
+			// session: the next session's lines are the watch's own until
+			// the judge speaks on it again (review 2026-10-22).
+			w.stale[i], w.early[i] = false, false
 			continue
 		}
 		ready++
+		// So does a session begun since the last scan with the stream never
+		// seen down in between: scans are a second apart at the least, and
+		// only while the dispatcher has packets (codex review 2026-10-22).
+		a := st.activity.Load()
+		if a != w.acts[i] {
+			w.acts[i] = a
+			w.stale[i], w.early[i] = false, false
+		}
 		isStale := st.dispatchStale(now)
 		if isStale {
 			stale++
@@ -170,7 +182,7 @@ func (w *staleWatch) observe(streams []*stream, now time.Time) []string {
 			continue
 		}
 		w.stale[i] = isStale
-		switch a := st.activity.Load(); {
+		switch {
 		case !isStale:
 			if w.early[i] {
 				w.early[i] = false // the judge reports the return

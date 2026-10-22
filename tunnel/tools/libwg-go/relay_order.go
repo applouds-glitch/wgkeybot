@@ -6,7 +6,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
 	"math"
 	"math/bits"
@@ -109,7 +108,7 @@ type relayOrderSample struct {
 }
 
 type relayOrder struct {
-	mu sync.Mutex
+	mu *sync.Mutex // its own, or the downlink's, shared with the loss book (downlinkMu)
 
 	epoch time.Time
 	since time.Time // the window's start
@@ -125,18 +124,33 @@ type relayOrder struct {
 	overtaken map[[2]uint16]int
 }
 
-var downlinkRelayOrder = newRelayOrder(time.Now())
+// downlinkMu guards both books of the downlink, the loss (relay_loss.go) and
+// the order, as one: the RX goroutines take it once a datagram
+// (observeDownlink), where a lock a book was two in a row on every packet,
+// each parsing the same header (review 2026-10-22).
+var downlinkMu sync.Mutex
 
-func newRelayOrder(now time.Time) *relayOrder {
-	return &relayOrder{epoch: now, since: now, index: map[string]uint16{}, overtaken: map[[2]uint16]int{}}
+var downlinkRelayOrder = newRelayOrderUnder(&downlinkMu, time.Now())
+
+func newRelayOrder(now time.Time) *relayOrder { return newRelayOrderUnder(new(sync.Mutex), now) }
+
+// newRelayOrderUnder is a book guarded by mu, which may guard another book too.
+func newRelayOrderUnder(mu *sync.Mutex, now time.Time) *relayOrder {
+	return &relayOrder{mu: mu, epoch: now, since: now, index: map[string]uint16{}, overtaken: map[[2]uint16]int{}}
 }
 
 // observeDownlink books one downlink datagram that arrived through relay for
-// its loss (relay_loss.go) and its order.
+// its loss (relay_loss.go) and its order: one parse of the header, one lock.
 func observeDownlink(pkt []byte, relay string) {
+	receiver, ctr, ok := wgTransportHeader(pkt, relay)
+	if !ok {
+		return
+	}
 	now := time.Now()
-	downlinkRelayLoss.observe(pkt, relay, now)
-	downlinkRelayOrder.observe(pkt, relay, now)
+	downlinkMu.Lock()
+	downlinkRelayLoss.observeLocked(receiver, ctr, relay, now)
+	downlinkRelayOrder.observeLocked(receiver, ctr, relay, now)
+	downlinkMu.Unlock()
 }
 
 // reset forgets everything: a new proxy, new relays, new keypairs.
@@ -161,11 +175,15 @@ func (t *relayOrder) clearWindowLocked() {
 // observe books one downlink datagram that arrived through relay at now.
 // Anything but a WireGuard transport message is ignored.
 func (t *relayOrder) observe(pkt []byte, relay string, now time.Time) {
-	if len(pkt) < 16 || pkt[0] != 4 || relay == "" {
-		return
+	if receiver, ctr, ok := wgTransportHeader(pkt, relay); ok {
+		t.mu.Lock()
+		t.observeLocked(receiver, ctr, relay, now)
+		t.mu.Unlock()
 	}
-	receiver := binary.LittleEndian.Uint32(pkt[4:8])
-	ctr := binary.LittleEndian.Uint64(pkt[8:16])
+}
+
+// observeLocked is observe with the header parsed, under mu.
+func (t *relayOrder) observeLocked(receiver uint32, ctr uint64, relay string, now time.Time) {
 	// This runs before wireguard-go has authenticated the packet, on the
 	// transports that do not authenticate it themselves (wireguard without
 	// WRAP), so the counter is whatever the bytes say. A peer never sends one
@@ -176,8 +194,6 @@ func (t *relayOrder) observe(pkt []byte, relay string, now time.Time) {
 		return
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	at := now.Sub(t.epoch)
 	r := t.relayIndexLocked(relay)
 	b := t.bookLocked(receiver, ctr, at)

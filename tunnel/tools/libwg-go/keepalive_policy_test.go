@@ -331,8 +331,8 @@ func noSendFor(t *testing.T, sends chan time.Time, d time.Duration, what string)
 }
 
 // A keepalive nothing answers goes out again once, keepaliveEchoRetry later;
-// one that is answered — by its echo or by data — does not; over TCP none
-// does.
+// one that is answered — by its echo or by data — does not; over TCP alike,
+// the echo crossing the relay's UDP leg to the server (22.10).
 func TestKeepaliveIsSentAgainOnceWhenNothingAnswersIt(t *testing.T) {
 	defer func(d time.Duration) { keepaliveEchoRetry = d }(keepaliveEchoRetry)
 	keepaliveEchoRetry = 100 * time.Millisecond
@@ -359,6 +359,42 @@ func TestKeepaliveIsSentAgainOnceWhenNothingAnswersIt(t *testing.T) {
 
 	sends, stop = keepaliveLoop(t, true, lead, nil)
 	sendWithin(t, sends, firstWithin, "the grid keepalive over TCP")
-	noSendFor(t, sends, 5*keepaliveEchoRetry, "a repeat over TCP")
+	sendWithin(t, sends, time.Second, "the repeat over TCP")
+	noSendFor(t, sends, 5*keepaliveEchoRetry, "a second repeat over TCP")
 	stop()
+
+	sends, stop = keepaliveLoop(t, true, lead, func(a *streamActivity) { a.noteRx(time.Now()) })
+	sendWithin(t, sends, firstWithin, "the grid keepalive over TCP")
+	noSendFor(t, sends, 5*keepaliveEchoRetry, "a repeat of an answered keepalive over TCP")
+	stop()
+}
+
+// A wake for the repeat that comes only after the next grid point — the
+// process held up past it, short of a freeze — serves that grid point at once,
+// not a whole interval later; here over TCP, with the first keepalive's echo
+// in, as in the review's case (codex review 2026-10-22). Slow: one grid
+// interval of real time.
+func TestALateRepeatWakeServesTheGridPointItMissed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits one keepalive interval")
+	}
+	defer func(d time.Duration) { keepaliveEchoRetry = d }(keepaliveEchoRetry)
+	keepaliveEchoRetry = 100 * time.Millisecond
+	var waits atomic.Int32
+	prev := keepaliveWait
+	keepaliveWait = func(ctx context.Context, deadline time.Time, wake <-chan struct{}) (bool, bool) {
+		if waits.Add(1) == 2 { // the repeat's, after the first grid keepalive
+			deadline = deadline.Add(keepaliveInterval)
+		}
+		return prev(ctx, deadline, wake)
+	}
+	t.Cleanup(func() { keepaliveWait = prev })
+	const lead = 300 * time.Millisecond
+
+	sends, _ := keepaliveLoop(t, true, lead, func(a *streamActivity) { a.noteRx(time.Now()) })
+	first := sendWithin(t, sends, keepaliveInterval+2*lead, "the grid keepalive")
+	second := sendWithin(t, sends, keepaliveInterval+2*time.Second, "the keepalive after the late wake")
+	if gap := second.Sub(first); gap > keepaliveInterval+time.Second {
+		t.Fatalf("the next keepalive went out %v after the first: want the grid point the late wake missed, about %v", gap, keepaliveInterval)
+	}
 }

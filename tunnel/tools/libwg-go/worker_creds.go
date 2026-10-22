@@ -148,14 +148,34 @@ func streamAttemptOrder(user string, addrs []string, streamID int, cfg WorkerGro
 	return streamAttemptOrderAround(user, addrs, streamID, cfg, now, nil)
 }
 
-// streamAttemptOrderAround is streamAttemptOrder with the relays in lossy
-// dialed after the others that are not crowded: the attempt of a stream just
-// moved off a rested relay (relay_move.go).
-func streamAttemptOrderAround(user string, addrs []string, streamID int, cfg WorkerGroupConfig, now time.Time, lossy map[string]bool) []string {
+// streamAttemptOrderAround is streamAttemptOrder for the attempt of a stream
+// just moved off a rested relay (relay_move.go): the relays losing at the move
+// dialed after the others that are not crowded, and the head the move picked
+// first while it is in the first tier.
+func streamAttemptOrderAround(user string, addrs []string, streamID int, cfg WorkerGroupConfig, now time.Time, move *relayMove) []string {
+	var lossy map[string]bool
+	if move != nil {
+		lossy = move.lossy
+	}
 	crowded := crowdedRelays(user, addrs, now)
 	order := assignRelaysAround(addrs, streamID, now, crowded, lossy)
+	if move != nil {
+		order = headFirst(order, move.head, crowded, lossy, now)
+	}
 	announceCrowded(user, crowded, order, now)
 	return order
+}
+
+// relayLast is order with relay moved to its end, the rest as they were; order
+// itself if relay is not in it or is all of it.
+func relayLast(order []string, relay string) []string {
+	i := slices.Index(order, relay)
+	if i < 0 || len(order) < 2 {
+		return order
+	}
+	out := make([]string, 0, len(order))
+	out = append(append(out, order[:i]...), order[i+1:]...)
+	return append(out, relay)
 }
 
 // rotateServers returns list rotated so idx comes first, leaving the rest in

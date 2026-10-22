@@ -269,3 +269,91 @@ func TestStaleWatchRateLimitsScans(t *testing.T) {
 		t.Fatalf("next scan missed the recovery: %q", lines)
 	}
 }
+
+// A verdict of silence under load that a stream dies under does not outlive
+// the session: the next session's silence by age and its return are the
+// watch's lines again, not left to a judge that gave no verdict on it —
+// whether the watch saw the stream down in between or the session changed
+// under it between two scans.
+func TestStaleWatchForgetsTheJudgesVerdictWithTheSession(t *testing.T) {
+	for name, seen := range map[string]bool{"stream seen down": true, "session changed between scans": false} {
+		t.Run(name, func(t *testing.T) {
+			now := time.Now()
+			judged := dispatchStream(0, true, now, 8)
+			fresh := dispatchStream(1, true, now, 8)
+			streams := []*stream{judged, fresh}
+			w := newStaleWatch(len(streams))
+			w.observe(streams, now)
+
+			// The judge finds stream 0 silent under load: its line, not the watch's.
+			a := judged.activity.Load()
+			a.markSilentUnderLoad(a.lastHeard.Load())
+			at := now.Add(staleWatchInterval)
+			fresh.activity.Load().noteRx(at)
+			if lines := w.observe(streams, at); len(lines) != 0 {
+				t.Fatalf("the judge's verdict got the watch's line: %q", lines)
+			}
+
+			// The session dies under the verdict, and a new one begins — seen
+			// down by a scan in between, or not: then the next scan finds the
+			// new session silent by age already.
+			at = at.Add(staleWatchInterval)
+			if seen {
+				judged.ready.Store(false)
+				fresh.activity.Load().noteRx(at)
+				w.observe(streams, at)
+				at = at.Add(staleWatchInterval)
+			}
+			judged.activity.Store(newStreamActivity(at, 0))
+			judged.ready.Store(true)
+			if seen {
+				fresh.activity.Load().noteRx(at)
+				if lines := w.observe(streams, at); len(lines) != 0 {
+					t.Fatalf("a fresh session produced %q", lines)
+				}
+			}
+
+			// Silent by age this time, and heard again: both lines are the watch's.
+			aged := at.Add(dispatchStaleAfter + time.Second)
+			fresh.activity.Load().noteRx(aged)
+			if lines := w.observe(streams, aged); len(lines) != 1 || !strings.Contains(lines[0], "stream 0 silent for") {
+				t.Fatalf("silence by age: got %q", lines)
+			}
+			back := aged.Add(staleWatchInterval)
+			judged.activity.Load().noteRx(back)
+			fresh.activity.Load().noteRx(back)
+			if lines := w.observe(streams, back); len(lines) != 1 || !strings.Contains(lines[0], "stream 0 heard its relay again") {
+				t.Fatalf("the return after a silence by age: got %q, want the watch's line", lines)
+			}
+		})
+	}
+}
+
+// The other way round: a stream stale by age whose session changes between
+// two scans into one the judge finds silent under load — the judge's lines,
+// not a return line from the watch on top of the judge's.
+func TestStaleWatchLeavesANewSessionsEarlyVerdictToTheJudge(t *testing.T) {
+	now := time.Now()
+	aged := dispatchStream(0, true, now.Add(-dispatchStaleAfter-time.Second), 8)
+	fresh := dispatchStream(1, true, now, 8)
+	streams := []*stream{aged, fresh}
+	w := newStaleWatch(len(streams))
+	if lines := w.observe(streams, now); len(lines) != 1 || !strings.Contains(lines[0], "stream 0 silent for") {
+		t.Fatalf("silence by age: got %q", lines)
+	}
+
+	at := now.Add(staleWatchInterval)
+	aged.activity.Store(newStreamActivity(at, 0))
+	a := aged.activity.Load()
+	a.markSilentUnderLoad(a.lastHeard.Load())
+	fresh.activity.Load().noteRx(at)
+	if lines := w.observe(streams, at); len(lines) != 0 {
+		t.Fatalf("the judge's verdict on the new session got a line from the watch: %q", lines)
+	}
+	back := at.Add(staleWatchInterval)
+	a.noteRx(back)
+	fresh.activity.Load().noteRx(back)
+	if lines := w.observe(streams, back); len(lines) != 0 {
+		t.Fatalf("the return the judge reports got a line from the watch too: %q", lines)
+	}
+}

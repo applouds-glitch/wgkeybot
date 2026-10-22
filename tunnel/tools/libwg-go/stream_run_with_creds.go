@@ -800,9 +800,16 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// And whatever ended with the phone's own network: every session on it dies
 	// at that moment, on every relay alike, and a handshake that was under way
 	// times out for the same reason (local_network_failure.go).
-	if verdict == verdictHandshakeFailure && s.overTCP.Load() && relayHeardByOthers(w.addr, s, time.Now()) {
-		turnLog("[STREAM %d] %s handshake: %s — a flow's failure, not the relay's: other streams are hearing it",
-			s.id, w.addr, relay.describe(time.Now()))
+	//
+	// A handshake failed while another stream on this relay hears it is the
+	// flow's failure, over either transport (relay_heard_by_others.go).
+	if verdict == verdictHandshakeFailure && relayHeardByOthers(w.addr, s, time.Now()) {
+		avoid := ""
+		if n := s.noteFlowFailure(w.addr); n == flowFailsBeforeAvoid {
+			avoid = fmt.Sprintf("; %d in a row on it for this stream, which dials it last until a session of its own gets through", n)
+		}
+		turnLog("[STREAM %d] %s handshake: %s — a flow's failure, not the relay's: other streams are hearing it%s",
+			s.id, w.addr, relay.describe(time.Now()), avoid)
 		verdict = verdictNone
 	}
 	if (verdict == verdictFailure || verdict == verdictHandshakeFailure) && relayNotToBlame(err, started) {

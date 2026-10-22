@@ -228,9 +228,9 @@ func restDeafRelay(ctx context.Context, v relayDeafVerdict, by int, now time.Tim
 		return // what still runs there has nowhere else to go
 	}
 	rest := noteRelayResting(v.relay, now)
-	moved, stayed, last := recycleRelaySessions(ctx, v.relay, now)
+	out := recycleRelaySessions(ctx, v.relay, now, nil)
 	turnLog("[RELAY DEAF] %s went deaf under %d sessions in %v while stream %d kept hearing %s — resting it for %v, %d session(s) moved off, %d left on it with no other relay of their link to go to%s",
-		v.relay, v.deaths, v.span.Round(time.Second), by, v.witness, rest, moved, stayed, dialedLastNote(moved, last))
+		v.relay, v.deaths, v.span.Round(time.Second), by, v.witness, rest, out.moved, out.stayed, out.note())
 }
 
 // deafWitness finds a stream on a relay other than addr that is up over UDP, has

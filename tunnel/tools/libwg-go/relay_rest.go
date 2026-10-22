@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -200,20 +201,15 @@ func restJudgedRelays(ctx context.Context, verdicts []relayVerdict, now time.Tim
 		}
 		resting = append(resting, rested{v, noteRelayResting(v.relay, now)})
 	}
+	// One load for every relay rested in this turn: the sessions moved off the
+	// first are charged to where they go before those of the second pick
+	// theirs (relay_move.go).
+	load := liveRelayLoad()
 	for _, r := range resting {
-		moved, stayed, last := recycleRelaySessions(ctx, r.relay, now)
+		out := recycleRelaySessions(ctx, r.relay, now, load)
 		turnLog("[RELAY LOSS] %s lost %.1f%% of the downlink against %.1f%% through the best relay, %d windows running — resting it for %v, %d session(s) moved off, %d left on it with no other relay of their link to go to%s",
-			r.relay, 100*r.rate, 100*r.best, relayJudgeStrikes, r.rest, moved, stayed, dialedLastNote(moved, last))
+			r.relay, 100*r.rate, 100*r.best, relayJudgeStrikes, r.rest, out.moved, out.stayed, out.note())
 	}
-}
-
-// dialedLastNote is the tail of a verdict's line naming the relays the moved
-// sessions dial last for losing in the window (relay_move.go), if any.
-func dialedLastNote(moved int, last []string) string {
-	if moved == 0 || len(last) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("; they dial %s last, losing in this window", strings.Join(last, ", "))
 }
 
 func sampleFor(samples []relayLossSample, relay string) relayLossSample {
@@ -266,33 +262,46 @@ func formatRelayLoss(samples []relayLossSample, streams map[string]int) string {
 // recycleRelaySessions moves the sessions now running on addr whose link has
 // another usable relay: each attempt is recycled the way a network move
 // recycles it (network_switch.go), so its worker reconnects at once and without
-// counting a failure — and, the relay resting, onto another one, the relays
-// losing in the latest window dialed last (relay_move.go). It returns how many
-// it moves, how many stay, and the relays the moved ones dial last.
-func recycleRelaySessions(ctx context.Context, addr string, now time.Time) (moved, stayed int, last []string) {
+// counting a failure — and, the relay resting, onto another one: each to the
+// least loaded of its link's relays first, the relays losing in the latest
+// window last (relay_move.go). load is the sessions on each relay, charged
+// with every pick; nil, it is taken now. It returns how many it moves, how
+// many stay, where the moved ones go first and the relays they dial last.
+func recycleRelaySessions(ctx context.Context, addr string, now time.Time, load *relayLoad) relayMoveOut {
 	type session struct {
 		stream  *stream
 		attempt *networkAttempt
 		relays  *[]string
+		user    string
 	}
 	liveSessions.Lock()
 	var sessions []session
 	for s := range liveSessions.byRelay[addr] {
 		if a := s.attempt.Load(); a != nil {
-			sessions = append(sessions, session{s, a, s.relays.Load()})
+			var user string
+			if u := s.user.Load(); u != nil {
+				user = *u
+			}
+			sessions = append(sessions, session{s, a, s.relays.Load(), user})
 		}
 	}
 	liveSessions.Unlock()
+	if load == nil {
+		load = liveRelayLoad()
+	}
+	// In stream order, so that the picks do not hang on the map's.
+	slices.SortFunc(sessions, func(a, b session) int { return a.stream.id - b.stream.id })
 	lossy := lossyRelaysAt(now)
+	var out relayMoveOut
 	var attempts []*networkAttempt
 	for _, s := range sessions {
 		if s.relays != nil && hasOtherUsableRelay(*s.relays, addr, now) {
-			if lossy != nil {
-				s.stream.moveLossy.Store(&relayMove{lossy: lossy, at: now})
-			}
+			head := moveHead(*s.relays, addr, s.stream.id, s.user, lossy, load, now)
+			s.stream.move.Store(&relayMove{lossy: lossy, head: head, at: now})
+			out.heads = append(out.heads, movedHead{id: s.stream.id, relay: head})
 			attempts = append(attempts, s.attempt)
 		} else {
-			stayed++
+			out.stayed++
 		}
 	}
 	go func() {
@@ -307,5 +316,6 @@ func recycleRelaySessions(ctx context.Context, addr string, now time.Time) (move
 			recycleAttempt(a)
 		}
 	}()
-	return len(attempts), stayed, dialedLast(lossy, addr, now)
+	out.moved, out.last = len(attempts), dialedLast(lossy, addr, now)
+	return out
 }

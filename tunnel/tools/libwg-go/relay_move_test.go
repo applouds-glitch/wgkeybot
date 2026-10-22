@@ -182,13 +182,13 @@ func TestSessionMovedOffARestedRelayDialsTheLosingRelaysLast(t *testing.T) {
 
 	noteLossyRelays(lossyRelays(moveVerdictWindow()), now)
 	noteRelayResting(moveR42, now)
-	moved, stayed, last := recycleRelaySessions(context.Background(), moveR42, now)
-	if moved != 1 || stayed != 1 {
-		t.Fatalf("moved %d, stayed %d: want the session with other relays moved, the pinned one left", moved, stayed)
+	out := recycleRelaySessions(context.Background(), moveR42, now, nil)
+	if out.moved != 1 || out.stayed != 1 {
+		t.Fatalf("moved %d, stayed %d: want the session with other relays moved, the pinned one left", out.moved, out.stayed)
 	}
 	losing := []string{moveR21, moveR252, moveR92}
-	if !slices.Equal(last, losing) {
-		t.Fatalf("dialed last %v, want %v", last, losing)
+	if !slices.Equal(out.last, losing) {
+		t.Fatalf("dialed last %v, want %v", out.last, losing)
 	}
 	select {
 	case <-h.ctx.Done():
@@ -197,16 +197,16 @@ func TestSessionMovedOffARestedRelayDialsTheLosingRelaysLast(t *testing.T) {
 	}
 
 	next := now.Add(time.Second)
-	got := streamAttemptOrderAround("move-test", moveRelays, s.id, WorkerGroupConfig{UseUDP: true}, next, s.takeMoveLossy(next))
+	got := streamAttemptOrderAround("move-test", moveRelays, s.id, WorkerGroupConfig{UseUDP: true}, next, s.takeMove(next))
 	tail := slices.Sorted(slices.Values(got[4:]))
 	if got[0] != moveR179 || !slices.Equal(tail, losing) {
 		t.Fatalf("moved stream 1 dials %v: want a clean relay first and %v last", got, losing)
 	}
-	if again := s.takeMoveLossy(next); again != nil {
-		t.Fatalf("the attempt after carries %v: want the move's order for one attempt only", again)
+	if again := s.takeMove(next); again != nil {
+		t.Fatalf("the attempt after carries %+v: want the move's order for one attempt only", again)
 	}
-	if p := pinned.takeMoveLossy(next); p != nil {
-		t.Fatalf("a session with nowhere else to go carries %v", p)
+	if p := pinned.takeMove(next); p != nil {
+		t.Fatalf("a session with nowhere else to go carries %+v", p)
 	}
 }
 
@@ -221,15 +221,203 @@ func TestAStaleWindowOrMoveOrdersNothing(t *testing.T) {
 
 	noteLossyRelays(lossyRelays(moveVerdictWindow()), now.Add(-relayMoveLossyFresh-time.Second))
 	noteRelayResting(moveR42, now)
-	if moved, _, last := recycleRelaySessions(context.Background(), moveR42, now); moved != 1 || last != nil {
-		t.Fatalf("moved %d with %v dialed last: want the move without a stale window's order", moved, last)
+	if out := recycleRelaySessions(context.Background(), moveR42, now, nil); out.moved != 1 || out.last != nil {
+		t.Fatalf("moved %d with %v dialed last: want the move without a stale window's order", out.moved, out.last)
 	}
-	if got := s.takeMoveLossy(now); got != nil {
-		t.Fatalf("carries %v from a stale window", got)
+	if got := s.takeMove(now); got == nil || got.lossy != nil || got.head == "" {
+		t.Fatalf("carries %+v: want a head and nothing from a stale window", got)
 	}
 
-	s.moveLossy.Store(&relayMove{lossy: lossyRelays(moveVerdictWindow()), at: now})
-	if got := s.takeMoveLossy(now.Add(relayMoveLossyFresh + time.Second)); got != nil {
-		t.Fatalf("an attempt long after the move takes %v", got)
+	s.move.Store(&relayMove{lossy: lossyRelays(moveVerdictWindow()), head: moveR144, at: now})
+	if got := s.takeMove(now.Add(relayMoveLossyFresh + time.Second)); got != nil {
+		t.Fatalf("an attempt long after the move takes %+v", got)
+	}
+}
+
+// benchSessions puts the ten streams of the bench on their relays as the
+// spread did (stream id % 8 over moveRelays), streams 1 and 9 on .42, and
+// returns the streams.
+func benchSessions(t *testing.T) []*stream {
+	t.Helper()
+	streams := make([]*stream, 10)
+	for id := range streams {
+		relay := moveRelays[id%len(moveRelays)]
+		if relay == moveR42 {
+			s, _ := movingSessionOn(t, relay, moveRelays)
+			s.id = id
+			streams[id] = s
+			continue
+		}
+		s := &stream{id: id}
+		t.Cleanup(trackLiveSession(relay, s))
+		streams[id] = s
+	}
+	return streams
+}
+
+// The bench's move once more, with every stream on it: the two sessions moved
+// off .42 go first to two different clean relays — the least loaded, one
+// session each there already — not both to .179 beside stream 5, and the
+// losing relays stay their last (review 2026-10-22).
+func TestSessionsMovedOffARestedRelaySpreadOverTheLeastLoaded(t *testing.T) {
+	withCleanRelayRest(t)
+	withCleanRelayLossy(t)
+	now := time.Now()
+	streams := benchSessions(t)
+
+	noteLossyRelays(lossyRelays(moveVerdictWindow()), now)
+	noteRelayResting(moveR42, now)
+	out := recycleRelaySessions(context.Background(), moveR42, now, nil)
+	if out.moved != 2 || out.stayed != 0 {
+		t.Fatalf("moved %d, stayed %d: want streams 1 and 9 moved", out.moved, out.stayed)
+	}
+	want := []movedHead{{1, moveR179}, {9, moveR144}}
+	if !slices.Equal(out.heads, want) {
+		t.Fatalf("heads %v, want %v", out.heads, want)
+	}
+	if note := out.note(); note != "; first to 95.163.34.179:19302 (stream 1), 95.163.34.144:19302 (stream 9); they dial 193.203.43.21:19302, 90.156.234.252:19302, 90.156.236.92:19302 last, losing in this window" {
+		t.Fatalf("note %q", note)
+	}
+
+	next := now.Add(time.Second)
+	lossy := lossyRelays(moveVerdictWindow())
+	for _, h := range want {
+		s := streams[h.id]
+		got := streamAttemptOrderAround("move-test", moveRelays, s.id, WorkerGroupConfig{UseUDP: true}, next, s.takeMove(next))
+		if got[0] != h.relay {
+			t.Fatalf("stream %d dials %v: want %s first", h.id, got, h.relay)
+		}
+		for i, relay := range got {
+			if (i >= 4) != lossy[relay] {
+				t.Fatalf("stream %d dials %v: want the losing relays last", h.id, got)
+			}
+		}
+	}
+}
+
+// Two relays rested in one judge turn share a load: the sessions moved off the
+// second see where those of the first went.
+func TestTwoRelaysRestedTogetherShareTheLoad(t *testing.T) {
+	withCleanRelayRest(t)
+	withCleanRelayLossy(t)
+	now := time.Now()
+	link := []string{moveR21, moveR42, moveR144, moveR179}
+	a, _ := movingSessionOn(t, moveR21, link)
+	b, _ := movingSessionOn(t, moveR42, link)
+	a.id, b.id = 0, 2 // the same tie-break turn on two relays
+
+	restJudgedRelays(context.Background(), []relayVerdict{{relay: moveR21, rate: 0.05}, {relay: moveR42, rate: 0.05}}, now)
+	ma, mb := a.move.Load(), b.move.Load()
+	if ma == nil || mb == nil || ma.head == "" || ma.head == mb.head {
+		t.Fatalf("moves %+v and %+v: want two heads on two relays", ma, mb)
+	}
+}
+
+// A clean relay nobody is on takes the first session moved, whatever the
+// stream's turn among the ties would have said: the load is what is running
+// there, not only what the move has sent.
+func TestAMoveGoesWhereNobodyIs(t *testing.T) {
+	withCleanRelayRest(t)
+	withCleanRelayLossy(t)
+	now := time.Now()
+	link := []string{moveR42, moveR144, moveR179, moveR190}
+	s, _ := movingSessionOn(t, moveR42, link)
+	s.id = 1
+	for i, relay := range []string{moveR144, moveR179, moveR179, moveR144} {
+		t.Cleanup(trackLiveSession(relay, &stream{id: 10 + i}))
+	}
+	noteRelayResting(moveR42, now)
+	if out := recycleRelaySessions(context.Background(), moveR42, now, nil); len(out.heads) != 1 || out.heads[0].relay != moveR190 {
+		t.Fatalf("heads %v: want stream 1 on %s, where nobody is", out.heads, moveR190)
+	}
+}
+
+// The move weighs the session's credential: a relay crowded with its ghosts
+// goes behind the rest, as the attempt would put it — a head picked there
+// would be passed over and its stream land on the next session's relay — and
+// so does one where the credential has its quota's worth of allocations with
+// the turn's picks: two streams of one credential are not sent where one
+// fits (codex review 2026-10-22).
+func TestAMoveLeavesRelaysFullForTheCredentialLast(t *testing.T) {
+	const user = "1761234567:move-test"
+	t.Run("crowded with ghosts", func(t *testing.T) {
+		withCleanRelayRest(t)
+		withCleanRelayLossy(t)
+		resetAllocationBook(t)
+		now := time.Now()
+		link := []string{moveR42, moveR144, moveR179, moveR190}
+		s0, _ := movingSessionOn(t, moveR42, link)
+		s1, _ := movingSessionOn(t, moveR42, link)
+		s0.id, s1.id = 0, 1
+		for _, s := range []*stream{s0, s1} {
+			u := user
+			s.user.Store(&u)
+		}
+		t.Cleanup(trackLiveSession(moveR179, &stream{id: 10}))
+		t.Cleanup(trackLiveSession(moveR190, &stream{id: 11}))
+		loseOn(user, moveR144, orphanSteerAt, now)
+		noteRelayResting(moveR42, now)
+		out := recycleRelaySessions(context.Background(), moveR42, now, nil)
+		if len(out.heads) != 2 || out.heads[0].relay == moveR144 || out.heads[1].relay == moveR144 || out.heads[0].relay == out.heads[1].relay {
+			t.Fatalf("heads %v: want %s and %s, not the crowded %s", out.heads, moveR179, moveR190, moveR144)
+		}
+	})
+	t.Run("no room in the quota", func(t *testing.T) {
+		withCleanRelayRest(t)
+		withCleanRelayLossy(t)
+		resetAllocationBook(t)
+		now := time.Now()
+		link := []string{moveR42, moveR144, moveR179}
+		s0, _ := movingSessionOn(t, moveR42, link)
+		s1, _ := movingSessionOn(t, moveR42, link)
+		s0.id, s1.id = 0, 1
+		for _, s := range []*stream{s0, s1} {
+			u := user
+			s.user.Store(&u)
+		}
+		// .144: five sessions of the credential and four of its ghosts —
+		// room for one; .179: eight sessions of other groups.
+		loseOn(user, moveR144, orphanSteerAt-1, now)
+		for i := 0; i < 5; i++ {
+			trackAllocation(&countingConn{}, user, moveR144)
+			t.Cleanup(trackLiveSession(moveR144, &stream{id: 10 + i}))
+		}
+		for i := 0; i < 8; i++ {
+			t.Cleanup(trackLiveSession(moveR179, &stream{id: 20 + i}))
+		}
+		noteRelayResting(moveR42, now)
+		out := recycleRelaySessions(context.Background(), moveR42, now, nil)
+		want := []movedHead{{0, moveR144}, {1, moveR179}}
+		if !slices.Equal(out.heads, want) {
+			t.Fatalf("heads %v, want %v: one where the quota has room for one, the other beside the eight", out.heads, want)
+		}
+	})
+}
+
+// The head goes first only while it is in the attempt's first tier: crowded
+// with the credential's ghosts since the move, resting since, or gone from the
+// relays the attempt has, it leaves the order as the spread has it.
+func TestTheMovesHeadGoesFirstOnlyFromTheFirstTier(t *testing.T) {
+	withCleanRelayRest(t)
+	now := time.Now()
+	order := assignRelaysAround(moveRelays, 0, now, nil, nil)
+	if got := headFirst(slices.Clone(order), moveR179, nil, nil, now); got[0] != moveR179 || len(got) != len(order) {
+		t.Fatalf("head %s → %v: want it first and nothing lost", moveR179, got)
+	}
+	crowded := map[string]bool{moveR179: true}
+	if got := headFirst(slices.Clone(order), moveR179, crowded, nil, now); got[0] != order[0] {
+		t.Fatalf("crowded head %s → %v: want the order as it was", moveR179, got)
+	}
+	lossy := map[string]bool{moveR179: true}
+	if got := headFirst(slices.Clone(order), moveR179, nil, lossy, now); got[0] != order[0] {
+		t.Fatalf("losing head %s → %v: want the order as it was", moveR179, got)
+	}
+	if got := headFirst(slices.Clone(order), "203.0.113.1:19302", nil, nil, now); !slices.Equal(got, order) {
+		t.Fatalf("a head not among the relays → %v: want the order as it was", got)
+	}
+	noteRelayResting(moveR179, now)
+	rested := assignRelaysAround(moveRelays, 0, now, nil, nil)
+	if got := headFirst(slices.Clone(rested), moveR179, nil, nil, now); !slices.Equal(got, rested) {
+		t.Fatalf("a head resting since → %v: want the order as it was", got)
 	}
 }
