@@ -180,6 +180,69 @@ func TestDeafUDPFlowIsNotHeldAgainstARelayOthersHear(t *testing.T) {
 	}
 }
 
+// A handshake cut short by the phone's own network is excused before the alibi
+// is weighed (stream_run_with_creds.go), so it is no flow failure either: two
+// of them must not send the relay to the end of the stream's list (Codex
+// review of the iOS port, 22.10).
+func TestHandshakeFailedWithTheNetworkLeftIsNoFlowFailure(t *testing.T) {
+	// First, so that its cleanup runs last — after the goroutine below has
+	// stopped moving leftAt.
+	resetNetworkSwitch(t)
+	first, _ := twoRelaySockets(t)
+	relay := startTestRelay(t, first, 0)
+	peer := choosyPeer(t, func(nth int, _ time.Time) bool { return nth == 0 })
+	// A worker goes into its wait after the attempt has been judged: its
+	// second wait is two handshakes judged.
+	var mu sync.Mutex
+	waits := map[int]int{}
+	prev := workerWaits
+	workerWaits = func(w workerWait) {
+		mu.Lock()
+		waits[w.stream]++
+		mu.Unlock()
+	}
+	t.Cleanup(func() { workerWaits = prev })
+	// Every attempt has the network left under it (networkLeftSince), from
+	// before the first: the deaf stream's handshakes are the network's.
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(100 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			networkSwitch.Lock()
+			networkSwitch.leftAt = time.Now()
+			networkSwitch.Unlock()
+			select {
+			case <-tick.C:
+			case <-stop:
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+	})
+
+	h := runWorkersAgainstPeer(t, 138, 2, []string{relay.addr}, peer)
+	waitFor(t, "one stream up and the other's handshake judged twice", 12*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, n := range waits {
+			if n >= 2 {
+				return h.ready() == 1
+			}
+		}
+		return false
+	})
+	for _, s := range h.streams {
+		if run := s.flowFails.Load(); run != nil {
+			t.Fatalf("stream %d counted %d flow failure(s) on %s with the network left under it", s.id, run.n, run.relay)
+		}
+	}
+}
+
 // With nobody on the relay to vouch for it the verdict stands over UDP: a relay
 // that allocates and carries nothing is out after its first handshake — by the
 // time its worker goes into the wait before its second attempt.

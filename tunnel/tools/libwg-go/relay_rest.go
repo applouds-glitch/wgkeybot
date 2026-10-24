@@ -122,7 +122,24 @@ func relayResting(addr string, now time.Time) bool {
 
 // noteRelayResting rests addr and returns for how long.
 func noteRelayResting(addr string, now time.Time) time.Duration {
+	rest, _ := noteRelayRestingFor(context.Background(), addr, now)
+	return rest
+}
+
+// noteRelayRestingFor is noteRelayResting for a judge of the proxy ctx belongs
+// to: once ctx has ended it rests nothing, and says so. Checked under
+// relayRest's lock, which setRelayRestPeer takes too — and a start ends the last
+// proxy before it names its own server (StartTunnelGroups), so a judge that
+// finds ctx alive there writes the mark under its own server. Checked at the
+// judge's entry alone, a verdict that had waited on the disk (saveRelayRest,
+// relayResting's as well) came back after the next start had named another
+// server and rested the relay for that one (Codex review, 23.10).
+func noteRelayRestingFor(ctx context.Context, addr string, now time.Time) (time.Duration, bool) {
 	relayRest.Lock()
+	if ctx.Err() != nil {
+		relayRest.Unlock()
+		return 0, false
+	}
 	key := relayRestKeyLocked(addr)
 	rest := relayRestFor
 	if m, ok := relayRest.marks[key]; ok && now.Sub(m.until) < relayRestRelapse {
@@ -131,7 +148,7 @@ func noteRelayResting(addr string, now time.Time) time.Duration {
 	relayRest.marks[key] = relayRestMark{until: now.Add(rest), rest: rest}
 	relayRest.Unlock()
 	saveRelayRest(now)
-	return rest
+	return rest, true
 }
 
 // runRelayLossJudge reads the downlink loss per relay every relayJudgeEvery for
@@ -190,6 +207,9 @@ func runRelayLossJudge(ctx context.Context) {
 // relay (iOS review, 2026-10-11: two relays of one link judged against a third
 // of another link, or an extra relay).
 func restJudgedRelays(ctx context.Context, verdicts []relayVerdict, now time.Time) {
+	if ctx.Err() != nil {
+		return // the proxy has stopped: its verdicts with it
+	}
 	type rested struct {
 		relayVerdict
 		rest time.Duration
@@ -199,7 +219,11 @@ func restJudgedRelays(ctx context.Context, verdicts []relayVerdict, now time.Tim
 		if relayResting(v.relay, now) {
 			continue // what still runs there has nowhere else to go
 		}
-		resting = append(resting, rested{v, noteRelayResting(v.relay, now)})
+		rest, ok := noteRelayRestingFor(ctx, v.relay, now)
+		if !ok {
+			return // the proxy stopped while the verdict before waited on the disk
+		}
+		resting = append(resting, rested{v, rest})
 	}
 	// One load for every relay rested in this turn: the sessions moved off the
 	// first are charged to where they go before those of the second pick
@@ -268,6 +292,13 @@ func formatRelayLoss(samples []relayLossSample, streams map[string]int) string {
 // with every pick; nil, it is taken now. It returns how many it moves, how
 // many stay, where the moved ones go first and the relays they dial last.
 func recycleRelaySessions(ctx context.Context, addr string, now time.Time, load *relayLoad) relayMoveOut {
+	// A judge whose proxy has stopped moves nothing: the sessions booked on
+	// addr by now may be the next proxy's (liveSessions outlives a proxy), and
+	// a verdict that waited on the disk (saveRelayRest) can come after the
+	// stop (Codex review of the iOS port, 22.10).
+	if ctx.Err() != nil {
+		return relayMoveOut{}
+	}
 	type session struct {
 		stream  *stream
 		attempt *networkAttempt
@@ -275,6 +306,15 @@ func recycleRelaySessions(ctx context.Context, addr string, now time.Time, load 
 		user    string
 	}
 	liveSessions.Lock()
+	// Again under the lock sessions are booked under: a start ends the last
+	// proxy before any session of its own is booked, so a judge that finds ctx
+	// alive here reads its own proxy's sessions only. The check above alone
+	// left the moment before this lock, in which the next proxy's sessions
+	// were read, given a move and recycled (Codex review, 23.10).
+	if ctx.Err() != nil {
+		liveSessions.Unlock()
+		return relayMoveOut{}
+	}
 	var sessions []session
 	for s := range liveSessions.byRelay[addr] {
 		if a := s.attempt.Load(); a != nil {
@@ -312,6 +352,8 @@ func recycleRelaySessions(ctx context.Context, addr string, now time.Time, load 
 				case <-ctx.Done():
 					return
 				}
+			} else if ctx.Err() != nil {
+				return // the first as well
 			}
 			recycleAttempt(a)
 		}

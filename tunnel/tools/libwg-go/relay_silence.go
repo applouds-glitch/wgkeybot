@@ -55,13 +55,70 @@ var (
 	relayHeard     [2]atomic.Uint64
 	relayHeardAt   [2]atomic.Int64
 	relayHeardBase = time.Now()
+	// relayGapEndAt is, per transport and on the same clock, when the last
+	// silence of the whole path longer than wholePathGap ended — the first
+	// relay heard after it; 0: none since the process started.
+	relayGapEndAt [2]atomic.Int64
 )
 
-// noteRelayHeard records a relay heard over the transport.
+// wholePathGap is how long no relay at all may go unheard over a transport
+// before the silence counts as the whole path's (pathGapEndedSince). At rest
+// every stream's keepalive goes out in one window of keepaliveSpread every
+// keepaliveInterval, and their echoes come back in it, so the path's own gaps
+// are about 25s; one keepalive or its echo lost and the next, the repeat, is
+// 3s behind. dispatchStaleAfter is past both, as for a single stream.
+const wholePathGap = dispatchStaleAfter
+
+// noteRelayHeard records a relay heard over the transport, and the end of a
+// silence of the whole path if this is the first relay heard after one.
+//
+// The time last heard moves forward only, and the silence is measured from the
+// time it moves forward from. Two readers race here — every relay socket's
+// read loop calls in — and with a plain swap the one that took its time first
+// could store it last, setting the time back and making up a silence out of
+// the other's (Codex review, 23.10). A reader whose time is behind the stored
+// one adds nothing: the later reader has already measured from it. The end of
+// the silence is put on the record before this returns, so before the packet
+// that ended it reaches its own stream (relay_deaf.go reads the witness first
+// for that). Not before every packet that follows it: another relay's reader
+// may pass in the two steps between the swap and the record, see its stream's
+// packet through, and leave a deaf session judged on a witness with the dark
+// not on the record yet — a narrow window that costs one count towards a rest,
+// not worth a published pair per packet (Codex review, 23.10).
 func noteRelayHeard(overTCP bool) {
 	i := proofTransport(overTCP)
 	relayHeard[i].Add(1)
-	relayHeardAt[i].Store(int64(time.Since(relayHeardBase)))
+	now := int64(time.Since(relayHeardBase))
+	for {
+		prev := relayHeardAt[i].Load()
+		if now <= prev {
+			return
+		}
+		if relayHeardAt[i].CompareAndSwap(prev, now) {
+			if prev != 0 && now-prev > int64(wholePathGap) {
+				advanceGapEnd(&relayGapEndAt[i], now)
+			}
+			return
+		}
+	}
+}
+
+// advanceGapEnd moves end to at, unless it is already there or later.
+func advanceGapEnd(end *atomic.Int64, at int64) {
+	for {
+		cur := end.Load()
+		if at <= cur || end.CompareAndSwap(cur, at) {
+			return
+		}
+	}
+}
+
+// pathGapEndedSince reports whether a silence of the whole path over the
+// transport, longer than wholePathGap, ended after since: no relay at all was
+// heard over it for that long, and the light came back after since.
+func pathGapEndedSince(overTCP bool, since time.Time) bool {
+	end := relayGapEndAt[proofTransport(overTCP)].Load()
+	return end != 0 && relayHeardBase.Add(time.Duration(end)).After(since)
 }
 
 // sinceRelayHeard is how long ago a relay was last heard over the transport,

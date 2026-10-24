@@ -187,10 +187,14 @@ var (
 // two extra cheap requests, which is the entire cost.
 func getVKCredsViaVKCalls(ctx context.Context, link string, client tlsclient.HttpClient, profile Profile) (string, string, []string, int, error) {
 	flowStarted := time.Now()
+	// Per flow, not per attempt: the client pools its connections, and an
+	// attempt may run over one an earlier attempt dialled from memory.
+	rememberedDials := rememberedDialsOf(client)
+	rememberedAtStart := rememberedDials()
 	attempt := 1 // attempts VK had a say in; see vkCallsOwnNetworkBudget
 	for {
 		attemptStarted := time.Now()
-		user, pass, addrs, lifetime, err := vkCallsAttempt(ctx, link, client, profile)
+		user, pass, addrs, lifetime, err := vkCallsAttemptFn(ctx, link, client, profile)
 		if err == nil {
 			return user, pass, addrs, lifetime, nil
 		}
@@ -202,7 +206,7 @@ func getVKCredsViaVKCalls(ctx context.Context, link string, client tlsclient.Htt
 		}
 
 		var delay time.Duration
-		if ownNetworkFailure(err, attemptStarted) {
+		if ownNetworkFailure(err, attemptStarted) || silentOverRemembered(err, rememberedAtStart, rememberedDials()) {
 			if time.Since(flowStarted) >= vkCallsOwnNetworkBudget {
 				return "", "", nil, 0, fmt.Errorf("%w: %w", errVKCallsOwnNetwork, err)
 			}
@@ -224,6 +228,10 @@ func getVKCredsViaVKCalls(ctx context.Context, link string, client tlsclient.Htt
 		}
 	}
 }
+
+// vkCallsAttemptFn is vkCallsAttempt; a test replaces it to drive the retry
+// loop without VK.
+var vkCallsAttemptFn = vkCallsAttempt
 
 // vkCallsAttempt runs the 5-step VK Calls anonymous flow once. It reuses the
 // caller's TLS client so requests still go over wgProtectSocket-bound sockets.

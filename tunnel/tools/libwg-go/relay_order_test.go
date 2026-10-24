@@ -304,3 +304,22 @@ func TestObserveDownlinkBooksBothUnderOneLock(t *testing.T) {
 		t.Fatalf("order book: got %d late %d, want 10 in order", order.got, order.late)
 	}
 }
+
+// A counter a peer never sends — RejectAfterMessages and up — books nothing in
+// either book: in the loss book it moved the base so far that the ordinary
+// counters after it went missing, and the loss judge's numbers with them
+// (codex review of the iOS port, 22.10).
+func TestACounterPastTheLimitBooksNothing(t *testing.T) {
+	if _, _, ok := wgTransportHeader(wgTransport(7, ^uint64(0)), "relay-a:3478"); ok {
+		t.Fatal("a counter at the top of uint64 was taken")
+	}
+	loss := newRelayLoss()
+	now := time.Now()
+	for _, ctr := range []uint64{0, ^uint64(0), 1} {
+		loss.observe(wgTransport(7, ctr), "relay-a:3478", now)
+	}
+	samples, _ := loss.take(now.Add(time.Second))
+	if len(samples) != 1 || samples[0].rx != 2 || samples[0].lost != 0 {
+		t.Fatalf("samples %+v, want relay-a with the two ordinary packets and none lost", samples)
+	}
+}

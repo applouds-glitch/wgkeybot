@@ -258,12 +258,21 @@ func getCustomNetDialer() net.Dialer {
 // Custom dial context that resolves domains via DNS cache and tries every
 // address of the answer — see vk_dial.go.
 func getCustomDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	dialer := getCustomNetDialer()
-	conn, err := dialVKHost(ctx, hostCache, network, addr, dialer.DialContext)
-	if err != nil {
-		return nil, err
+	return vkDialCounting(nil)(ctx, network, addr)
+}
+
+// vkDialCounting is getCustomDialContext for one VK client: remembered, when
+// set, counts the connections it made on addresses from memory
+// (vk_host_memory.go), which only that client's flow reads.
+func vkDialCounting(remembered *atomic.Uint64) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialer := getCustomNetDialer()
+		conn, err := dialVKHostCounting(ctx, hostCache, network, addr, dialer.DialContext, remembered)
+		if err != nil {
+			return nil, err
+		}
+		return guardHandshake(conn, vkHandshakeTimeout), nil
 	}
-	return guardHandshake(conn, vkHandshakeTimeout), nil
 }
 
 // vkLegacyFirstHost is the first host the legacy chain asks (get_anonym_token).
@@ -313,6 +322,12 @@ func fetchVkCreds(ctx context.Context, link string) (string, string, []string, i
 		turnLog("[VK Auth] Success via VK Calls anonymous flow (no captcha)")
 		resetCaptchaLockout()
 		return user, pass, addr, lifetime, nil
+	} else if ctx.Err() != nil {
+		// Stopped mid-flow: the failure is the cancellation's. Below, it read as
+		// a VK Calls failure like any other — "falling back to legacy captcha
+		// path" on every stop during a fetch (field log 23.10) — and the legacy
+		// chain was entered only to fail on the same cancellation.
+		return "", "", nil, 0, ctx.Err()
 	} else if isCallUnavailable(vkErr) {
 		// Dead/deleted call or invalid join link. The legacy captcha chain below
 		// would burn credentials and prompt the user for a captcha that can never

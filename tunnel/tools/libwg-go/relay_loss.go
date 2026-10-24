@@ -9,6 +9,8 @@ import (
 	"encoding/binary"
 	"sync"
 	"time"
+
+	"golang.zx2c4.com/wireguard/device"
 )
 
 // Downlink loss per relay, read off WireGuard's own counter.
@@ -121,11 +123,22 @@ func newRelayLossUnder(mu *sync.Mutex) *relayLoss {
 // wgTransportHeader is the receiver index and counter of a WireGuard transport
 // message heard through relay — anything else is not booked, and nor is a
 // datagram with no relay to its name.
+//
+// Nor a counter a peer never sends, RejectAfterMessages and up. Both books run
+// before wireguard-go has authenticated the packet (relay_order.go), and the
+// order book alone used to turn such a counter away: in this one a counter near
+// the top of uint64 moved the base so far that every ordinary counter after it
+// was left out, and the loss judge's numbers with them (codex review of the iOS
+// port, 22.10). Turned away here, before either book.
 func wgTransportHeader(pkt []byte, relay string) (receiver uint32, ctr uint64, ok bool) {
 	if len(pkt) < 16 || pkt[0] != 4 || relay == "" {
 		return 0, 0, false
 	}
-	return binary.LittleEndian.Uint32(pkt[4:8]), binary.LittleEndian.Uint64(pkt[8:16]), true
+	ctr = binary.LittleEndian.Uint64(pkt[8:16])
+	if ctr >= device.RejectAfterMessages {
+		return 0, 0, false
+	}
+	return binary.LittleEndian.Uint32(pkt[4:8]), ctr, true
 }
 
 // reset forgets everything: a new proxy, new relays. Field by field — the

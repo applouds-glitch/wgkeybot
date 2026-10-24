@@ -232,14 +232,19 @@ func credsServe(c TurnCredentials, link string, now time.Time) bool {
 // adoptStoredCreds reports whether disk — a slot's entry read from the file,
 // its Link a digest — is to take the place of mem, what the slot holds now, for
 // link at now. What this process knows wins: it is as new as the file or newer,
-// so the file only matters for a slot that cannot serve the link itself.
+// so the file only matters for a slot that cannot serve the link itself. Nor
+// is an entry under a username this process has dropped taken (wasDropped):
+// the drop was for that identity.
 func adoptStoredCreds(mem, disk TurnCredentials, link string, now time.Time) bool {
-	return !credsServe(mem, link, now) && credsServe(disk, linkDigest(link), now)
+	return !credsServe(mem, link, now) && credsServe(disk, linkDigest(link), now) && !wasDropped(disk)
 }
 
 // storedCredsMissReason says, for the log, why an entry of the file could not
 // serve link.
 func storedCredsMissReason(disk TurnCredentials, link string, now time.Time) string {
+	if wasDropped(disk) {
+		return "dropped by this process"
+	}
 	if disk.Link != linkDigest(link) {
 		return "fetched for another link"
 	}

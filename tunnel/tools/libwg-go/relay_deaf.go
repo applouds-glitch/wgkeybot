@@ -49,6 +49,14 @@ import (
 // a stream that has lived through the whole silence counts, so streams that
 // reconnect in turn cannot vouch for one another with their handshakes.
 //
+// The witness itself shows only that its stream was there before the silence
+// and is heard now, not that it was heard all through it: a path dark as a
+// whole for a minute, then lit again, leaves exactly such a witness behind —
+// and an allocation that did not survive the dark. That is the path's doing,
+// not the relay's. So the "all along" comes from the path's own record
+// (pathGapEndedSince): a session whose silence had a silence of the whole UDP
+// path in it is not counted (Codex review, 23.10).
+//
 // relayDeafStrikes such sessions within relayDeafWindow rest the relay
 // (relay_rest.go) and move the sessions on it, as a verdict of the loss judge
 // does: the relay comes back by itself, and one that does it again soon after
@@ -75,6 +83,12 @@ import (
 //     probe's verdict counts like the detector's: at an unlock on 2026-10-20
 //     (16:12:10) it found stream 3 deaf on 95.163.34.166 again, 52 s into the
 //     kind of silence the detector had closed on that relay a minute before.
+//   - A session whose silence had a silence of the whole UDP path in it — no
+//     relay at all heard for wholePathGap, ending after this session's last
+//     packet (pathGapEndedSince). Without a freeze it is the same case as the
+//     one above: a dark spell long enough for a NAT to forget some flows and
+//     not others. Its cost: a relay that eats sessions while the radio comes
+//     and goes is judged only on its sessions in the light.
 //   - A session that the phone's own network failed under (relayNotToBlame) or
 //     that we ended.
 //   - A stream that is only stale — silent for dispatchStaleAfter and skipped by
@@ -108,9 +122,13 @@ const (
 type deafSession struct {
 	relay   string
 	network int64     // the physical network the session ran on
+	peer    string    // the server behind the relay the session ran to
 	at      time.Time // when it was found deaf
 	overTCP bool
 	froze   bool // a host freeze inside its silence
+	// pathGap: a silence of the whole UDP path (pathGapEndedSince) ended
+	// inside its silence — see the "Not counted" list above.
+	pathGap bool
 	// elsewhere: its link has another usable relay to move to.
 	elsewhere bool
 	// witness is another relay that a stream there since before the silence
@@ -127,10 +145,19 @@ type relayDeafVerdict struct {
 	witness string
 }
 
-// relayDeafJudge counts, per relay and for the network in use, the sessions
-// that went deaf on it while a stream on another relay was heard.
+// relayDeafJudge counts, per relay and for the network and server in use, the
+// sessions that went deaf on it while a stream on another relay was heard.
+//
+// The server as well as the network: the rest a verdict gives is the relay's
+// from this server (relay_rest.go keys it relay→peer), so the deaths it rests
+// on have to be too. Counted for the network alone, two deaf sessions under one
+// server and a third after the config moved the tunnel to another — the same
+// network, within relayDeafWindow — rested the relay for the second server on
+// what the first had seen (Codex review, 23.10). Started over, not kept per
+// pair: like the network's, the count says nothing about a server it left.
 type relayDeafJudge struct {
 	network int64
+	peer    string
 	deaths  map[string][]time.Time
 }
 
@@ -138,11 +165,11 @@ type relayDeafJudge struct {
 // its relay with this one — 0 if this one does not count — and the verdict once
 // they are enough, which starts the count over.
 func (j *relayDeafJudge) note(d deafSession) (counted int, verdict *relayDeafVerdict) {
-	if j.deaths == nil || d.network != j.network {
+	if j.deaths == nil || d.network != j.network || d.peer != j.peer {
 		j.deaths = map[string][]time.Time{}
-		j.network = d.network
+		j.network, j.peer = d.network, d.peer
 	}
-	if d.overTCP || d.froze || !d.elsewhere || d.witness == "" || d.witness == d.relay {
+	if d.overTCP || d.froze || d.pathGap || !d.elsewhere || d.witness == "" || d.witness == d.relay {
 		return 0, nil
 	}
 	var kept []time.Time
@@ -172,10 +199,10 @@ func resetRelayDeaf() {
 	relayDeaf.Unlock()
 }
 
-// noteDeafSession weighs the session of s on addr that began at started and has
-// just ended in err, cancelled if we ended it; if it is the verdict, the relay
-// rests and the sessions on it move.
-func noteDeafSession(s *stream, addr string, cancelled bool, err error, started, now time.Time) {
+// noteDeafSession weighs the session of s on addr to the server peer that began
+// at started and has just ended in err, cancelled if we ended it; if it is the
+// verdict, the relay rests and the sessions on it move.
+func noteDeafSession(s *stream, addr, peer string, cancelled bool, err error, started, now time.Time) {
 	var dead *deadStreamError
 	if cancelled || !errors.As(err, &dead) || relayNotToBlame(err, started) {
 		return
@@ -187,6 +214,7 @@ func noteDeafSession(s *stream, addr string, cancelled bool, err error, started,
 	d := deafSession{
 		relay:     addr,
 		network:   attempt.network,
+		peer:      peer,
 		at:        now,
 		overTCP:   s.overTCP.Load(),
 		froze:     dead.froze,
@@ -194,7 +222,16 @@ func noteDeafSession(s *stream, addr string, cancelled bool, err error, started,
 	}
 	var by int
 	if !d.overTCP {
+		// The witness first, then the path's record: the first packet after a
+		// dark spell is booked as the path heard (noteRelayHeard, on the
+		// relay's socket) before it reaches the witness's own clock (noteRx,
+		// in its transport), so a witness whose own packet ended the dark has
+		// its end on the record by the time it is read below. Read the other
+		// way round, such a witness lit in between came with no dark spell to
+		// excuse the silence by (Codex review, 23.10). A dark ended by another
+		// relay's packet leaves a narrower window (noteRelayHeard).
 		d.witness, by = deafWitness(addr, now.Add(-dead.silent), now)
+		d.pathGap = pathGapEndedSince(false, now.Add(-dead.silent))
 	}
 	relayDeaf.Lock()
 	counted, v := relayDeaf.judge.note(d)
@@ -224,10 +261,16 @@ func noteDeafSession(s *stream, addr string, cancelled bool, err error, started,
 // its worker, too, reconnects at once, elsewhere and without counting a
 // failure.
 func restDeafRelay(ctx context.Context, v relayDeafVerdict, by int, now time.Time) {
+	if ctx.Err() != nil {
+		return // the proxy has stopped: the sessions booked now are not its own
+	}
 	if relayResting(v.relay, now) {
 		return // what still runs there has nowhere else to go
 	}
-	rest := noteRelayResting(v.relay, now)
+	rest, ok := noteRelayRestingFor(ctx, v.relay, now)
+	if !ok {
+		return // the proxy stopped while relayResting waited on the disk
+	}
 	out := recycleRelaySessions(ctx, v.relay, now, nil)
 	turnLog("[RELAY DEAF] %s went deaf under %d sessions in %v while stream %d kept hearing %s — resting it for %v, %d session(s) moved off, %d left on it with no other relay of their link to go to%s",
 		v.relay, v.deaths, v.span.Round(time.Second), by, v.witness, rest, out.moved, out.stayed, out.note())

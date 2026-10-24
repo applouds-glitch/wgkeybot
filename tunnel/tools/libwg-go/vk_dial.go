@@ -265,6 +265,12 @@ func endsHandshake(p []byte) bool {
 // dialVKHost is the VK HTTP client's DialContext: host resolved through cache,
 // every address tried, and the cache reordered by the outcome.
 func dialVKHost(ctx context.Context, cache *DnsCache, network, addr string, dial vkDialFunc) (net.Conn, error) {
+	return dialVKHostCounting(ctx, cache, network, addr, dial, nil)
+}
+
+// dialVKHostCounting is dialVKHost counting into remembered, when set, the
+// connections made on addresses from memory (dialRememberedVKHost).
+func dialVKHostCounting(ctx context.Context, cache *DnsCache, network, addr string, dial vkDialFunc, remembered *atomic.Uint64) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		host = addr
@@ -276,7 +282,7 @@ func dialVKHost(ctx context.Context, cache *DnsCache, network, addr string, dial
 
 	ips, err := cache.ResolveAll(ctx, host)
 	if err != nil {
-		return nil, fmt.Errorf("DNS resolution failed for %s: %w", host, err)
+		return dialRememberedVKHost(ctx, network, host, port, err, dial, remembered)
 	}
 
 	conn, ip, setAside, err := dialFirstReachable(ctx, network, port, ips, dial)
@@ -296,14 +302,58 @@ func dialVKHost(ctx context.Context, cache *DnsCache, network, addr string, dial
 	if len(setAside) > 0 {
 		turnLog("[VK Dial] %s: connected to %s; set aside %s", host, ip, strings.Join(setAside, ", "))
 	}
+	rememberVKAddrs(host, connectedFirst(ip, ips, setAside), time.Now())
 
 	// The winner needs no promoting: everything dialled ahead of it has just
 	// been set aside, so it already heads the list.
+	return vkHeardConn(conn, host, ip, func() { cache.SetAside(host, ip) }), nil
+}
+
+// vkHeardConn is a VK connection on ip; setAside runs if it took the connection
+// and never said a word.
+func vkHeardConn(conn net.Conn, host, ip string, setAside func()) net.Conn {
 	return &heardConn{
 		Conn: conn,
 		onSilent: func() {
-			cache.SetAside(host, ip)
+			setAside()
 			turnLog("[VK Dial] %s: %s took the connection and never answered — set aside", host, ip)
 		},
-	}, nil
+	}
+}
+
+// dialRememberedVKHost is dialVKHost after a failed lookup: the addresses host
+// last connected on (vk_host_memory.go), when the lookup reached no resolver and
+// there are any. Otherwise — and also when none of them connects within
+// vkRememberedDialTimeout — the lookup's failure, unchanged, so that a network
+// that carries nothing is still read as our own (ownNetworkFailure). A
+// connection made here is counted into the client's remembered: an attempt of
+// that client's flow that hears nothing is ours too (silentOverRemembered).
+// Nothing goes into cache: an address there reads as DNS's, and its silence as
+// VK's (Codex review 23.10) — each new connection of the flow asks the
+// resolvers first.
+func dialRememberedVKHost(ctx context.Context, network, host, port string, lookupErr error, dial vkDialFunc, remembered *atomic.Uint64) (net.Conn, error) {
+	failed := fmt.Errorf("DNS resolution failed for %s: %w", host, lookupErr)
+	if reached, isLookup := dnsLookupOutcome(lookupErr); !isLookup || reached || ctx.Err() != nil {
+		return nil, failed
+	}
+	ips := rememberedVKAddrs(host, time.Now())
+	if len(ips) == 0 {
+		return nil, failed
+	}
+	turnLog("[VK Dial] %s: no resolver answered — dialling the %d address(es) it last connected on", host, len(ips))
+	walk, cancel := context.WithTimeout(ctx, vkRememberedDialTimeout)
+	conn, ip, setAside, err := dialFirstReachable(walk, network, port, ips, dial)
+	cancel()
+	if err != nil {
+		if ctx.Err() == nil {
+			turnLog("[VK Dial] %s: none of the remembered %s connected (%v)", host, strings.Join(ips, ", "), err)
+		}
+		return nil, failed
+	}
+	rememberVKAddrs(host, connectedFirst(ip, ips, setAside), time.Now())
+	if remembered != nil {
+		remembered.Add(1)
+	}
+	turnLog("[VK Dial] %s: connected on remembered %s", host, ip)
+	return vkHeardConn(conn, host, ip, func() { setAsideRememberedVKAddr(host, ip) }), nil
 }

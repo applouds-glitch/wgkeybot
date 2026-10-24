@@ -107,6 +107,18 @@ type permWatch struct {
 	reason atomic.Pointer[string]
 	dead   chan struct{}
 	once   sync.Once
+	// unreachable says the verdict that fired was the relay saying it has no
+	// allocation for this socket — a 400 on CreatePermission, from a
+	// permission refresh or the allocation check — rather than the relay going
+	// silent on the session or refusing it otherwise. Set with the first
+	// reason, before dead is closed; read through sessionBlackhole.
+	//
+	// The two are graded apart (sessionOutcome). A 400 is an answer within a
+	// round trip: the host is up, and what it no longer knows is ours to have
+	// lost — a mapping the translator forgot across a freeze, an allocation
+	// that lapsed in one. The post-wake probe's verdict on the same fact never
+	// counted against the relay; this one stood healthy relays down.
+	unreachable atomic.Bool
 
 	// pion's read loop ending is a different fact from the three above, and is
 	// kept apart from them: it says nothing about the allocation (see
@@ -166,7 +178,7 @@ func (w *permWatch) note(msg string) {
 		return
 	}
 
-	fire := false
+	fire, outOfReach := false, false
 	w.mu.Lock()
 	switch {
 	// Success markers first: a healthy refresh must clear its own counter
@@ -178,30 +190,52 @@ func (w *permWatch) note(msg string) {
 	case strings.Contains(msg, permOKMarker):
 		w.permFails = 0
 	case strings.Contains(msg, allocClosedMarker):
+		// pion's own close after a first ChannelBind answered 400. A failure of
+		// the relay, as it always was, not an out-of-reach verdict: pion writes
+		// it only for the first bind, seconds after the Allocate, where no
+		// translator has had a freeze to forget the flow in; RFC 8656 §12.2
+		// gives ChannelBind 400 to a binding conflict, "no allocation" being
+		// 437; and VK was measured answering 400 that way on CreatePermission
+		// only (anton48 build 432). Unmeasured, it keeps its strike (Codex
+		// review, 23.10).
 		fire = true
 	case strings.Contains(msg, bindFailMarker):
 		w.bindFails++
 		fire = w.bindFails >= bindFailThreshold
 	case strings.Contains(msg, allocFailMarker):
+		// Not a refusal with a code: pion v5.0.13 returns nil from
+		// refreshAllocation on any error response whose code it can read but
+		// 438 (allocation.go, "if err = code.GetFrom(res); err == nil { …
+		// return err }"). So this line is a refresh nothing answered, one that
+		// could not be sent or built, 438s past pion's retries, or a response
+		// it could not read — never an out-of-reach verdict.
 		w.allocFails++
 		fire = w.allocFails >= allocFailThreshold
 	case strings.Contains(msg, permFailMarker):
 		w.permFails++
-		fire = w.permFails >= permFailThreshold || strings.Contains(msg, permBadRequestMarker)
+		outOfReach = strings.Contains(msg, permBadRequestMarker)
+		fire = w.permFails >= permFailThreshold || outOfReach
 	}
 	w.mu.Unlock()
 
 	if fire {
-		w.markDead(msg)
+		w.markDeadAs(msg, outOfReach)
 	}
 }
 
 // markDead latches the blackhole verdict. Idempotent: later failures on a
 // session already declared dead keep the first (root cause) reason.
-func (w *permWatch) markDead(reason string) {
+func (w *permWatch) markDead(reason string) { w.markDeadAs(reason, false) }
+
+// markOutOfReach is markDead for the relay's answer that it has no allocation
+// for this socket (the allocation check, alloc_check.go).
+func (w *permWatch) markOutOfReach(reason string) { w.markDeadAs(reason, true) }
+
+func (w *permWatch) markDeadAs(reason string, outOfReach bool) {
 	w.once.Do(func() {
 		r := reason
 		w.reason.Store(&r)
+		w.unreachable.Store(outOfReach)
 		close(w.dead)
 		turnLog("[STREAM %d] TURN data-path blackhole: %s", w.streamID, reason)
 	})

@@ -64,9 +64,11 @@ func TestMarkersExistInVendoredPion(t *testing.T) {
 // Exact log lines pion emits, with the format verbs already substituted the way
 // pionLogger.Warnf hands them to note().
 const (
-	logBindFail  = "Failed to bind channel 16384: channel bind transaction failed: all retransmissions failed"
-	logBindOK    = "Channel binding successful: 1.2.3.4:56000 16384"
-	logAllocFail = "Failed to refresh allocation: error 437: Allocation Mismatch"
+	logBindFail = "Failed to bind channel 16384: channel bind transaction failed: all retransmissions failed"
+	logBindOK   = "Channel binding successful: 1.2.3.4:56000 16384"
+	// A refresh nothing answered: pion v5.0.13 returns nil for an error
+	// response it can read the code of (but 438), so this is what the line is.
+	logAllocFail = "Failed to refresh allocation: failed to refresh allocation: all retransmissions failed for O4wWnB8M2pTq7Zx1"
 	logAllocOK   = "Updated lifetime: 600 seconds"
 	logPermFail  = "Failed to refresh permissions: error 403: Forbidden"
 	// The line the iOS journal carried on 2026-09-28 (Wi-Fi, first refresh
@@ -115,8 +117,8 @@ func TestAllocationRefreshFailureFiresImmediately(t *testing.T) {
 	if !w.fired() {
 		t.Fatal("a single allocation-refresh failure must recycle the stream")
 	}
-	if !strings.Contains(w.why(), "437") {
-		t.Errorf("reason must carry pion's error text for classifyCredError, got %q", w.why())
+	if w.why() != logAllocFail {
+		t.Errorf("reason must carry pion's own line for classifyCredError, got %q", w.why())
 	}
 }
 

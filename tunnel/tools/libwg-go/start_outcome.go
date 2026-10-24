@@ -41,3 +41,28 @@ func startTimeoutCode(credsObtained, vkHeard bool) int32 {
 	}
 	return -1
 }
+
+// prefetchOutcomeCode is the start's answer as soon as the credential prefetch
+// is over, or 0 to go on and launch the groups.
+//
+// Field log 23.10 (Pixel, Wi-Fi): not one resolver answered over plain DNS, DoH
+// or DoT for the whole 36s of the prefetch, and the start then had the startup
+// timeout's 30s more to run before it could say -5 — the workers spending them
+// on the same fetch over the same silent network. The user disconnected at 41s.
+// A group's own-network failure (errVKCallsOwnNetwork) is a fetch that has
+// already spent its retry budget on our side of the network and found the
+// legacy host unresolvable too; with no credential in any group no relay can be
+// asked anything, so the verdict startTimeoutCode would give later is known now.
+// Every group must have failed that way: one that failed otherwise — VK
+// refused, a captcha — keeps the start going, and so does a byte from VK
+// heard anywhere since the start began, as for startTimeoutCode. So does any
+// network event during the prefetch (networkMoved): the failures are then the
+// old network's — lookups already running when a working network arrived end
+// on the path they started on — and the workers would fetch over the new one
+// (Codex review, 23.10).
+func prefetchOutcomeCode(groups, ownNetworkFails int, credsObtained, vkHeard, networkMoved bool) int32 {
+	if groups > 0 && ownNetworkFails == groups && !credsObtained && !vkHeard && !networkMoved {
+		return startVKUnreachable
+	}
+	return 0
+}

@@ -32,9 +32,10 @@ import (
 // No answer (a timeout, a network still coming up) is no verdict: the probe
 // and the periodic detector go on. Any other refusal is logged and left to
 // permWatch's own accounting. The verdict travels the blackhole path
-// (permWatch.markDead → the session's watchdog closes the relay → runWithCreds
-// re-dials), whose reason classifyCredError never reads as the credential's
-// fault: a 400 names no quota and no auth.
+// (permWatch.markOutOfReach → the session's watchdog closes the relay →
+// runWithCreds re-dials), whose reason classifyCredError never reads as the
+// credential's fault: a 400 names no quota and no auth. Nor is it held against
+// the relay (sessionOutcome, blackholeOutOfReach).
 
 // permissionAsker is the one call the check makes; *turn.Client is the
 // production one, tests hand in a fake relay's answer.
@@ -84,7 +85,7 @@ func (c *allocCheck) run(why string) {
 		}
 		if code, ok := turnErrorCode(err); ok && code == stun.CodeBadRequest {
 			turnLog("[STREAM %d] allocation check (%s): CreatePermission answered 400 — the relay has no allocation for this socket", c.streamID, why)
-			c.perm.markDead(fmt.Sprintf("allocation check after %s: %v", why, err))
+			c.perm.markOutOfReach(fmt.Sprintf("allocation check after %s: %v", why, err))
 			return
 		}
 		turnLog("[STREAM %d] allocation check (%s): no verdict (%v)", c.streamID, why, err)

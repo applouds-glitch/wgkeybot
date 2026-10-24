@@ -64,3 +64,29 @@ func TestHeardConnCountsConnectionsThatAnswered(t *testing.T) {
 		t.Fatalf("answering connection read in several chunks: +%d, want +1", got)
 	}
 }
+
+// Field log 23.10: every resolver silent for the whole prefetch. Only when every
+// group failed on our own network, with no credential and not a byte from VK,
+// is the start's answer known before the groups run.
+func TestPrefetchOutcomeCode(t *testing.T) {
+	cases := []struct {
+		name           string
+		groups, ownNet int
+		credsObtained  bool
+		vkHeard        bool
+		networkMoved   bool
+		want           int32
+	}{
+		{"every group on a silent network", 2, 2, false, false, false, startVKUnreachable},
+		{"one group failed otherwise", 2, 1, false, false, false, 0},
+		{"a credential reached the start", 1, 1, true, false, false, 0},
+		{"VK answered somewhere", 1, 1, false, true, false, 0},
+		{"the network changed during the prefetch", 1, 1, false, false, true, 0},
+		{"no groups", 0, 0, false, false, false, 0},
+	}
+	for _, c := range cases {
+		if got := prefetchOutcomeCode(c.groups, c.ownNet, c.credsObtained, c.vkHeard, c.networkMoved); got != c.want {
+			t.Errorf("%s: prefetchOutcomeCode = %d, want %d", c.name, got, c.want)
+		}
+	}
+}

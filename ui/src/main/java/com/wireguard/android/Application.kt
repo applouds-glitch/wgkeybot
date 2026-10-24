@@ -27,6 +27,7 @@ import com.wireguard.android.configStore.FileConfigStore
 import com.wireguard.android.model.TunnelManager
 import com.wireguard.android.model.TunnelStateTracker
 import com.wireguard.android.tether.TetherManager
+import com.wireguard.android.turn.ExpertSettings
 import com.wireguard.android.turn.TurnProxyManager
 import com.wireguard.android.turn.TurnSettingsStore
 import com.wireguard.android.widget.WidgetStateObserver
@@ -115,6 +116,13 @@ class Application : android.app.Application() {
             FileConfigStore(applicationContext),
             TurnSettingsStore(applicationContext),
         )
+        // Built off the main thread ahead of the first connect, which reads it
+        // on main: the first getInstance opens a Keystore key and an encrypted
+        // prefs file, and StrictMode put that at ~90 ms of the tap on "connect"
+        // (log 23.10). Not an IO hop in setTunnelStateSerialized instead: a stop
+        // landing in that suspension came before onTunnelEstablished, which
+        // clears it, and the start went on to its prefetch (Codex review, 23.10).
+        applicationScope.launch(Dispatchers.IO) { ExpertSettings.getInstance(this@Application) }
         // Here, on the main thread, and not with the backend: the service's
         // onStartCommand runs on main right after this onCreate and drops the
         // always-on signal while no callback is set. Registered on the IO coroutine

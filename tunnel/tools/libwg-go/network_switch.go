@@ -49,6 +49,32 @@ var networkSwitch = struct {
 	attempts map[uint64]*networkAttempt
 }{attempts: map[uint64]*networkAttempt{}}
 
+// networkStamp is the network our dials bind to, when one was last lost or
+// left, and which resolver list is in force. Two stamps that are the same say
+// no network event came between them: none appeared, none went away, none
+// replaced another — not even for a moment, a network lost and back again moves
+// leftAt — and the resolvers stayed the same.
+//
+// What it cannot see: a new address on the same network (Kotlin does not pass
+// addresses down), and the instant inside one wgSetNetwork between the bind
+// moving (jni.c) and this stamp moving — the dials there already go out on
+// the new network while the stamp still names the old one.
+type networkStamp struct {
+	current int64
+	leftAt  time.Time
+	dns     uint64
+}
+
+func currentNetworkStamp() networkStamp {
+	networkSwitch.Lock()
+	defer networkSwitch.Unlock()
+	return networkStamp{current: networkSwitch.current, leftAt: networkSwitch.leftAt, dns: dnsListGen.Load()}
+}
+
+func (s networkStamp) same(o networkStamp) bool {
+	return s.current == o.current && s.leftAt.Equal(o.leftAt) && s.dns == o.dns
+}
+
 // networkAttempt is one worker attempt — dial, allocate, the session that
 // follows and the wait after it — tagged with the network it was started on and
 // the relay transport it runs over.

@@ -674,9 +674,10 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	// (relay_loss.go). Set by runWithCreds before the transport starts.
 	relayAddr := s.serverAddr
 	sCtx, sCancel := context.WithCancel(ctx)
-	defer sCancel()
+	ready := newSessionReadiness(sCtx, sCancel, s)
+	defer ready.end()
 
-	// firstErr captures the root cause when a goroutine fails and calls sCancel().
+	// firstErr captures the root cause when a goroutine fails and calls ready.end().
 	// See runDTLS for full rationale.
 	firstErr := make(chan error, 1)
 	reportErr := func(err error) {
@@ -712,7 +713,10 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	// Cancelling sCtx (watchdog, error, parent stop) closes the relay conn so
 	// the RX goroutine's blocking ReadFrom unblocks immediately instead of
 	// waiting out its 60s deadline.
-	context.AfterFunc(sCtx, func() { relayConn.Close() })
+	context.AfterFunc(sCtx, func() {
+		ready.end()
+		relayConn.Close()
+	})
 
 	activity := newStreamActivity(time.Now(), s.kaPhase)
 	s.activity.Store(activity)
@@ -727,7 +731,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	// TX: WireGuard → relay
 	go func() {
 		defer wg.Done()
-		defer sCancel()
+		defer ready.end()
 		// Scratch buffer for WRAP encryption, owned by this goroutine alone.
 		// relayConn.WriteTo copies the payload into its own STUN/ChannelData
 		// message, so the buffer is free to be reused on the next packet.
@@ -769,7 +773,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	// RX: relay → WireGuard
 	go func() {
 		defer wg.Done()
-		defer sCancel()
+		defer ready.end()
 		wire := make([]byte, iPacketBuffMaxSize)
 		plain := make([]byte, iPacketBuffMaxSize)
 		peerStr := peer.String()
@@ -851,7 +855,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 	// lastRx — only the server's echo (in the RX goroutine) proves the path.
 	go func() {
 		defer wg.Done()
-		defer sCancel()
+		defer ready.end()
 		s.runKeepalive(sCtx, activity, reportErr, func(tick int) error {
 			var sendErr error
 			if hasWrap {
@@ -903,7 +907,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			// A goroutine that already failed knows better than the timeout why
 			// nothing came back; either way the stream never carried traffic.
 			//
-			// What it said is taken here, before sCancel, and not after wg.Wait:
+			// What it said is taken here, before ready.end, and not after wg.Wait:
 			// the cancel closes relayConn, the RX goroutine's ReadFrom then fails
 			// with "use of closed network connection" — our own teardown — and
 			// that took the empty slot in place of the verdict. A relay that never
@@ -911,7 +915,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			// errRelayNeverAnswered in the chain (host test, 20.10), and a probe
 			// the socket refused lost its errno the same way. A goroutine that
 			// failed first has its error in the slot by now: it reports before
-			// its deferred sCancel, and that cancel is what ended the wait.
+			// its deferred ready.end, and that cancel is what ended the wait.
 			//
 			// So pathWideFailure and parksInTheDark see a proof unanswered as the
 			// silence it is, as they already saw the DTLS and SRTP handshakes'
@@ -925,7 +929,7 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 			case cause = <-firstErr:
 			default:
 			}
-			sCancel()
+			ready.end()
 			wg.Wait()
 			if ctx.Err() != nil {
 				// Our own teardown, not the relay's silence.
@@ -949,16 +953,17 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	s.ready.Store(true)
-	// The judge of silence under load takes this stream's row now, not on the
-	// next packet anyone hears (silent_under_load.go).
-	wakeSilentUnderLoadJudge()
-	// Ask right away rather than at the next grid tick, so the reporter can use
-	// this stream as soon as the server has answered.
-	if control != nil {
-		s.enqueueControl(control.keepalive())
+	if ready.publish() {
+		// The judge of silence under load takes this stream's row now, not on the
+		// next packet anyone hears (silent_under_load.go).
+		wakeSilentUnderLoadJudge()
+		// Ask right away rather than at the next grid tick, so the reporter can use
+		// this stream as soon as the server has answered.
+		if control != nil {
+			s.enqueueControl(control.keepalive())
+		}
+		s.okFunc()
 	}
-	s.okFunc()
 	wg.Wait()
 	select {
 	case err := <-firstErr:
@@ -1079,9 +1084,10 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// (relay_loss.go). Set by runWithCreds before the transport starts.
 	relayAddr := s.serverAddr
 	sCtx, sCancel := context.WithCancel(ctx)
-	defer sCancel()
+	ready := newSessionReadiness(sCtx, sCancel, s)
+	defer ready.end()
 
-	// firstErr captures the root cause when a goroutine fails and calls sCancel().
+	// firstErr captures the root cause when a goroutine fails and calls ready.end().
 	// Without this, any internal failure (watchdog, RX error, TX error) would
 	// return nil, which WorkerGroup misinterprets as "server closed stream,
 	// rotate credentials" — causing an infinite stream creation/destruction loop
@@ -1125,6 +1131,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	wg.Add(2)
 
 	context.AfterFunc(sCtx, func() {
+		ready.end()
 		relayConn.Close()
 		c1.Close()
 	})
@@ -1139,7 +1146,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// wrapPacket before being sent to the relay over UDP.
 	go func() {
 		defer wg.Done()
-		defer sCancel()
+		defer ready.end()
 		buf := make([]byte, iPacketBuffMaxSize)
 		// Scratch buffer for WRAP encryption, owned by this goroutine alone
 		// (see runNoDTLS TX for why reuse is safe).
@@ -1181,7 +1188,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// unwrapPacket before being fed into the DTLS pipe.
 	go func() {
 		defer wg.Done()
-		defer sCancel()
+		defer ready.end()
 		wire := make([]byte, iPacketBuffMaxSize)
 		plain := make([]byte, iPacketBuffMaxSize)
 		peerStr := peer.String()
@@ -1265,23 +1272,12 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	control := s.newFeedbackControl()
 	defer s.control.CompareAndSwap(control, nil)
 
-	s.ready.Store(true)
-	// The judge of silence under load takes this stream's row now, not on the
-	// next packet anyone hears (silent_under_load.go).
-	wakeSilentUnderLoadJudge()
-	// Ask right away rather than at the next grid tick, so the reporter can use
-	// this stream as soon as the server has answered.
-	if control != nil {
-		s.enqueueControl(control.keepalive())
-	}
-	s.okFunc()
-
 	wg.Add(3)
 
 	// WireGuard → DTLS (TX)
 	go func() {
 		defer wg.Done()
-		defer sCancel()
+		defer ready.end()
 		reader := outboundReader{s: s}
 		for {
 			b, ok := reader.next(sCtx)
@@ -1301,7 +1297,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// DTLS → WireGuard (RX)
 	go func() {
 		defer wg.Done()
-		defer sCancel()
+		defer ready.end()
 		buf := make([]byte, iPacketBuffMaxSize)
 		for {
 			n, err := dtlsConn.Read(buf)
@@ -1344,7 +1340,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// threshold, replacing the former 10s TURN Binding Request probe and watchdog.
 	go func() {
 		defer wg.Done()
-		defer sCancel()
+		defer ready.end()
 		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
 			_, err := dtlsConn.Write(control.keepalive())
 			return err
@@ -1354,6 +1350,17 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 		})
 	}()
 
+	if ready.publish() {
+		// The judge of silence under load takes this stream's row now, not on the
+		// next packet anyone hears (silent_under_load.go).
+		wakeSilentUnderLoadJudge()
+		// Ask right away rather than at the next grid tick, so the reporter can use
+		// this stream as soon as the server has answered.
+		if control != nil {
+			s.enqueueControl(control.keepalive())
+		}
+		s.okFunc()
+	}
 	wg.Wait()
 	select {
 	case err := <-firstErr:
@@ -1379,9 +1386,10 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// (relay_loss.go). Set by runWithCreds before the transport starts.
 	relayAddr := s.serverAddr
 	sCtx, sCancel := context.WithCancel(ctx)
-	defer sCancel()
+	ready := newSessionReadiness(sCtx, sCancel, s)
+	defer ready.end()
 
-	// firstErr captures the root cause when a goroutine fails and calls sCancel().
+	// firstErr captures the root cause when a goroutine fails and calls ready.end().
 	// See runDTLS for the full rationale (nil return would be misread by
 	// WorkerGroup as "server closed stream, rotate credentials").
 	firstErr := make(chan error, 1)
@@ -1394,7 +1402,10 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 
 	// srtpwrap.Client owns the relayConn read loop internally; closing the
 	// relay on ctx cancel unblocks it so the session tears down cleanly.
-	context.AfterFunc(sCtx, func() { relayConn.Close() })
+	context.AfterFunc(sCtx, func() {
+		ready.end()
+		relayConn.Close()
+	})
 
 	hsCtx, hsCancel := context.WithTimeout(sCtx, dataPlaneHandshakeTimeout)
 	srtpConn, err := srtpwrap.Client(hsCtx, relayConn, peer)
@@ -1403,7 +1414,10 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 		return fmt.Errorf("%w: SRTP handshake failed: %w", errDataPlaneHandshake, err)
 	}
 	defer srtpConn.Close()
-	context.AfterFunc(sCtx, func() { srtpConn.Close() })
+	context.AfterFunc(sCtx, func() {
+		ready.end()
+		srtpConn.Close()
+	})
 	turnLog("[STREAM %d] SRTP handshake OK", s.id)
 	noteServerHandshakeOK(s.serverAddr)
 	s.notePathProven()
@@ -1439,24 +1453,13 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	control := s.newFeedbackControl()
 	defer s.control.CompareAndSwap(control, nil)
 
-	s.ready.Store(true)
-	// The judge of silence under load takes this stream's row now, not on the
-	// next packet anyone hears (silent_under_load.go).
-	wakeSilentUnderLoadJudge()
-	// Ask right away rather than at the next grid tick, so the reporter can use
-	// this stream as soon as the server has answered.
-	if control != nil {
-		s.enqueueControl(control.keepalive())
-	}
-	s.okFunc()
-
 	var wg sync.WaitGroup
 	wg.Add(3)
 
 	// WireGuard → SRTP (TX)
 	go func() {
 		defer wg.Done()
-		defer sCancel()
+		defer ready.end()
 		reader := outboundReader{s: s}
 		for {
 			b, ok := reader.next(sCtx)
@@ -1477,7 +1480,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// SRTP → WireGuard (RX)
 	go func() {
 		defer wg.Done()
-		defer sCancel()
+		defer ready.end()
 		buf := make([]byte, iPacketBuffMaxSize)
 		for {
 			n, err := srtpConn.Read(buf)
@@ -1518,7 +1521,7 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 	// this per-stream detector is the only dead-path signal SRTP has.)
 	go func() {
 		defer wg.Done()
-		defer sCancel()
+		defer ready.end()
 		s.runKeepalive(sCtx, activity, reportErr, func(int) error {
 			_, err := srtpConn.Write(control.keepalive())
 			return err
@@ -1528,6 +1531,17 @@ func (s *stream) runSRTP(ctx context.Context, relayConn net.PacketConn, peer *ne
 		})
 	}()
 
+	if ready.publish() {
+		// The judge of silence under load takes this stream's row now, not on the
+		// next packet anyone hears (silent_under_load.go).
+		wakeSilentUnderLoadJudge()
+		// Ask right away rather than at the next grid tick, so the reporter can use
+		// this stream as soon as the server has answered.
+		if control != nil {
+			s.enqueueControl(control.keepalive())
+		}
+		s.okFunc()
+	}
 	wg.Wait()
 	select {
 	case err := <-firstErr:
@@ -1715,41 +1729,27 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	}
 
 	// ── Apply StreamNum cap / expand ─────────────────────────────────────────
-	// StreamNum (n) is the total stream count. streamsPerCred is a group's
-	// capacity — the most streams one credential may carry — not its exact size.
-	//   • n < total: reduce streamsPerCred so total matches n.
-	//   • n > total: add groups by cycling links until they hold n streams, and
-	//     let the last group take the remainder rather than rounding the total
-	//     up to a multiple of streamsPerCred (n=12, streamsPerCred=9 gives 9 + 3,
-	//     not 9 + 9). A short trailing group needs no special handling
-	//     elsewhere: streamID/streamsPerCred — the credential cache key in
-	//     credentials.go:getCacheID — already maps streams 9-11 to slot 1.
-	// streamsPerCred must stay in sync with that division either way. The value is
-	// computed locally and published once, at the end: the global is read by the
-	// previous session's departing workers, so intermediate values must never be
-	// visible to them.
+	// Keep every link: below the configured capacity, split n evenly over the
+	// links (at least one stream each). Above it, add groups by cycling links
+	// and let the last group take the remainder. Credential slots are keyed by
+	// groupID: fetchCreds uses groupID*streamsPerCred, not a live stream's ID.
+	// Keep the configured capacity for that mapping, even with unequal groups,
+	// and publish it once so departing workers never see intermediate values.
 	perCred := int(streamsPerCredC)
 	if perCred < 1 {
 		perCred = 1
 	}
-	totalStreams := len(links) * perCred
-	if maxTotal := int(n); maxTotal > 0 {
-		if maxTotal < totalStreams {
-			perGroup := maxTotal / len(links)
-			if perGroup < 1 {
-				perGroup = 1
-			}
-			perCred = perGroup
-			totalStreams = len(links) * perCred
-		} else if maxTotal > totalStreams {
-			numGroups := (maxTotal + perCred - 1) / perCred
-			origLinks := links
-			links = make([]string, numGroups)
-			for i := range links {
-				links[i] = origLinks[i%len(origLinks)]
-			}
-			totalStreams = maxTotal
+	counts := groupStreamCounts(len(links), perCred, int(n))
+	if len(counts) > len(links) {
+		origLinks := links
+		links = make([]string, len(counts))
+		for i := range links {
+			links[i] = origLinks[i%len(origLinks)]
 		}
+	}
+	totalStreams := 0
+	for _, count := range counts {
+		totalStreams += count
 	}
 	setStreamsPerCred(perCred)
 
@@ -1760,8 +1760,8 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 
 	// Peer and WRAP are said once here rather than on every stream session:
 	// they cannot change until the next start.
-	turnLog("[PROXY] Starting: listen=%s StreamNum=%d streamsPerGroup=%d links=%d actualTotal=%d mode=%s peerType=%s peer=%s wrap=%v watchdog=%ds",
-		listenAddr, int(n), perCred, len(links), totalStreams, mode, peerType, peerAddr, wrapKey != nil, watchdogTimeout)
+	turnLog("[PROXY] Starting: listen=%s StreamNum=%d groups=%v links=%d actualTotal=%d mode=%s peerType=%s peer=%s wrap=%v watchdog=%ds",
+		listenAddr, int(n), counts, len(links), totalStreams, mode, peerType, peerAddr, wrapKey != nil, watchdogTimeout)
 
 	// ── DNS resolution ────────────────────────────────────────────────────────
 	peer, err := resolvePeer(peerAddr)
@@ -1790,25 +1790,23 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 	// ── Pre-fetch credentials for all groups ─────────────────────────────────
 	// Done before VPN tunnel is established so any captcha WebView runs over
 	// the physical network. vkSemaphore(2) allows pairs of groups to fetch in
-	// parallel. WorkerGroups will get cache hits on their first cycle and start
-	// streams immediately without waiting for another VK round-trip.
+	// parallel — taken by the fetch itself (getCredsCached), so a group whose
+	// credential is cached is not held behind two that go to VK. WorkerGroups
+	// will get cache hits on their first cycle and start streams immediately
+	// without waiting for another VK round-trip.
 	turnLog("[PROXY] Pre-fetching credentials for %d group(s)...", len(links))
+	prefetchNetwork := currentNetworkStamp() // prefetchOutcomeCode: whose failures they were
 	var prefetchWg sync.WaitGroup
 	var callRequiresAuth int32 // set to 1 if any group gets error_code 9005
 	var prefetchOk int32       // set to 1 if any group succeeds
 	var prefetchLockout int32  // set to 1 if any group hits the global lockout
 	var callUnavailable int32  // set to 1 if any group's call is dead/deleted/invalid link
+	var ownNetworkFails int32  // groups whose fetch found this network carrying nothing to VK
 	for i, lk := range links {
 		prefetchWg.Add(1)
 		go func(groupID int, link string) {
 			defer prefetchWg.Done()
-			select {
-			case vkSemaphore <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
 			_, _, _, prefetchErr := fetchCreds(ctx, link, groupID)
-			<-vkSemaphore
 			if prefetchErr != nil {
 				if ctx.Err() == nil {
 					if strings.Contains(prefetchErr.Error(), "CALL_REQUIRES_AUTH") {
@@ -1821,6 +1819,9 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 						turnErrorLog("[PROXY] Pre-fetch group %d failed: %v (WorkerGroup will retry)", groupID, prefetchErr)
 						if strings.Contains(prefetchErr.Error(), "CAPTCHA_WAIT_REQUIRED") {
 							atomic.StoreInt32(&prefetchLockout, 1)
+						}
+						if isVKCallsOwnNetwork(prefetchErr) {
+							atomic.AddInt32(&ownNetworkFails, 1)
 						}
 					}
 				}
@@ -1845,6 +1846,16 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		cancel()
 		return -3 // distinct code: captcha lockout — caller must not retry other stream counts
 	}
+	if ctx.Err() == nil {
+		code := prefetchOutcomeCode(len(links), int(atomic.LoadInt32(&ownNetworkFails)),
+			credsObtained.Load(), vkConnsHeard.Load() != vkHeardAtStart,
+			!currentNetworkStamp().same(prefetchNetwork))
+		if code != 0 {
+			turnErrorLog("[PROXY] Every pre-fetch found this network carrying nothing to VK — giving up now, not after the startup timeout")
+			cancel()
+			return code
+		}
+	}
 
 	// ── Launch groups ─────────────────────────────────────────────────────────
 	_, okChan, done, err := StartTunnelGroups(ctx, packetLc, TunnelGroupsConfig{
@@ -1855,8 +1866,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, modeC *C.char, n C.int
 		TurnIP:          turnIp,
 		TurnPort:        turnPort,
 		ExtraRelays:     extraRelays,
-		StreamsPerGroup: perCred,
-		TotalStreams:    totalStreams,
+		GroupStreams:    counts,
 		Cert:            &cert,
 		SessionID:       sessionID,
 		WatchdogTimeout: watchdogTimeout,

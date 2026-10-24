@@ -365,7 +365,7 @@ func (s *stream) parkInTheDark(ctx context.Context, attempt *attemptHandle, st *
 					turnLog("[WORKER %d] its turn to scout the dark path over %s: dialing it while the others wait",
 						s.id, relayTransportLabel(attempt.overTCP))
 				}
-				st.failStreak = 0
+				st.reset()
 				st.scouting = true
 				return false
 			}
@@ -384,7 +384,7 @@ func (s *stream) parkInTheDark(ctx context.Context, attempt *attemptHandle, st *
 	if !awaitRevivalSlot(attempt.ctx, time.Now().Add(pathDarkParkMax)) && ctx.Err() != nil {
 		return true
 	}
-	st.failStreak = 0
+	st.reset()
 	turnLog("[WORKER %d] %s — reconnecting after %v parked", s.id, why, time.Since(start).Round(100*time.Millisecond))
 	return false
 }

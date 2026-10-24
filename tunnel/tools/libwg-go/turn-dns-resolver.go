@@ -20,8 +20,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -129,8 +131,17 @@ func activeDNSServers() []DNSServer {
 	return dnsServers
 }
 
+// dnsListGen moves whenever the resolver list does. A network report that keeps
+// the network but brings it other resolvers (a new DHCP lease) is a network
+// event to the early -5 all the same: the prefetch's last lookups may have
+// failed on the list just replaced (networkStamp, Codex review 23.10).
+var dnsListGen atomic.Uint64
+
 func setDNSServers(servers []DNSServer) {
 	dnsServersMu.Lock()
+	if !slices.Equal(dnsServers, servers) {
+		dnsListGen.Add(1)
+	}
 	dnsServers = servers
 	dnsServersMu.Unlock()
 }

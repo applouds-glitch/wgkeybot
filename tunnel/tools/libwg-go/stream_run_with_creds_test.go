@@ -19,10 +19,10 @@ import (
 // "session ended badly" so it can be acted on immediately.
 func TestSessionOutcomeSeparatesHandshakeFailureFromAnyOtherError(t *testing.T) {
 	hs := fmt.Errorf("SRTP handshake failed: %w", errDataPlaneHandshake)
-	if got := sessionOutcome(false, false, time.Second, hs); got != verdictHandshakeFailure {
+	if got := sessionOutcome(false, noBlackhole, time.Second, 0, hs); got != verdictHandshakeFailure {
 		t.Fatalf("data-plane handshake failure read as %v", got)
 	}
-	if got := sessionOutcome(false, false, time.Second, errors.New("relay TX: broken pipe")); got != verdictFailure {
+	if got := sessionOutcome(false, noBlackhole, time.Second, 0, errors.New("relay TX: broken pipe")); got != verdictFailure {
 		t.Fatalf("an ordinary short failure read as %v", got)
 	}
 }
@@ -31,16 +31,16 @@ func TestSessionOutcomeSeparatesHandshakeFailureFromAnyOtherError(t *testing.T) 
 // says nothing, a blackhole is the clearest failure there is, and a session that
 // ran long enough proves the host works.
 func TestSessionOutcomeKeepsTheExistingVerdicts(t *testing.T) {
-	if got := sessionOutcome(true, true, time.Second, errDataPlaneHandshake); got != verdictNone {
+	if got := sessionOutcome(true, blackholeRelay, time.Second, 0, errDataPlaneHandshake); got != verdictNone {
 		t.Fatalf("a teardown was charged to the server: %v", got)
 	}
-	if got := sessionOutcome(false, true, time.Second, nil); got != verdictFailure {
+	if got := sessionOutcome(false, blackholeRelay, time.Second, 0, nil); got != verdictFailure {
 		t.Fatalf("a blackholed allocation read as %v", got)
 	}
-	if got := sessionOutcome(false, false, healthySessionDuration, nil); got != verdictSuccess {
+	if got := sessionOutcome(false, noBlackhole, healthySessionDuration, 0, nil); got != verdictSuccess {
 		t.Fatalf("a healthy session read as %v", got)
 	}
-	if got := sessionOutcome(false, false, time.Second, nil); got != verdictNone {
+	if got := sessionOutcome(false, noBlackhole, time.Second, 0, nil); got != verdictNone {
 		t.Fatalf("a clean short session read as %v", got)
 	}
 }
@@ -58,26 +58,26 @@ func TestSessionOutcomeTakesTheSilenceOffADeadStream(t *testing.T) {
 	// Handshake, then nothing: the detector fires at deadStreamTimeout and a bit.
 	// Not a success — and not a failure either: one deaf stream does not say
 	// whose fault it was (see sessionOutcome).
-	if got := sessionOutcome(false, false, deadStreamTimeout+5*time.Second, deaf); got != verdictNone {
+	if got := sessionOutcome(false, noBlackhole, deadStreamTimeout+5*time.Second, 0, deaf); got != verdictNone {
 		t.Fatalf("a relay that went silent right after the handshake read as %v", got)
 	}
 	// Wrapped on its way up, it is still what it is.
-	if got := sessionOutcome(false, false, deadStreamTimeout+5*time.Second, fmt.Errorf("session: %w", deaf)); got != verdictNone {
+	if got := sessionOutcome(false, noBlackhole, deadStreamTimeout+5*time.Second, 0, fmt.Errorf("session: %w", deaf)); got != verdictNone {
 		t.Fatalf("a wrapped dead-stream read as %v", got)
 	}
 	// Heard for a healthy while first: the relay did work.
-	if got := sessionOutcome(false, false, healthySessionDuration+deadStreamTimeout, deaf); got != verdictSuccess {
+	if got := sessionOutcome(false, noBlackhole, healthySessionDuration+deadStreamTimeout, 0, deaf); got != verdictSuccess {
 		t.Fatalf("a relay heard for %v before it went silent read as %v", healthySessionDuration, got)
 	}
-	if got := sessionOutcome(false, false, healthySessionDuration+deadStreamTimeout-time.Second, deaf); got != verdictNone {
+	if got := sessionOutcome(false, noBlackhole, healthySessionDuration+deadStreamTimeout-time.Second, 0, deaf); got != verdictNone {
 		t.Fatalf("a relay heard for just under %v read as %v", healthySessionDuration, got)
 	}
 	// Any other error leaves the length as it was.
-	if got := sessionOutcome(false, false, deadStreamTimeout+5*time.Second, errors.New("relay TX: broken pipe")); got != verdictSuccess {
+	if got := sessionOutcome(false, noBlackhole, deadStreamTimeout+5*time.Second, 0, errors.New("relay TX: broken pipe")); got != verdictSuccess {
 		t.Fatalf("a long session with another error read as %v", got)
 	}
 	// A blackhole is still the clearest failure there is, deaf or not.
-	if got := sessionOutcome(false, true, deadStreamTimeout+5*time.Second, deaf); got != verdictFailure {
+	if got := sessionOutcome(false, blackholeRelay, deadStreamTimeout+5*time.Second, 0, deaf); got != verdictFailure {
 		t.Fatalf("a blackholed allocation that also went deaf read as %v", got)
 	}
 }
@@ -131,7 +131,7 @@ func TestFreezeResetDoesNotShortenTheSilence(t *testing.T) {
 	if dead.silent < 5*time.Minute {
 		t.Fatalf("silent for %v: counted from the freeze reset, not from the last packet", dead.silent)
 	}
-	if got := sessionOutcome(false, false, 5*time.Minute, dead); got != verdictNone {
+	if got := sessionOutcome(false, noBlackhole, 5*time.Minute, 0, dead); got != verdictNone {
 		t.Fatalf("a session that heard nothing in five minutes read as %v", got)
 	}
 }

@@ -17,7 +17,36 @@ import (
 const (
 	deafRelay    = "193.203.43.37:19302"
 	witnessRelay = "95.163.34.166:19302"
+	// deafPeer is the server behind the relays the staged sessions run to.
+	deafPeer = "203.0.113.7:56000"
 )
+
+// Two deaf sessions under one server and a third after the tunnel moved to
+// another server on the same network: not a verdict — the rest it would give
+// is the relay's from the second server, and the second has seen one. The
+// count starts over with the server, as with the network.
+func TestRelayDeafCountStartsOverWithAnotherServer(t *testing.T) {
+	var j relayDeafJudge
+	at := fieldClock(t, "06:31:39")
+	under := func(peer string, d deafSession) deafSession { d.peer = peer; return d }
+	for i := 0; i < relayDeafStrikes-1; i++ {
+		if n, v := j.note(under(deafPeer, deafOn(deafRelay, at.Add(time.Duration(i)*time.Second)))); n != i+1 || v != nil {
+			t.Fatalf("death %d under the first server: counted %d, verdict %+v", i+1, n, v)
+		}
+	}
+	other := "198.51.100.9:56000"
+	if n, v := j.note(under(other, deafOn(deafRelay, at.Add(10*time.Second)))); n != 1 || v != nil {
+		t.Fatalf("first death under another server: counted %d, verdict %+v — the first server's deaths carried over", n, v)
+	}
+	// And the same server throughout is a verdict, as before.
+	var same relayDeafJudge
+	for i := 0; i < relayDeafStrikes; i++ {
+		n, v := same.note(under(deafPeer, deafOn(deafRelay, at.Add(time.Duration(i)*time.Second))))
+		if (v != nil) != (i == relayDeafStrikes-1) || n != i+1 {
+			t.Fatalf("death %d under one server: counted %d, verdict %+v", i+1, n, v)
+		}
+	}
+}
 
 // deafOn is a UDP session found deaf on relay at at, with a witness on the
 // other relay and somewhere to go.
@@ -221,6 +250,22 @@ func withCleanRelayDeaf(t *testing.T) {
 	withCleanRelayRest(t)
 	resetRelayDeaf()
 	t.Cleanup(resetRelayDeaf)
+	// A real silence of the whole path, left by any test that ran relays
+	// before this one, must not excuse the deaths these tests stage.
+	withPathGapEnd(t, time.Time{})
+}
+
+// withPathGapEnd makes at the end of the last silence of the whole UDP path for
+// this test (the zero time: none), and puts the real record back after it.
+func withPathGapEnd(t *testing.T, at time.Time) {
+	t.Helper()
+	prev := relayGapEndAt[0].Load()
+	t.Cleanup(func() { relayGapEndAt[0].Store(prev) })
+	if at.IsZero() {
+		relayGapEndAt[0].Store(0)
+		return
+	}
+	relayGapEndAt[0].Store(int64(at.Sub(relayHeardBase)))
 }
 
 // Three sessions deaf on one relay while a stream on the other keeps hearing
@@ -238,7 +283,7 @@ func TestDeafSessionsRestTheRelayAndMoveItsSessions(t *testing.T) {
 	for i, id := range []int{8, 2, 0} {
 		s, h := deafStream(t, id, deafRelay, link, false)
 		last = h
-		noteDeafSession(s, deafRelay, false, deaf, now, now.Add(time.Duration(i)*time.Second))
+		noteDeafSession(s, deafRelay, deafPeer, false, deaf, now, now.Add(time.Duration(i)*time.Second))
 		if resting := relayResting(deafRelay, now); resting != (i == 2) {
 			t.Fatalf("after deaf session %d: resting = %v", i+1, resting)
 		}
@@ -259,14 +304,17 @@ func TestDeafSessionsWithoutAVerdictLeaveTheRelayInRotation(t *testing.T) {
 	link := []string{deafRelay, witnessRelay}
 	deaf := &deadStreamError{silent: deadStreamTimeout}
 	cases := map[string]struct {
-		overTCP, cancelled, witness bool
-		err                         error
+		overTCP, cancelled, witness, pathGap bool
+		err                                  error
 	}{
 		"over TCP":       {overTCP: true, witness: true, err: deaf},
 		"no witness":     {err: deaf},
 		"ended by us":    {cancelled: true, witness: true, err: deaf},
 		"a freeze in it": {witness: true, err: &deadStreamError{silent: deadStreamTimeout, froze: true}},
-		"not deaf":       {witness: true, err: errors.New("relay RX: read: connection refused")},
+		// The witness was dark too and has just been heard again: the whole
+		// path's silence, not this relay's (Codex review, 23.10).
+		"a whole-path silence in it": {witness: true, pathGap: true, err: deaf},
+		"not deaf":                   {witness: true, err: errors.New("relay RX: read: connection refused")},
 		"the phone's network": {witness: true,
 			err: errors.Join(deaf, fmt.Errorf("relay TX: %w", syscall.ENETUNREACH))},
 	}
@@ -277,9 +325,12 @@ func TestDeafSessionsWithoutAVerdictLeaveTheRelayInRotation(t *testing.T) {
 			if c.witness {
 				liveStream(t, 1, witnessRelay, false, now.Add(-5*time.Minute), now.Add(-5*time.Second))
 			}
+			if c.pathGap {
+				withPathGapEnd(t, now.Add(-deadStreamTimeout/2))
+			}
 			for i := 0; i < 2*relayDeafStrikes; i++ {
 				s, _ := deafStream(t, 2*i, deafRelay, link, c.overTCP)
-				noteDeafSession(s, deafRelay, c.cancelled, c.err, now, now)
+				noteDeafSession(s, deafRelay, deafPeer, c.cancelled, c.err, now, now)
 			}
 			if relayResting(deafRelay, now) {
 				t.Fatal("the relay is resting")
@@ -309,5 +360,31 @@ func TestDeadStreamSaysWhetherTheSilenceHadAFreezeInIt(t *testing.T) {
 		default:
 			t.Fatalf("freeze %v: the detector returned without reporting", froze)
 		}
+	}
+}
+
+// A judge whose proxy has stopped moves nothing: the sessions booked on the
+// relay by then may be the next proxy's (Codex review of the iOS port, 22.10).
+func TestACancelledJudgeMovesNoSession(t *testing.T) {
+	withCleanRelayRest(t)
+	withCleanRelayLossy(t)
+	s, h := movingSessionOn(t, moveR42, []string{moveR42, moveR179})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	restJudgedRelays(ctx, []relayVerdict{{relay: moveR42, rate: 0.05}}, time.Now())
+	if out := recycleRelaySessions(ctx, moveR42, time.Now(), nil); out.moved != 0 {
+		t.Fatalf("a cancelled judge moved %d session(s)", out.moved)
+	}
+	restDeafRelay(ctx, relayDeafVerdict{relay: moveR42, deaths: relayDeafStrikes}, 1, time.Now())
+	if relayResting(moveR42, time.Now()) {
+		t.Fatal("a cancelled judge rested the relay")
+	}
+	if s.move.Load() != nil {
+		t.Fatal("a cancelled judge left a move on the session")
+	}
+	select {
+	case <-h.ctx.Done():
+		t.Fatal("a cancelled judge recycled the session")
+	case <-time.After(relayRecycleGap + 100*time.Millisecond):
 	}
 }

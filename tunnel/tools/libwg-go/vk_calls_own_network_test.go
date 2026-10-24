@@ -405,3 +405,38 @@ func TestFetchVkCredsAsksForTheLegacyHostAfresh(t *testing.T) {
 		t.Errorf("the failed lookup left %v cached, want the earlier answer kept", cached)
 	}
 }
+
+// Field log 23.10: a stop during the captcha-free flow read as that flow
+// failing, "falling back to legacy captcha path", and the legacy chain was
+// entered only to fail on the cancellation. login.vk.ru resolves here, so only
+// the stop stands between the fetch and the legacy chain.
+func TestFetchVkCredsStoppedMidFlowSkipsLegacy(t *testing.T) {
+	withOwnNetworkBudget(t, 50*time.Millisecond, 5*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	withFakeDNS(t, fakeServers("192.168.1.1"),
+		func(_ context.Context, domain string, _ DNSServer) ([]string, error) {
+			if domain == vkLegacyFirstHost {
+				return []string{"127.0.0.1"}, nil
+			}
+			cancel() // the stop lands while the flow resolves its first host
+			return nil, errors.New("i/o timeout")
+		})
+	for _, host := range []string{vkCallsAPIHost, vkLegacyFirstHost} {
+		hostCache.Forget(host)
+	}
+	t.Cleanup(func() {
+		for _, host := range []string{vkCallsAPIHost, vkLegacyFirstHost} {
+			hostCache.Forget(host)
+		}
+	})
+	legacy := stubLegacyChain(t)
+
+	_, _, _, _, err := fetchVkCreds(ctx, "link")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want the cancellation back, got %v", err)
+	}
+	if n := legacy(); n != 0 {
+		t.Fatalf("legacy chain entered %d times after the stop", n)
+	}
+}

@@ -26,7 +26,8 @@ const (
 
 // vkSemaphore limits concurrent VK API credential fetches across all groups.
 // A limit of 2 lets pairs of groups fetch in parallel while avoiding
-// hammering VK with unbounded concurrent authentication requests.
+// hammering VK with unbounded concurrent authentication requests. Taken by
+// getCredsCached on a miss only, never around a lookup (see there).
 var vkSemaphore = make(chan struct{}, 2)
 
 // allocSlots bounds concurrent TURN Allocate() handshakes per relay. Without it,
@@ -179,14 +180,9 @@ func runWorker(ctx context.Context, cfg WorkerGroupConfig, s *stream, stagger ti
 
 		// Fetch credentials via the shared cache. A cache hit is cheap (no VK
 		// call); on a miss the per-slot lock single-flights the fetch so the
-		// group's workers don't stampede VK.
-		select {
-		case vkSemaphore <- struct{}{}:
-		case <-ctx.Done():
-			return
-		}
+		// group's workers don't stampede VK, and the fetch takes vkSemaphore
+		// itself (getCredsCached).
 		user, pass, addrs, err := fetchCreds(ctx, cfg.Link, cfg.GroupID)
-		<-vkSemaphore
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -277,12 +273,22 @@ var workerWaits = func(workerWait) {}
 // workerBackoff is what one attempt leaves for the next.
 type workerBackoff struct {
 	failStreak int
+	// failedHeads are the heads the attempts of this streak started on. A head
+	// change resets the streak only to a relay not among them (attemptOnce);
+	// reset forgets them with the streak.
+	failedHeads map[string]struct{}
 	// The credential that has had its one more try after a 486 beside a relay
 	// that never answered (see quotaBesideSilence).
 	quotaGraceUsed string
 	// scouting: the next attempt is this worker's turn to dial a dark path
 	// (dark_scout.go).
 	scouting bool
+}
+
+// reset ends the streak: the next failure starts a new one, on any relay.
+func (st *workerBackoff) reset() {
+	st.failStreak = 0
+	clear(st.failedHeads)
 }
 
 // attemptOnce runs one attempt of the worker's loop — the session, and the wait
@@ -329,12 +335,7 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 	// Just moved off a rested relay: the head the move picked first, the relays
 	// losing in that window last (relay_move.go).
 	now := time.Now()
-	ordered := streamAttemptOrderAround(user, addrs, s.id, attemptCfg, now, s.takeMove(now))
-	// A relay this stream's handshakes keep failing on while others hear it:
-	// last, for this stream only (relay_heard_by_others.go).
-	if avoid := s.avoidedRelay(); avoid != "" {
-		ordered = relayLast(ordered, avoid)
-	}
+	ordered := s.attemptOrder(user, addrs, attemptCfg, now, s.takeMove(now))
 	attemptHead := ordered[0]
 
 	// The session and its race get a context of their own, ended with them: a
@@ -367,7 +368,7 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 		// Recycled by a move to another network or relay transport (see
 		// network_switch.go), or off a relay that is being rested
 		// (relay_rest.go): not a failure of anything, so reconnect at once.
-		st.failStreak = 0
+		st.reset()
 		return false
 	}
 	if !isNetworkAvailable() {
@@ -382,7 +383,7 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 		// servers afresh) after a brief delay, with the backoff reset (avoids
 		// a hot loop if the server keeps closing immediately).
 		turnLog("[WORKER %d] Stream closed by server → reconnecting", s.id)
-		st.failStreak = 0
+		st.reset()
 		select {
 		case <-time.After(time.Duration(500+rand.Intn(500)) * time.Millisecond):
 		case <-ctx.Done():
@@ -434,9 +435,13 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 	// fresh failure (reset the backoff) rather than as part of a failure
 	// streak.
 	if sessionDur > 60*time.Second {
-		st.failStreak = 0
+		st.reset()
 	} else {
 		st.failStreak++
+		if st.failedHeads == nil {
+			st.failedHeads = map[string]struct{}{}
+		}
+		st.failedHeads[attemptHead] = struct{}{}
 	}
 
 	// A failure on a server the next attempt will not even dial is not a
@@ -446,8 +451,27 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 	// that failed twice on a dead relay waited 7-17s before trying the
 	// working one — most of TunnelManager's 25s connect budget, spent
 	// sleeping next to a server that was already known to work.
-	if streamAttemptOrder(user, addrs, s.id, cfg, time.Now())[0] != attemptHead {
-		st.failStreak = 0
+	//
+	// The next attempt's head by the rule the next attempt dials by, the relay
+	// this stream avoids included — as it stands now, after this attempt's own
+	// failure may have changed it. Without it, a stream avoiding the head the
+	// spread gives it (relay_heard_by_others.go) had a "new" head after every
+	// failure and redialed in under a second however often it failed, for as
+	// long as the avoidance lasted. A move's head is not reapplied: it is for
+	// the one attempt after the move, and that was this one.
+	//
+	// And only to a relay this streak has not started on (failedHeads): it has
+	// had its first attempt, and the streak is its as much as the other's. A
+	// stream failing its handshakes under the alibi on both of its relays had a
+	// new head after every failure otherwise — the avoidance of one relay ends
+	// with the first failure on the other (flowFailRun counts one relay), the
+	// spread's head is back, and after two failures there it is avoided again
+	// — and so a streak that never grew past its first step. The set lives as
+	// long as the streak: reset forgets it, this reset keeps it.
+	if next := s.attemptOrder(user, addrs, attemptCfg, time.Now(), nil)[0]; next != attemptHead {
+		if _, failed := st.failedHeads[next]; !failed {
+			st.failStreak = 0
+		}
 	}
 
 	retryDelay := reconnectDelay(st.failStreak)
@@ -481,7 +505,7 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 		note = " (one more try on these creds)"
 	} else if isQuotaError(runErr) {
 		if credsReplaced(cfg.GroupID, user) {
-			st.failStreak = 0
+			st.reset()
 			retryDelay = reconnectDelay(st.failStreak)
 			note = " (on replaced creds)"
 		} else {
@@ -525,7 +549,7 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 		if !awaitRevivalSlot(attempt.ctx, deadline) && ctx.Err() != nil {
 			return true
 		}
-		st.failStreak = 0
+		st.reset()
 		if early := time.Until(deadline); early > 0 && !attempt.moved() {
 			turnLog("[WORKER %d] another stream's session got through — the path to the relays is back: reconnecting now, %v early",
 				s.id, early.Round(100*time.Millisecond))
@@ -534,9 +558,23 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 		return true
 	}
 	if attempt.moved() {
-		st.failStreak = 0
+		st.reset()
 	}
 	return false
+}
+
+// attemptOrder is the order an attempt of this stream on user's credential
+// dials addrs in: streamAttemptOrderAround — move is the head of a move off a
+// rested relay, nil for none — with the relay this stream's handshakes keep
+// failing on while others hear it put last, for this stream only
+// (relay_heard_by_others.go). The attempt's own order and the check of whether
+// the next one starts elsewhere (attemptOnce) are both this.
+func (s *stream) attemptOrder(user string, addrs []string, cfg WorkerGroupConfig, now time.Time, move *relayMove) []string {
+	ordered := streamAttemptOrderAround(user, addrs, s.id, cfg, now, move)
+	if avoid := s.avoidedRelay(); avoid != "" {
+		ordered = relayLast(ordered, avoid)
+	}
+	return ordered
 }
 
 const (

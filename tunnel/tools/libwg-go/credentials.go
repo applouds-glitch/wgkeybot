@@ -67,8 +67,9 @@ const (
 	credRefreshThrottle = 15 * time.Second
 )
 
-// streamsPerCred — number of streams sharing one credential cache slot.
-// Also used as StreamsPerGroup in StartTunnelGroups.
+// streamsPerCred is the configured capacity of one credential group. Groups
+// may be smaller; fetchCreds still maps groupID*streamsPerCred back to groupID.
+// It is also the default group size in StartTunnelGroups.
 //
 // Stored atomically because wgTurnProxyStart writes it for the session it is
 // starting while workers of the previous session — cancelled, but not yet
@@ -120,12 +121,76 @@ func getStreamCache(streamID int) *StreamCredentialsCache {
 	return cache
 }
 
+// droppedCreds is every TURN username this process has dropped
+// (invalidateAllCaches). A credential the file still holds under one of them
+// is not taken back (adoptStoredCreds). Process memory, as the drop itself is.
+var droppedCreds = struct {
+	sync.Mutex
+	users map[string]bool
+}{users: map[string]bool{}}
+
+// wasDropped reports whether c is an identity this process has dropped.
+func wasDropped(c TurnCredentials) bool {
+	if c.Username == "" {
+		return false
+	}
+	droppedCreds.Lock()
+	defer droppedCreds.Unlock()
+	return droppedCreds.users[c.Username]
+}
+
 // invalidateAllCaches clears all credential caches, so the next fetch in every
 // group goes to VK for a new identity (see wgTurnDropCredentials).
+//
+// The file is cleared too, but that alone did not keep the identity from
+// coming back: a write that failed leaves the old file in place (saveTurnCreds
+// only logs it), and a fetch that put its credential in the slot just before
+// the drop and wrote the file just after puts it back on disk. Either way the
+// next start read the dropped identity from disk, and the handshake watchdog's
+// second step — new credentials — did nothing at all (Codex review, 23.10). So
+// the identities the drop is for are named and kept: those the file was last
+// written with (the mirror), those the file itself holds, and those the slots
+// hold — not a time, which the wall clock can step past either way and the file
+// keeps to the millisecond. The file's own, because the mirror only says what
+// the last write was for: a slot that moved from A to B whose write of B
+// failed leaves A in the file, and a clear that fails too would hand A to the
+// next start (Codex review, 23.10). A fetch under way at the drop brings a
+// username it has not named, a new identity, and is taken. A slot whose lock
+// is held is fetching or serving a hit, and what it holds the mirror names.
 func invalidateAllCaches() {
 	credentialsStore.mu.Lock()
+	old := credentialsStore.caches
 	credentialsStore.caches = make(map[int]*StreamCredentialsCache)
 	credentialsStore.mu.Unlock()
+
+	mode, mirror := turnCredsOnDisk.snapshot()
+	var users []string
+	for _, c := range mirror {
+		users = append(users, c.Username)
+	}
+	if path := turnCredsPath(); path != "" {
+		// Before the clear below rewrites it. Unreadable, it holds nothing
+		// the next start could take either.
+		if onDisk, err := readTurnCreds(path, mode, time.Now()); err == nil {
+			for _, c := range onDisk {
+				users = append(users, c.Username)
+			}
+		}
+	}
+	for _, cache := range old {
+		if cache.mutex.TryRLock() {
+			users = append(users, cache.creds.Username)
+			cache.mutex.RUnlock()
+		}
+	}
+	droppedCreds.Lock()
+	for _, u := range users {
+		if u != "" {
+			droppedCreds.users[u] = true
+		}
+	}
+	droppedCreds.Unlock()
+
 	// On disk as well: the new identity is wanted after the process's death too.
 	clearSlotCreds()
 	saveTurnCreds(time.Now())
@@ -238,8 +303,9 @@ type getCredsFunc func(context.Context, string, int) (string, string, []string, 
 // getCredsCached checks cache, then calls fn directly. The per-slot cache.mutex
 // serialises concurrent misses for the same slot (single-flight: the first
 // caller fetches, the rest get a cache hit), and vkSemaphore bounds VK API
-// concurrency across slots. Uses the TTL returned by the fetch function to set
-// ExpiresAt, capped at defaultCycleSecs.
+// concurrency across slots — taken here, on a miss and under the slot's lock,
+// and nowhere else (see below). Uses the TTL returned by the fetch function to
+// set ExpiresAt, capped at defaultCycleSecs.
 func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc) (string, string, []string, error) {
 	cache := getStreamCache(streamID)
 	cacheID := getCacheID(streamID)
@@ -252,20 +318,45 @@ func getCredsCached(ctx context.Context, link string, streamID int, fn fetchFunc
 	if cache.creds.Link == link && time.Now().Before(cache.creds.ExpiresAt) {
 		return cache.creds.Username, cache.creds.Password, cache.creds.ServerAddrs, nil
 	}
-
-	if !cache.creds.FetchedAt.IsZero() {
-		turnLog("[STREAM %d] Cache miss (cache=%d) — %s, fetching...",
-			streamID, cacheID, cacheMissReason(cache.creds, link, time.Now()))
-	} else {
-		turnLog("[STREAM %d] Cache miss (cache=%d), fetching...", streamID, cacheID)
+	// A worker that waited on the lock above for a fetch the stop cancelled
+	// finds the slot as empty as before, and used to announce a fetch it never
+	// made: a stop during a fetch left one "cache miss, fetching..." per waiting
+	// stream (field log 23.10: eight).
+	if ctx.Err() != nil {
+		return "", "", nil, ctx.Err()
 	}
+
+	// Named by its group: streamID is groupID*streamsPerCred (fetchCreds) — the
+	// first stream of a full-capacity group, and with the smaller groups of
+	// groupStreamCounts a stream that does not exist.
+	if !cache.creds.FetchedAt.IsZero() {
+		turnLog("[Auth] Group %d: cache miss — %s, fetching...",
+			cacheID, cacheMissReason(cache.creds, link, time.Now()))
+	} else {
+		turnLog("[Auth] Group %d: cache miss, fetching...", cacheID)
+	}
+
+	// What vkSemaphore bounds is a request to VK, so it is taken for this one
+	// and not around the lookup above. Held around every lookup — runWorker and
+	// the prefetch used to take it before calling in — a cache hit queued behind
+	// whoever held the two tokens: a slot whose VK fetch can run for minutes and
+	// a sibling of that slot waiting on its lock were both, and every worker of
+	// every other group then waited that fetch out before it
+	// could read a credential of its own that was good all along. Taken under
+	// the slot's lock, never the other way round: the lock is what makes the
+	// rest of the slot's workers wait for this fetch instead of making their
+	// own, and holding no token while they wait is the point.
 	select {
+	case vkSemaphore <- struct{}{}:
 	case <-ctx.Done():
 		return "", "", nil, ctx.Err()
-	default:
 	}
-
+	if ctx.Err() != nil { // both were ready, and select picked the token
+		<-vkSemaphore
+		return "", "", nil, ctx.Err()
+	}
 	user, pass, addrs, lifetimeSecs, err := fn(ctx, link)
+	<-vkSemaphore
 	if err != nil {
 		return "", "", nil, err
 	}

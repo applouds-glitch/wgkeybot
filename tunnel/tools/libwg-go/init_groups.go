@@ -63,19 +63,16 @@ func noteDispatchDrop(anyReady bool) {
 
 // TunnelGroupsConfig — configuration for launching multiple WorkerGroups.
 type TunnelGroupsConfig struct {
-	Links           []string
-	PeerAddr        *net.UDPAddr
-	PeerType        string
-	UseUDP          bool
-	TurnIP          string
-	TurnPort        int
-	ExtraRelays     []string
-	StreamsPerGroup int
-	// TotalStreams is the stream count to spread over Links. It may be less
-	// than len(Links)*StreamsPerGroup, in which case the last group is short —
-	// StreamsPerGroup is a group's capacity, not its guaranteed size. Zero
-	// means "fill every group", the old behaviour.
-	TotalStreams    int
+	Links       []string
+	PeerAddr    *net.UDPAddr
+	PeerType    string
+	UseUDP      bool
+	TurnIP      string
+	TurnPort    int
+	ExtraRelays []string
+	// GroupStreams gives the size of each group in Links order; it may use
+	// fewer links. Empty means one full-capacity group per link.
+	GroupStreams    []int
 	Cert            *tls.Certificate
 	SessionID       []byte
 	WatchdogTimeout int
@@ -92,9 +89,19 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	if len(cfg.Links) == 0 {
 		return nil, nil, nil, fmt.Errorf("no links provided")
 	}
-	n := cfg.StreamsPerGroup
-	if n <= 0 {
-		n = streamsPerCredValue()
+	counts := cfg.GroupStreams
+	if len(counts) == 0 {
+		counts = groupStreamCounts(len(cfg.Links), streamsPerCredValue(), 0)
+	}
+	if len(counts) > len(cfg.Links) {
+		return nil, nil, nil, fmt.Errorf("more stream groups than links: %d > %d", len(counts), len(cfg.Links))
+	}
+	totalStreams := 0
+	for gi, count := range counts {
+		if count < 1 {
+			return nil, nil, nil, fmt.Errorf("group %d has invalid stream count %d", gi, count)
+		}
+		totalStreams += count
 	}
 	wd := cfg.WatchdogTimeout
 	dispatchDropCount.Store(0)
@@ -114,10 +121,6 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 		})
 	}
 
-	totalStreams := cfg.TotalStreams
-	if totalStreams <= 0 || totalStreams > len(cfg.Links)*n {
-		totalStreams = len(cfg.Links) * n
-	}
 	// Terminal-failure accounting: the session is only reported as dead once every
 	// one of these workers has given up for good (see turn_fatal.go).
 	resetWorkerFatalState(totalStreams)
@@ -192,18 +195,10 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 	groupsWg.Add(1)
 	go func() {
 		defer groupsWg.Done()
-		for gi, link := range cfg.Links {
-			// The last group is short whenever TotalStreams isn't a multiple of n.
-			// Checked before the cascade sleep so a group with nothing to run
-			// doesn't cost 2s on startup.
-			start := gi * n
-			if start >= totalStreams {
-				break
-			}
-			end := start + n
-			if end > totalStreams {
-				end = totalStreams
-			}
+		start := 0
+		for gi, count := range counts {
+			link := cfg.Links[gi]
+			end := start + count
 
 			if gi > 0 {
 				// Cascading group launch (see groupLaunchStagger). Abandoned on
@@ -236,6 +231,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 				WorkerGroup(gCtx, groupCfg, groupStreams)
 			}()
 			turnLog("[INIT] Group %d started (streams %d-%d)", gi, start, end-1)
+			start = end
 		}
 	}()
 

@@ -159,24 +159,49 @@ func TestOnlyA486OnFreshCredentialsPausesMinting(t *testing.T) {
 func TestOutOfReachSessionOrphansItsRelay(t *testing.T) {
 	resetAllocationBook(t)
 	now := time.Now()
-	for name, err := range map[string]error{
-		"probe":     &deadStreamError{silent: time.Minute, probe: true, listened: 30 * time.Second},
-		"wrapped":   fmt.Errorf("the relay connection is no longer read: %w", &deadStreamError{probe: true}),
-		"blackhole": errors.New("TURN blackhole: Failed to refresh permissions: CreatePermission error response (error 400: Bad Request)"),
-		"check":     errors.New("TURN blackhole: allocation check after thaw: CreatePermission error response (error 400: Bad Request)"),
+	// What the watchdog fired on, as the session would have seen it.
+	watch := func(lines ...string) *permWatch {
+		w := newPermWatch(1)
+		for _, l := range lines {
+			w.note(l)
+		}
+		return w
+	}
+	checked := newPermWatch(1)
+	checked.markOutOfReach("allocation check after thaw: CreatePermission error response (error 400: Bad Request)")
+	closed := errors.New("relay RX: read udp: use of closed network connection")
+	for name, c := range map[string]struct {
+		perm *permWatch
+		err  error
+	}{
+		"probe":   {nil, &deadStreamError{silent: time.Minute, probe: true, listened: 30 * time.Second}},
+		"wrapped": {nil, fmt.Errorf("the relay connection is no longer read: %w", &deadStreamError{probe: true})},
+		"refresh": {watch(logPermFail400), closed},
+		"check":   {checked, closed},
 	} {
-		if !outOfReachError(err) {
-			t.Errorf("%s: %v not read as out of reach", name, err)
+		if !sessionOutOfReach(sessionBlackhole(c.perm), c.err) {
+			t.Errorf("%s: not read as out of reach", name)
 		}
 	}
-	for name, err := range map[string]error{
-		"detector":  &deadStreamError{silent: 90 * time.Second},
-		"transport": errors.New("relay RX: read udp: use of closed network connection"),
-		"mismatch":  errors.New("TURN blackhole: Failed to refresh permissions: CreatePermission error response (error 437: Allocation Mismatch)"),
-		"nil":       nil,
+	for name, c := range map[string]struct {
+		perm *permWatch
+		err  error
+	}{
+		"detector":  {nil, &deadStreamError{silent: 90 * time.Second}},
+		"transport": {nil, closed},
+		"silence":   {watch(logBindFail, logBindFail), closed},
+		// pion's own close after a first ChannelBind 400 is the relay's failure.
+		"bind 400": {watch(logAllocClose), closed},
+		"refusals": {watch(logPermFail, logPermFail), closed},
+		// The first verdict decides: a 400 after the session was already
+		// declared dead for silence is not what ended it.
+		"400 late": {watch(logAllocFail, logPermFail400), closed},
+		// Its text is not what is read, only the watchdog's verdict.
+		"text only": {nil, errors.New("TURN blackhole: Failed to refresh permissions: CreatePermission error response (error 400: Bad Request)")},
+		"nil":       {nil, nil},
 	} {
-		if outOfReachError(err) {
-			t.Errorf("%s: %v read as out of reach", name, err)
+		if sessionOutOfReach(sessionBlackhole(c.perm), c.err) {
+			t.Errorf("%s: read as out of reach", name)
 		}
 	}
 	key := relayIdentity{user: "u", relay: orphanRelay1}

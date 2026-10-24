@@ -284,3 +284,35 @@ func TestBoundNetworkDrivesTheGate(t *testing.T) {
 		t.Fatal("the next network did not reopen the gate")
 	}
 }
+
+// The early -5 trusts the prefetch's failures only when no network event came
+// between its start and its end (prefetchOutcomeCode): a network that appears,
+// goes, is replaced or blinks moves the stamp, and so do other resolvers on the
+// same one; a report of the same network with the same resolvers — a transport
+// switch, a repeated push — does not.
+func TestNetworkStampMovesOnEveryNetworkEvent(t *testing.T) {
+	resetNetworkSwitch(t)
+	prevChoice, prevDNS := relayTransportChoice.Load(), activeDNSServers()
+	t.Cleanup(func() {
+		relayTransportChoice.Store(prevChoice)
+		setDNSServers(prevDNS)
+	})
+	noteNetworkSwitch(100)
+	step := func(name string, report func(), wantSame bool) {
+		t.Helper()
+		before := currentNetworkStamp()
+		time.Sleep(time.Millisecond) // leftAt must be able to differ
+		report()
+		if got := currentNetworkStamp().same(before); got != wantSame {
+			t.Errorf("%s: same = %v, want %v", name, got, wantSame)
+		}
+	}
+	step("same network again", func() { noteNetworkSwitch(100) }, true)
+	step("transport switch on the same network", func() { noteNetworkState(100, relayTransportTCP) }, true)
+	step("other resolvers on the same network", func() { InitSystemDns([]string{"192.0.2.53"}) }, false)
+	step("the same resolvers again", func() { InitSystemDns([]string{"192.0.2.53"}) }, true)
+	step("replaced by another", func() { noteNetworkSwitch(200) }, false)
+	step("lost and back", func() { noteNetworkSwitch(0); noteNetworkSwitch(200) }, false)
+	step("lost", func() { noteNetworkSwitch(0) }, false)
+	step("appeared", func() { noteNetworkSwitch(300) }, false)
+}

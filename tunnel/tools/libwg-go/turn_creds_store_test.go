@@ -49,6 +49,10 @@ func forgetTurnCreds() {
 	turnCredsOnDisk.mu.Lock()
 	turnCredsOnDisk.mode = ""
 	turnCredsOnDisk.mu.Unlock()
+	// And the identities it has dropped: that lives in its memory.
+	droppedCreds.Lock()
+	droppedCreds.users = map[string]bool{}
+	droppedCreds.Unlock()
 }
 
 // startTurnCreds is a proxy start for links: as in wgTurnProxyStart, the file
@@ -414,6 +418,7 @@ func TestTurnCredsClockMovedBack(t *testing.T) {
 
 // The merge rule on its own.
 func TestAdoptStoredCreds(t *testing.T) {
+	withNoDroppedCreds(t)
 	now := time.Now()
 	live := func(link string) TurnCredentials {
 		return TurnCredentials{Username: "u", Link: link, ExpiresAt: now.Add(time.Hour)}

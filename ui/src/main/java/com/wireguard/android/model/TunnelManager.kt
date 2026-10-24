@@ -712,7 +712,8 @@ class TunnelManager(
             if (turnEnabled && shouldStartTurn) {
                 // Expert mode's MTU and resolvers, while it is on: applied to the
                 // config this tunnel comes up with and never to the stored one,
-                // which the bot reissues (see ExpertSettings).
+                // which the bot reissues (see ExpertSettings). Built ahead of
+                // this read in Application.onCreate.
                 val overrides = getExpertSettings().overrides() ?: ExpertOverrides.NONE
                 if (!overrides.isEmpty) {
                     Log.i(TAG, "Expert mode: mtu=${overrides.mtu ?: "from config"}, dns=${overrides.dns?.let { ExpertOverrides.formatDns(it) } ?: "from config"}")

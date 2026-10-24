@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tlsclient "github.com/kiper292/tls-client"
@@ -60,12 +61,25 @@ func joinHash(raw string) string {
 // VK's detector never sees a desktop UA paired with accelerometer readings.
 // Returns the Chrome major with the client so callers can name it in the log.
 func newVKAPIClient() (tlsclient.HttpClient, Profile, int, error) {
-	return newVKAPIClientDialing(getCustomDialContext)
+	return newVKAPIClientDialing(vkDialCounting)
 }
 
-// newVKAPIClientDialing is newVKAPIClient with every connection dialled by
-// dial: tls-client takes a custom dial over its own dialer for all of them.
-func newVKAPIClientDialing(dial func(ctx context.Context, network, addr string) (net.Conn, error)) (tlsclient.HttpClient, Profile, int, error) {
+// vkAPIClient is the VK client with the count of connections it made on
+// addresses from memory (vk_host_memory.go): its own, not the process's, so a
+// flow reads only what its own connections did (Codex review 23.10).
+type vkAPIClient struct {
+	tlsclient.HttpClient
+	remembered *atomic.Uint64
+}
+
+func (c vkAPIClient) rememberedDials() uint64 { return c.remembered.Load() }
+
+// newVKAPIClientDialing is newVKAPIClient with every connection dialled by the
+// dial dialFor makes for the client's own count: tls-client takes a custom dial
+// over its own dialer for all of them.
+func newVKAPIClientDialing(dialFor func(remembered *atomic.Uint64) func(ctx context.Context, network, addr string) (net.Conn, error)) (tlsclient.HttpClient, Profile, int, error) {
+	remembered := new(atomic.Uint64)
+	dial := dialFor(remembered)
 	profile, chromeMajor := vkSessionIdentity()
 	client, err := tlsclient.NewHttpClient(
 		tlsclient.NewNoopLogger(),
@@ -84,7 +98,7 @@ func newVKAPIClientDialing(dial func(ctx context.Context, network, addr string) 
 	if err != nil {
 		return nil, Profile{}, 0, fmt.Errorf("failed to create tlsclient: %w", err)
 	}
-	return client, profile, chromeMajor, nil
+	return vkAPIClient{HttpClient: client, remembered: remembered}, profile, chromeMajor, nil
 }
 
 // linkCheckDial is the link check's dial: getCustomDialContext under
@@ -92,7 +106,15 @@ func newVKAPIClientDialing(dial func(ctx context.Context, network, addr string) 
 // tls-client dials an HTTP/2 connection with context.Background()
 // (roundTripper.dialTLSHTTP2), and that ctx carries nothing of ours.
 func linkCheckDial(ctx context.Context, network, addr string) (net.Conn, error) {
-	return getCustomDialContext(withProtectIfService(ctx), network, addr)
+	return linkCheckDialCounting(nil)(ctx, network, addr)
+}
+
+// linkCheckDialCounting is linkCheckDial for one client (vkDialCounting).
+func linkCheckDialCounting(remembered *atomic.Uint64) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dial := vkDialCounting(remembered)
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dial(withProtectIfService(ctx), network, addr)
+	}
 }
 
 // checkVKLink asks VK whether a call still admits anonymous participants, by
@@ -134,7 +156,7 @@ func wgTurnCheckVKLink(linkC *C.char) int32 {
 	if link == "" {
 		return linkCheckUnavailable
 	}
-	client, profile, chromeMajor, err := newVKAPIClientDialing(linkCheckDial)
+	client, profile, chromeMajor, err := newVKAPIClientDialing(linkCheckDialCounting)
 	if err != nil {
 		turnErrorLog("[LinkCheck] cannot build the VK client: %v", err)
 		return linkCheckTemporary

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"math/rand"
 	"net"
-	"strings"
 	"sync"
 	"time"
 )
@@ -249,7 +248,7 @@ func orphanLocked(key relayIdentity, now time.Time, n int) bool {
 
 // noteOutOfReach marks (user, relay) orphaned after a session whose allocation
 // the relay no longer answered to: 400 on CreatePermission after a thaw, or no
-// echo to the post-wake probe (outOfReachError). The socket woke under a new
+// echo to the post-wake probe (outOfReachSeated). The socket woke under a new
 // NAT mapping while the allocation lives on under the old 5-tuple (anton48's
 // stand, build 432): the Refresh(0) the close sent went out on the new one,
 // which the relay does not know, so the seat is held for the rest of the
@@ -269,21 +268,41 @@ func noteOutOfReach(user, relay string, r *trackedRelay, now time.Time) {
 	}
 }
 
-// outOfReachError reports whether a session ended because the relay no longer
-// knew its socket: the relay's own 400 to a CreatePermission (permWatch, the
-// allocation check), or the post-wake probe's verdict. The periodic detector's
-// verdict is not one — a relay silent for 90s on a network that is still there
-// may just as well have dropped the allocation, and a lost network marks the
-// allocations itself (noteBoundNetwork).
-func outOfReachError(err error) bool {
-	if err == nil {
-		return false
+// sessionOutOfReach reports whether a session ended because the relay no longer
+// knew its socket: the relay's own 400 on CreatePermission (hole, the kind of
+// blackhole the watchdog fired on — sessionBlackhole), or the post-wake probe's
+// verdict (err). The periodic detector's verdict is not one — a relay silent
+// for 90s on a network that is still there may just as well have dropped the
+// allocation, and a lost network marks the allocations itself
+// (noteBoundNetwork).
+//
+// One reading for both things that ask: whether the session counts against
+// its relay and whether it leaves a seat at the relay (outOfReachSeated). It
+// used to be the text of the session's final error for one and nothing for the
+// other. hole is taken once, by runSession, for both: the allocation check runs
+// on a goroutine of its own and can still latch its 400 while the session is
+// being graded, and two readings of the watchdog would part on it.
+func sessionOutOfReach(hole blackholeKind, err error) bool {
+	if hole == blackholeOutOfReach {
+		return true
 	}
 	var dead *deadStreamError
-	if errors.As(err, &dead) {
-		return dead.probe
+	return errors.As(err, &dead) && dead.probe
+}
+
+// outOfReachSeated reports whether a session that ended out of the relay's
+// reach leaves its allocation seated there (noteOutOfReach). The probe's
+// verdict does over either transport: the relay may hold the allocation of a
+// connection that went quiet for its whole lifetime. A 400 does only over UDP,
+// where it is the relay answering a 5-tuple it does not know while the
+// allocation lives on under the old one. Over TCP it came on the connection the
+// allocation was made on, which the relay does know: the allocation itself has
+// lapsed or been given back, and holds no seat (Codex review, 23.10).
+func outOfReachSeated(hole blackholeKind, overTCP bool, err error) bool {
+	if !sessionOutOfReach(hole, err) {
+		return false
 	}
-	return strings.Contains(err.Error(), permBadRequestMarker)
+	return !overTCP || hole != blackholeOutOfReach
 }
 
 // noteBoundNetwork records the physical network our sockets are now bound to

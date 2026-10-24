@@ -93,7 +93,19 @@ func (v sessionVerdict) String() string {
 // sessions in a few minutes, its streams redialing it straight back each time,
 // and most of those sessions had carried for over a minute before the silence —
 // graded here as successes, which wipe a relay's strikes.
-func sessionOutcome(cancelled, blackholed bool, dur time.Duration, err error) sessionVerdict {
+//
+// A blackhole is graded by what the watchdog ended the session for (hole). The
+// relay going silent on the session — ChannelBind, a refresh unanswered — is
+// the failure above. The relay answering that it no longer knows this socket
+// (blackholeOutOfReach, a 400) is not: it answered within a round trip, and
+// what it lost track of is ours to have lost — a mapping the translator forgot
+// in a freeze, an allocation that lapsed in one. That is the fact the post-wake
+// probe finds too, and its verdict is graded as any deaf session is: by how
+// long the relay was heard. So is this one, silent being how long the relay
+// had been silent when the session ended. It used to be a failure, whatever
+// the session had carried — an hour-long one cut by a 400 at a thaw added a
+// strike instead of clearing them, and three thaws stood a working relay down.
+func sessionOutcome(cancelled bool, hole blackholeKind, dur, silent time.Duration, err error) sessionVerdict {
 	var dead *deadStreamError
 	deaf := errors.As(err, &dead)
 	if deaf {
@@ -102,7 +114,15 @@ func sessionOutcome(cancelled, blackholed bool, dur time.Duration, err error) se
 	switch {
 	case cancelled:
 		return verdictNone
-	case blackholed:
+	case hole == blackholeOutOfReach:
+		if !deaf {
+			dur -= silent
+		}
+		if dur >= healthySessionDuration {
+			return verdictSuccess
+		}
+		return verdictNone
+	case hole == blackholeRelay:
 		return verdictFailure
 	case dur >= healthySessionDuration:
 		return verdictSuccess
@@ -117,6 +137,57 @@ func sessionOutcome(cancelled, blackholed bool, dur time.Duration, err error) se
 	}
 }
 
+// sessionSilence is how long the relay had been silent when the session that
+// began at started ended at now — what an out-of-reach end is graded by
+// (sessionOutcome); a is the stream's clock. A session whose transport never
+// published its own leaves the last session's, older than this one, and that
+// grades it as having carried nothing, which is so.
+//
+// So does a stream's first session, which leaves none. DTLS and SRTP publish
+// the clock only after their handshake, and a first handshake frozen past
+// healthySessionDuration — the process frozen while connecting — then cut by a
+// 400 at the thaw (alloc_check.go) was graded on its whole length: a success,
+// which wipes the relay's strikes, for a session that never carried a packet
+// (Codex review of the iOS port, 23.10).
+func sessionSilence(a *streamActivity, started, now time.Time) time.Duration {
+	if a == nil {
+		return now.Sub(started)
+	}
+	return a.heardAge(now)
+}
+
+// blackholeKind is what, if anything, the control-plane watchdog (permWatch)
+// ended a session for.
+type blackholeKind int
+
+const (
+	noBlackhole blackholeKind = iota
+	// blackholeRelay: the relay went silent on the session — a ChannelBind or
+	// a refresh nothing answered.
+	blackholeRelay
+	// blackholeOutOfReach: the relay answered that it has no allocation for
+	// this socket, a 400 on CreatePermission (permWatch.unreachable).
+	blackholeOutOfReach
+)
+
+// sessionBlackhole is the kind of blackhole perm ended its session for.
+//
+// Fired first, then the kind: the kind is stored before dead is closed, so a
+// watchdog seen fired shows its kind. Asked the other way round, a 400 the
+// allocation check latched between the two reads came out as a silent relay
+// (Codex review, 23.10). runSession takes it once and grades the session and
+// marks its seat (outOfReachSeated) off that one reading.
+func sessionBlackhole(perm *permWatch) blackholeKind {
+	switch {
+	case !perm.fired():
+		return noBlackhole
+	case perm.unreachable.Load():
+		return blackholeOutOfReach
+	default:
+		return blackholeRelay
+	}
+}
+
 // winner holds a successfully allocated TURN session from the race in
 // runWithCreds. The fields are the live resources handed off to the session:
 // runSession owns them and is responsible for closing them.
@@ -127,6 +198,7 @@ type winner struct {
 	addr   string         // TURN server the session runs on
 	rtt    time.Duration  // Dial → Allocate latency
 	perm   *permWatch     // control-plane blackhole detector for this session
+	user   string         // the TURN username it was allocated with
 }
 
 // runWithCreds establishes one TURN session with pre-fetched credentials on the
@@ -188,7 +260,7 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			once.Do(func() {
 				claimed = true
 				cancelRace()
-				winCh <- winner{client: client, raw: raw, relay: relay, addr: addr, rtt: rtt, perm: perm}
+				winCh <- winner{client: client, raw: raw, relay: relay, addr: addr, rtt: rtt, perm: perm, user: user}
 			})
 			if !claimed {
 				// Another failover candidate got there first: log this
@@ -240,11 +312,7 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 	for {
 		select {
 		case w := <-winCh:
-			err := s.runSession(ctx, w, cfg)
-			if outOfReachError(err) {
-				noteOutOfReach(user, w.addr, trackedAllocation(w.relay), time.Now())
-			}
-			return err
+			return s.runSession(ctx, w, cfg)
 		case <-connecting:
 			if !fannedOut {
 				startHeadStart()
@@ -793,16 +861,28 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	flowTimedOut := relayFlowTimedOut(w.raw)
 	readerErr := w.perm.readerStoppedBy()
 	flowEnded := flowTimedOut || (readerErr != nil && relayFlow(w.raw) != nil)
-	verdict := sessionOutcome(ctx.Err() != nil, w.perm.fired(), time.Since(started), err)
+	// How long the relay had been silent when the session ended: what an
+	// out-of-reach end is graded by (sessionOutcome, sessionSilence).
+	ended := time.Now()
+	silent := sessionSilence(s.activity.Load(), started, ended)
+	hole := sessionBlackhole(w.perm) // once, for the grade and the seat
+	verdict := sessionOutcome(ctx.Err() != nil, hole, ended.Sub(started), silent, err)
 	if flowEnded && verdict == verdictFailure {
 		verdict = verdictNone
 	}
 	// And whatever ended with the phone's own network: every session on it dies
 	// at that moment, on every relay alike, and a handshake that was under way
 	// times out for the same reason (local_network_failure.go).
-	//
+	if (verdict == verdictFailure || verdict == verdictHandshakeFailure) && relayNotToBlame(err, started) {
+		turnLog("[STREAM %d] %s is not held to account for this session: the phone's own network failed under it", s.id, w.addr)
+		verdict = verdictNone
+	}
 	// A handshake failed while another stream on this relay hears it is the
-	// flow's failure, over either transport (relay_heard_by_others.go).
+	// flow's failure, over either transport (relay_heard_by_others.go). Weighed
+	// after the excuse above: a handshake cut short by the phone's own network
+	// is no failure of the flow either, and counted here it sent a working
+	// relay to the end of this stream's list after two such sessions (Codex
+	// review of the iOS port, 22.10).
 	if verdict == verdictHandshakeFailure && relayHeardByOthers(w.addr, s, time.Now()) {
 		avoid := ""
 		if n := s.noteFlowFailure(w.addr); n == flowFailsBeforeAvoid {
@@ -810,10 +890,6 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 		}
 		turnLog("[STREAM %d] %s handshake: %s — a flow's failure, not the relay's: other streams are hearing it%s",
 			s.id, w.addr, relay.describe(time.Now()), avoid)
-		verdict = verdictNone
-	}
-	if (verdict == verdictFailure || verdict == verdictHandshakeFailure) && relayNotToBlame(err, started) {
-		turnLog("[STREAM %d] %s is not held to account for this session: the phone's own network failed under it", s.id, w.addr)
 		verdict = verdictNone
 	}
 	switch verdict {
@@ -825,11 +901,21 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	case verdictFailure:
 		noteServerFailure(w.addr)
 	}
+	// A session the relay no longer knew may have left its allocation seated
+	// there (orphaned_allocations.go), read off the same reading of the
+	// watchdog as the grade above. Whichever comes first — this, or the close
+	// whose release fails (on a 400 the watchdog has usually closed the relay
+	// already) — the allocation is counted once (countGhostLocked) and the
+	// other only extends its mark.
+	if outOfReachSeated(hole, relayFlow(w.raw) != nil, err) {
+		noteOutOfReach(w.user, w.addr, trackedAllocation(w.relay), time.Now())
+	}
 	// A session that went deaf while a stream on another relay kept hearing its
 	// own counts toward resting this relay (relay_deaf.go). Not one the
-	// blackhole watchdog ended: that is graded above as the failure it is.
-	if !w.perm.fired() {
-		noteDeafSession(s, w.addr, ctx.Err() != nil, err, started, time.Now())
+	// blackhole watchdog ended: a silent relay is graded above as the failure it
+	// is, and a relay that no longer knew the socket did not go deaf on it.
+	if hole == noBlackhole {
+		noteDeafSession(s, w.addr, cfg.PeerAddr.String(), ctx.Err() != nil, err, started, time.Now())
 	}
 
 	// A blackhole teardown surfaces as "use of closed network connection", which
