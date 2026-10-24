@@ -1124,7 +1124,11 @@ class TunnelManager(
         // How long to wait for the first WireGuard handshake after the interface
         // comes up before declaring the connection failed and tearing it down.
         private const val HANDSHAKE_TIMEOUT_MS = 25_000L
-        private const val HANDSHAKE_POLL_INTERVAL_MS = 1_000L
+        // The handshake lands ~0.2-0.3 s after the interface comes up (the proxy
+        // already has a proven stream), and the screen stays on "Connecting" until
+        // this poll sees it: at 1 s every connect paid up to a second for nothing.
+        // 250 ms, as iOS's WaitFirstHandshake; a stats read is a local UAPI dump.
+        private const val HANDSHAKE_POLL_INTERVAL_MS = 250L
 
         // Background watchdog: rebuilds the transport, then tears the tunnel down,
         // on prolonged loss of handshake.
