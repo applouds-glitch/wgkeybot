@@ -14,7 +14,7 @@ require (
 	github.com/pion/transport/v4 v4.1.0
 	github.com/pion/turn/v5 v5.0.13
 	golang.org/x/sys v0.47.0
-	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
+	golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f
 )
 
 require (
