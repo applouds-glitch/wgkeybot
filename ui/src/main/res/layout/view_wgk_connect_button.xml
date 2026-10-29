@@ -63,6 +63,8 @@
             app:backgroundTint="@color/wgk_connect_btn_background_tint"
             app:icon="@drawable/ic_power"
             app:iconSize="@dimen/wgk_connect_icon"
-            app:iconTint="@color/wgk_connect_btn_icon_tint" />
+            app:iconTint="@color/wgk_connect_btn_icon_tint"
+            app:strokeColor="@color/wgk_connect_btn_stroke"
+            app:strokeWidth="@dimen/wgk_card_stroke_width" />
     </FrameLayout>
 </layout>

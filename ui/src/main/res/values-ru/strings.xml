@@ -369,15 +369,17 @@
     <!-- WGKeyBot UI strings -->
     <string name="wgk_connect_action">Подключиться</string>
     <string name="wgk_no_key_title">Подключите WGKeyBot</string>
-    <string name="wgk_no_key_subtitle">Получите доступ в Telegram или вставьте токен либо ссылку подключения</string>
-    <string name="wgk_no_key_action">Открыть Telegram-бота</string>
-    <string name="wgk_or_divider">или вставьте токен или ссылку</string>
-    <string name="wgk_token_hint">Токен или ссылка подключения</string>
+    <string name="wgk_no_key_subtitle">Доступ выдаёт наш Telegram-бот. Нажмите кнопку — бот покажет «Открыть в WGKey», и приложение подключится само.</string>
+    <string name="wgk_no_key_action">Получить доступ в Telegram</string>
+    <string name="wgk_have_token">Уже есть токен?</string>
+    <string name="wgk_token_hint">Токен из бота</string>
     <string name="wgk_paste_cd">Вставить из буфера</string>
     <string name="wgk_pasted_from_clipboard">Данные подключения вставлены из буфера</string>
-    <string name="wgk_token_error_empty">Введите токен или ссылку подключения</string>
-    <string name="wgk_token_error_format">Это не похоже на токен или ссылку подключения</string>
-    <string name="wgk_clipboard_no_token">В буфере нет токена или ссылки подключения</string>
+    <string name="wgk_token_error_empty">Введите токен из бота</string>
+    <string name="wgk_token_error_format">Это не похоже на токен. Токен показывает бот: «Подключить устройство» → Android.</string>
+    <string name="wgk_token_error_app_link">Это ссылка на скачивание приложения, а не токен. Приложение уже установлено — нажмите «Получить доступ в Telegram», бот подключит его сам.</string>
+    <string name="wgk_token_error_bot_link">Это ссылка на бота, а не токен. Откройте её в Telegram и нажмите там «Открыть в WGKey» — вставлять ничего не нужно.</string>
+    <string name="wgk_clipboard_no_token">В буфере нет токена</string>
     <string name="wgk_menu_cd">Меню</string>
     <string name="wgk_profile_name">Конфигурация</string>
     <string name="wgk_profile_loaded_at">Загружено в %1$s</string>
@@ -400,7 +402,7 @@
     <string name="wgk_error_format">Ошибка: %s</string>
     <string name="wgk_auth_error_format">Ошибка авторизации: %s</string>
     <string name="wgk_no_access_token">Нет токена доступа. Переоткройте ссылку из бота.</string>
-    <string name="wgk_deeplink_missing_token">В ссылке нет токена или данных подключения. Скопируйте полную ссылку из бота.</string>
+    <string name="wgk_deeplink_missing_token">В ссылке нет токена. Нажмите «Открыть в WGKey» в боте ещё раз.</string>
     <string name="wgk_expired_title">Подписка истекла</string>
     <string name="wgk_expired_subtitle">Обратитесь в бот для продления подписки</string>
     <string name="wgk_headline_disconnected">Нажмите для подключения</string>
@@ -476,6 +478,10 @@
     <string name="wgk_split_wizard_mode_exclude_title">Выбранные приложения мимо VPN</string>
     <string name="wgk_split_wizard_mode_exclude_desc">Остальные идут через туннель</string>
     <string name="wgk_split_wizard_later">Настроить позже</string>
+    <string name="wgk_battery_prompt_title">Работа VPN в фоне</string>
+    <string name="wgk_battery_prompt_message">Ради экономии заряда Android может останавливать VPN, пока экран выключен. Если разрешить WGKeyBot работать в фоне, соединение будет обрываться реже. Это можно изменить позже в настройках батареи Android.</string>
+    <string name="wgk_battery_prompt_allow">Разрешить</string>
+    <string name="wgk_battery_prompt_later">Не сейчас</string>
     <string name="wgk_split_wizard_later_hint">Можно настроить позже на главном экране.</string>
     <string name="wgk_split_search_hint">Поиск приложений</string>
     <string name="wgk_split_show_system">Системные приложения</string>
@@ -603,12 +609,13 @@
     <string name="wgk_update_settings_unavailable">На этом устройстве не удалось открыть настройки разрешения на установку.</string>
     <string name="wgk_update_installer_unavailable">Не удалось открыть установщик Android.</string>
     <string name="wgk_update_store_unavailable">Не удалось открыть Google Play.</string>
-    <string name="wgk_connection_import_error">Не удалось импортировать подключение. Получите новую ссылку в боте и попробуйте снова.</string>
-    <string name="wgk_connection_link_ready">Ссылка подключения вставлена</string>
-    <string name="wgk_import_invalid_data">Офлайн-ссылка повреждена или скопирована не полностью. Скопируйте полную ссылку из бота.</string>
-    <string name="wgk_import_unsupported_version">Версия формата ссылки не поддерживается. Обновите приложение.</string>
-    <string name="wgk_import_invalid_config">Ссылка содержит некорректный конфиг WireGuard. Получите новую ссылку в боте.</string>
-    <string name="wgk_import_unauthorized">Сервер отклонил авторизацию. Возможно, токен истёк или уже использован. Получите новую ссылку в боте.</string>
+    <string name="wgk_connection_import_error">Не удалось импортировать подключение. Получите новый токен в боте и попробуйте снова.</string>
+    <string name="wgk_connection_link_ready">Данные подключения вставлены</string>
+    <string name="wgk_import_invalid_data">Данные подключения повреждены или скопированы не полностью. Нажмите «Открыть в WGKey» в боте ещё раз.</string>
+    <string name="wgk_import_unsupported_version">Формат данных подключения не поддерживается. Обновите приложение.</string>
+    <string name="wgk_import_invalid_config">Данные подключения содержат некорректный конфиг WireGuard. Получите новый токен в боте.</string>
+    <string name="wgk_import_unauthorized">Сервер отклонил токен. Получите новый токен в боте: «Подключить устройство» → Android.</string>
+    <string name="wgk_import_not_found">Токен не найден. Скопируйте его заново в боте: «Подключить устройство» → Android.</string>
     <string name="wgk_import_upgrade_required">Сервер требует новую версию приложения. Обновите приложение и повторите попытку.</string>
     <string name="wgk_import_timeout">Сервер не ответил вовремя. Проверьте подключение и повторите попытку.</string>
     <string name="wgk_import_dns_error">Не удалось определить адрес сервера. Проверьте интернет и настройки DNS.</string>
@@ -621,8 +628,8 @@
     <!-- Режим эксперта: переопределение настроек из конфига бота при следующем подключении -->
     <string name="wgk_expert_section">Режим эксперта</string>
     <string name="wgk_expert_switch_label">Режим эксперта</string>
-    <string name="wgk_expert_switch_desc">Переопределить часть настроек из конфига бота. Действует при следующем подключении</string>
-    <string name="wgk_expert_note">Действует при следующем подключении. Выключение режима эксперта возвращает конфиг таким, каким его выдал бот.</string>
+    <string name="wgk_expert_switch_desc">Переопределить часть настроек из конфига бота</string>
+    <string name="wgk_expert_note">Изменения, в том числе выключение режима эксперта, действуют при следующем подключении. Выключение возвращает конфиг таким, каким его выдал бот.</string>
     <string name="wgk_expert_mtu_label">MTU туннеля</string>
     <string name="wgk_expert_dns_label">DNS внутри туннеля</string>
     <string name="wgk_expert_links_label">Ссылки на VK-звонки</string>
@@ -687,7 +694,7 @@
     <string name="wgk_tv_no_key_title">Подключите ключ</string>
     <string name="wgk_tv_no_key_subtitle">Ключ выдаёт бот @wg_key_bot в Telegram. Наберите его на клавиатуре справа.</string>
     <string name="wgk_tv_key_where_title">Где взять ключ</string>
-    <string name="wgk_tv_key_where_body">Откройте @wg_key_bot на телефоне, нажмите «Получить ключ» и перепишите 32 знака. Регистр не важен.</string>
+    <string name="wgk_tv_key_where_body">Откройте @wg_key_bot на телефоне: «Подключить устройство» → Android — там показан токен. Перепишите его сюда, регистр не важен.</string>
     <string name="wgk_tv_key_expired_hint">Подписка истекла? Продлите её в боте, ключ менять не нужно.</string>
     <string name="wgk_tv_kb_label">КЛЮЧ ИЗ БОТА</string>
     <string name="wgk_tv_kb_count">Введено %1$d из %2$d</string>

@@ -207,6 +207,8 @@
         <item name="android:minHeight">48dp</item>
         <item name="android:textAppearance">@style/TextAppearance.WGKeyBot.SettingTitle</item>
         <item name="iconSize">18dp</item>
+        <!-- Icon beside the label, not pinned to the button's edge. -->
+        <item name="iconGravity">textStart</item>
     </style>
 
     <style name="ThemeOverlay.WGKeyBot.InstrumentSheet" parent="WireGuardTheme.BottomSheetDialog">

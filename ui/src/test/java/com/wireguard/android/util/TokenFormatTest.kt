@@ -65,11 +65,11 @@ class TokenFormatTest {
     }
 
     @Test
-    fun `extract unwraps deeplinks and links`() {
+    fun `extract unwraps deeplinks and links to our own host`() {
         assertEquals(short, TokenFormat.extract("wgkeybot://config?token=$short"))
         assertEquals(uuid, TokenFormat.extract("wgkeybot://config?token=$uuid&x=1"))
-        assertEquals(short, TokenFormat.extract("https://t.me/wg_key_bot?start=$short"))
         assertEquals(short, TokenFormat.extract("https://key.shadowgate.online/api/v1/init/$short"))
+        assertEquals(uuid, TokenFormat.extract("https://key.shadowgate.online/open/$uuid?platform=android"))
     }
 
     @Test
@@ -78,6 +78,28 @@ class TokenFormatTest {
         assertNull(TokenFormat.extract("hello"))
         assertNull(TokenFormat.extract("../open/short"))
         assertNull(TokenFormat.extract("wgkeybot://config?token=short"))
+    }
+
+    @Test
+    fun `extract never mines a token out of someone else's link`() {
+        // The APK download page pasted into the field used to become the token
+        // `releases`, a server round-trip and a misleading "token expired".
+        assertNull(TokenFormat.extract("https://github.com/applouds-glitch/wgkeybot/releases"))
+        assertNull(TokenFormat.extract("https://t.me/wg_key_bot?start=$short"))
+        assertNull(TokenFormat.extract("https://t.me/wg_key_bot?start=android"))
+        assertNull(TokenFormat.extract("https://example.com/$uuid"))
+        assertNull(TokenFormat.extract("https://example.com/x?token=$uuid"))
+    }
+
+    @Test
+    fun `foreign links are told apart for the error message`() {
+        assertEquals(TokenFormat.LinkKind.APP_DOWNLOAD,
+            TokenFormat.foreignLink("https://github.com/applouds-glitch/wgkeybot/releases"))
+        assertEquals(TokenFormat.LinkKind.BOT, TokenFormat.foreignLink(" https://t.me/wg_key_bot?start=android "))
+        assertEquals(TokenFormat.LinkKind.OTHER, TokenFormat.foreignLink("http://example.com/$uuid"))
+        assertNull(TokenFormat.foreignLink("https://key.shadowgate.online/open/$uuid"))
+        assertNull(TokenFormat.foreignLink("wgkeybot://config?token=$uuid"))
+        assertNull(TokenFormat.foreignLink(short))
     }
 
     // ── UUID handling ──────────────────────────────────────────────────────────

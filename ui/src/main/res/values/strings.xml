@@ -504,8 +504,9 @@
     <string name="wgk_split_selected_of">%1$d of %2$d selected</string>
     <string name="wgk_split_toggle_all">Toggle all</string>
     <string name="wgk_no_key_title">Connect WGKeyBot</string>
-    <string name="wgk_no_key_subtitle">Get access in Telegram, or enter a connection token you already have</string>
-    <string name="wgk_no_key_action">Open Telegram bot</string>
+    <string name="wgk_no_key_subtitle">Access comes from our Telegram bot. Tap the button: the bot shows “Open in WGKey” and the app connects on its own.</string>
+    <string name="wgk_no_key_action">Get access in Telegram</string>
+    <string name="wgk_have_token">Already have a token?</string>
     <string name="wgk_expired_title">Subscription expired</string>
     <string name="wgk_expired_subtitle">Contact the bot to renew your subscription</string>
     <string name="wgk_check_subscription_action">Check payment</string>
@@ -519,14 +520,15 @@
     <string name="tv_keyboard_clear">Clear</string>
     <string name="wgk_tv_kb_paste">Paste</string>
     <string name="wgk_tv_kb_case">Letter case</string>
-    <string name="wgk_token_hint">Connection token or link</string>
-    <string name="wgk_token_error_empty">Enter a token or connection link</string>
-    <string name="wgk_token_error_format">This does not look like a connection token or link</string>
+    <string name="wgk_token_hint">Token from the bot</string>
+    <string name="wgk_token_error_empty">Enter the token from the bot</string>
+    <string name="wgk_token_error_format">This does not look like a token. The bot shows it under “Connect device” → Android.</string>
+    <string name="wgk_token_error_app_link">This is the app download link, not a token. The app is already installed: tap “Get access in Telegram” and the bot will connect it.</string>
+    <string name="wgk_token_error_bot_link">This is a link to the bot, not a token. Open it in Telegram and tap “Open in WGKey” there; nothing needs to be pasted.</string>
     <string name="wgk_paste_cd">Paste from clipboard</string>
     <string name="wgk_pasted_from_clipboard">Connection details pasted from clipboard</string>
-    <string name="wgk_clipboard_no_token">No connection token or link in clipboard</string>
+    <string name="wgk_clipboard_no_token">No token in clipboard</string>
     <string name="wgk_connect_action">Connect</string>
-    <string name="wgk_or_divider">or paste a token or connection link</string>
     <string name="wgk_connect_cd_connect">Connect VPN</string>
     <string name="wgk_connect_cd_disconnect">Disconnect VPN</string>
     <string name="wgk_connect_cd_cancel">Cancel connection</string>
@@ -546,6 +548,10 @@
     <string name="wgk_split_wizard_mode_exclude_title">Selected apps bypass the VPN</string>
     <string name="wgk_split_wizard_mode_exclude_desc">Everything else goes through the tunnel</string>
     <string name="wgk_split_wizard_later">Set up later</string>
+    <string name="wgk_battery_prompt_title">Keep the VPN running in the background</string>
+    <string name="wgk_battery_prompt_message">To save battery, Android can stop the VPN while the screen is off. Allowing WGKeyBot to run in the background helps keep the connection up. You can change this later in Android\'s battery settings.</string>
+    <string name="wgk_battery_prompt_allow">Allow</string>
+    <string name="wgk_battery_prompt_later">Not now</string>
     <string name="wgk_split_wizard_later_hint">You can set this up later on the main screen.</string>
     <string name="wgk_error_format">Error: %s</string>
     <string name="wgk_no_access_token">No access token. Reopen the link from the bot.</string>
@@ -556,7 +562,7 @@
     <string name="wgk_update_later">Later</string>
     <string name="wgk_config_updated">Config updated</string>
     <string name="wgk_config_up_to_date">Config is up to date</string>
-    <string name="wgk_deeplink_missing_token">The link contains neither a token nor connection data. Copy the full link from the bot.</string>
+    <string name="wgk_deeplink_missing_token">The link contains no token. Tap “Open in WGKey” in the bot again.</string>
     <string name="wgk_server_bad_config">Server returned an invalid config</string>
     <string name="wgk_auth_error_format">Authorization error: %s</string>
 
@@ -597,12 +603,13 @@
     <string name="wgk_update_settings_unavailable">This device could not open the installation permission settings.</string>
     <string name="wgk_update_installer_unavailable">The Android installer could not be opened.</string>
     <string name="wgk_update_store_unavailable">Google Play could not be opened.</string>
-    <string name="wgk_connection_import_error">Could not import the connection. Get a new link from the bot and try again.</string>
-    <string name="wgk_connection_link_ready">Connection link pasted</string>
-    <string name="wgk_import_invalid_data">The offline connection link is damaged or incomplete. Copy the full link from the bot.</string>
-    <string name="wgk_import_unsupported_version">This connection link uses an unsupported format version. Update the app.</string>
-    <string name="wgk_import_invalid_config">The link contains an invalid WireGuard config. Get a new link from the bot.</string>
-    <string name="wgk_import_unauthorized">The server rejected authorization. The token may have expired or already been used. Get a new link from the bot.</string>
+    <string name="wgk_connection_import_error">Could not import the connection. Get a new token from the bot and try again.</string>
+    <string name="wgk_connection_link_ready">Connection details pasted</string>
+    <string name="wgk_import_invalid_data">The connection data is damaged or incomplete. Tap “Open in WGKey” in the bot again.</string>
+    <string name="wgk_import_unsupported_version">This connection data uses an unsupported format version. Update the app.</string>
+    <string name="wgk_import_invalid_config">The connection data contains an invalid WireGuard config. Get a new token from the bot.</string>
+    <string name="wgk_import_unauthorized">The server rejected the token. Get a new token from the bot: “Connect device” → Android.</string>
+    <string name="wgk_import_not_found">Token not found. Copy it again from the bot: “Connect device” → Android.</string>
     <string name="wgk_import_upgrade_required">The server requires a newer app version. Update the app and try again.</string>
     <string name="wgk_import_timeout">The server did not respond in time. Check your connection and try again.</string>
     <string name="wgk_import_dns_error">Could not resolve the server address. Check your internet connection and DNS settings.</string>
@@ -615,8 +622,8 @@
     <!-- Expert mode: overrides of the bot's configuration for the next connection -->
     <string name="wgk_expert_section">Expert mode</string>
     <string name="wgk_expert_switch_label">Expert mode</string>
-    <string name="wgk_expert_switch_desc">Override parts of the bot\'s configuration. Applies at the next connection</string>
-    <string name="wgk_expert_note">Applies at the next connection. Switching expert mode off restores the configuration as the bot issued it.</string>
+    <string name="wgk_expert_switch_desc">Override parts of the bot\'s configuration</string>
+    <string name="wgk_expert_note">Changes, including switching expert mode off, apply at the next connection. Switching it off restores the configuration as the bot issued it.</string>
     <string name="wgk_expert_mtu_label">Tunnel MTU</string>
     <string name="wgk_expert_dns_label">DNS inside the tunnel</string>
     <string name="wgk_expert_links_label">VK call links</string>
@@ -688,7 +695,7 @@
     <string name="wgk_tv_no_key_title">Connect your key</string>
     <string name="wgk_tv_no_key_subtitle">The key comes from the @wg_key_bot bot in Telegram. Type it on the keyboard on the right.</string>
     <string name="wgk_tv_key_where_title">Where to get a key</string>
-    <string name="wgk_tv_key_where_body">Open @wg_key_bot on your phone, tap “Get a key” and copy the 32 characters here. Letter case does not matter.</string>
+    <string name="wgk_tv_key_where_body">Open @wg_key_bot on your phone: “Connect device” → Android shows the token. Type it here; letter case does not matter.</string>
     <string name="wgk_tv_key_expired_hint">Subscription expired? Renew it in the bot, the key stays the same.</string>
     <string name="wgk_tv_kb_label">KEY FROM THE BOT</string>
     <string name="wgk_tv_kb_count">%1$d of %2$d typed</string>

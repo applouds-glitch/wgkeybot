@@ -30,6 +30,8 @@
     <!-- v1.6.0 connect control; keep these independent of the new surface palette. -->
     <color name="wgk_connect_idle_container">#222428</color>
     <color name="wgk_connect_idle_content">#B7B9C0</color>
+    <!-- A dark disc on the dark field needs no outline. -->
+    <color name="wgk_connect_idle_outline">@android:color/transparent</color>
     <color name="wgk_connect_busy_content">#002F66</color>
     <color name="wgk_on_surface_muted">#95A0B0</color>
     <color name="wgk_text_field_surface">@color/wgk_card_surface</color>

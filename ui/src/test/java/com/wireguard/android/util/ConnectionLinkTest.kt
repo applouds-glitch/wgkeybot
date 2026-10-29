@@ -56,6 +56,14 @@ class ConnectionLinkTest {
     }
 
     @Test
+    fun `download page and bot links fail with their own reason`() {
+        assertEquals(ConnectionLink.Failure.APP_DOWNLOAD_LINK,
+            assertInvalid("https://github.com/applouds-glitch/wgkeybot/releases").reason)
+        assertEquals(ConnectionLink.Failure.BOT_LINK, assertInvalid("https://t.me/wg_key_bot?start=android").reason)
+        assertEquals(ConnectionLink.Failure.INVALID_FORMAT, assertInvalid("https://example.com/$token").reason)
+    }
+
+    @Test
     fun `pasting retains the whole embedded link`() {
         val raw = link()
         assertEquals(raw, ConnectionLink.extractInput(" \n$raw\n "))

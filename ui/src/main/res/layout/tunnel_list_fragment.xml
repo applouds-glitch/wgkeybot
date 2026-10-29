@@ -91,6 +91,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_gravity="center"
+                            android:ellipsize="end"
                             android:gravity="center"
                             android:maxLines="1"
                             android:text="@string/wgk_headline_disconnected"
@@ -226,57 +227,70 @@
                     app:iconSize="18dp"
                     app:iconTint="@color/wgk_on_primary" />
 
+                <!-- The token field stays folded: a fresh install must not be
+                     invited to paste the download link it just came from. -->
                 <TextView
+                    android:id="@+id/wgk_have_token_toggle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="16dp"
-                    android:text="@string/wgk_or_divider"
-                    android:textAppearance="?attr/textAppearanceLabelMedium"
-                    android:textColor="@color/wgk_on_surface_variant" />
+                    android:background="?attr/selectableItemBackground"
+                    android:padding="8dp"
+                    android:text="@string/wgk_have_token"
+                    android:textAppearance="?attr/textAppearanceLabelLarge"
+                    android:textColor="@color/wgk_primary" />
 
-                <FrameLayout
-                    android:id="@+id/wgk_token_input_wrapper"
+                <LinearLayout
+                    android:id="@+id/wgk_token_section"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp">
+                    android:orientation="vertical"
+                    android:visibility="gone">
 
-                    <EditText
-                        android:id="@+id/wgk_token_input"
+                    <FrameLayout
+                        android:id="@+id/wgk_token_input_wrapper"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:background="@drawable/wgk_token_field_bg"
-                        android:fontFamily="monospace"
-                        android:hint="@string/wgk_token_hint"
-                        android:inputType="textNoSuggestions"
-                        android:maxLines="1"
-                        android:paddingStart="14dp"
-                        android:paddingTop="14dp"
-                        android:paddingEnd="52dp"
-                        android:paddingBottom="14dp"
-                        android:textColor="@color/wgk_on_surface"
-                        android:textColorHint="@color/wgk_on_surface_variant" />
+                        android:layout_marginTop="16dp">
 
-                    <ImageButton
-                        android:id="@+id/wgk_paste_btn"
-                        android:layout_width="48dp"
+                        <EditText
+                            android:id="@+id/wgk_token_input"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/wgk_token_field_bg"
+                            android:fontFamily="monospace"
+                            android:hint="@string/wgk_token_hint"
+                            android:inputType="textNoSuggestions"
+                            android:maxLines="1"
+                            android:paddingStart="14dp"
+                            android:paddingTop="14dp"
+                            android:paddingEnd="52dp"
+                            android:paddingBottom="14dp"
+                            android:textColor="@color/wgk_on_surface"
+                            android:textColorHint="@color/wgk_on_surface_variant" />
+
+                        <ImageButton
+                            android:id="@+id/wgk_paste_btn"
+                            android:layout_width="48dp"
+                            android:layout_height="48dp"
+                            android:layout_gravity="end|center_vertical"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="@string/wgk_paste_cd"
+                            android:src="@drawable/ic_content_paste"
+                            app:tint="@color/wgk_on_surface_variant" />
+                    </FrameLayout>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/wgk_connect_with_token_btn"
+                        style="@style/Widget.Material3.Button"
+                        android:layout_width="match_parent"
                         android:layout_height="48dp"
-                        android:layout_gravity="end|center_vertical"
-                        android:background="?attr/selectableItemBackgroundBorderless"
-                        android:contentDescription="@string/wgk_paste_cd"
-                        android:src="@drawable/ic_content_paste"
-                        app:tint="@color/wgk_on_surface_variant" />
-                </FrameLayout>
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/wgk_connect_with_token_btn"
-                    style="@style/Widget.Material3.Button"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="12dp"
-                    android:text="@string/wgk_connect_action"
-                    android:textColor="@color/wgk_on_primary"
-                    app:backgroundTint="@color/wgk_primary"
-                    app:cornerRadius="24dp" />
+                        android:layout_marginTop="12dp"
+                        android:text="@string/wgk_connect_action"
+                        android:textColor="@color/wgk_on_primary"
+                        app:backgroundTint="@color/wgk_primary"
+                        app:cornerRadius="24dp" />
+                </LinearLayout>
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/wgk_check_subscription_btn"

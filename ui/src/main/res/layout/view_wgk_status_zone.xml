@@ -188,6 +188,13 @@
                     </LinearLayout>
                 </LinearLayout>
 
+                <!-- Values stay one line so the card keeps its height. The autosize
+                     floor is in sp and grows with the font scale: at 2.0 an 11sp
+                     floor (~22dp) no longer fit a third of the card, and uptime
+                     and RX lost their last characters with no sign of it. On a
+                     411dp-wide phone 8sp (16dp) still fits "1023.9 MiB" there;
+                     narrower than ~380dp the longest values get the ellipsis,
+                     which at least shows the cut. At 1.0 they keep full size. -->
                 <LinearLayout
                     android:id="@+id/wgk_metrics_container"
                     android:layout_width="match_parent"
@@ -213,12 +220,13 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="4dp"
+                            android:ellipsize="end"
                             android:maxLines="1"
                             android:text="@string/wgk_status_metric_empty"
                             android:textAppearance="@style/TextAppearance.WGKeyBot.ValueMono"
                             android:textColor="@color/wgk_on_surface"
                             app:autoSizeMaxTextSize="14sp"
-                            app:autoSizeMinTextSize="11sp"
+                            app:autoSizeMinTextSize="8sp"
                             app:autoSizeTextType="uniform" />
                     </LinearLayout>
                     <LinearLayout
@@ -238,12 +246,13 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="4dp"
+                            android:ellipsize="end"
                             android:maxLines="1"
                             android:text="@string/wgk_status_metric_empty"
                             android:textAppearance="@style/TextAppearance.WGKeyBot.ValueMono"
                             android:textColor="@color/wgk_on_surface"
                             app:autoSizeMaxTextSize="14sp"
-                            app:autoSizeMinTextSize="11sp"
+                            app:autoSizeMinTextSize="8sp"
                             app:autoSizeTextType="uniform" />
                     </LinearLayout>
                     <LinearLayout
@@ -263,12 +272,13 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="4dp"
+                            android:ellipsize="end"
                             android:maxLines="1"
                             android:text="@string/wgk_status_metric_empty"
                             android:textAppearance="@style/TextAppearance.WGKeyBot.ValueMono"
                             android:textColor="@color/wgk_on_surface"
                             app:autoSizeMaxTextSize="14sp"
-                            app:autoSizeMinTextSize="11sp"
+                            app:autoSizeMinTextSize="8sp"
                             app:autoSizeTextType="uniform" />
                     </LinearLayout>
                 </LinearLayout>

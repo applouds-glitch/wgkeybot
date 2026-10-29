@@ -511,12 +511,12 @@ class AppSettingsActivity : AppCompatActivity() {
             }
         }
         binding.wgkExpertMtuRow.apply {
-            wgkRowIcon.setImageResource(R.drawable.ic_filter_list)
+            wgkRowIcon.setImageResource(R.drawable.ic_straighten)
             wgkRowLabel.setText(R.string.wgk_expert_mtu_label)
             wgkRowBtn.setOnClickListener { chooseMtu() }
         }
         binding.wgkExpertDnsRow.apply {
-            wgkRowIcon.setImageResource(R.drawable.ic_search)
+            wgkRowIcon.setImageResource(R.drawable.ic_dns)
             wgkRowLabel.setText(R.string.wgk_expert_dns_label)
             wgkRowBtn.setOnClickListener { chooseDns() }
         }
@@ -535,7 +535,6 @@ class AppSettingsActivity : AppCompatActivity() {
         val enabled = expert.isEnabled()
         binding.wgkExpertSwitchRow.wgkSwitch.isChecked = enabled
         binding.wgkExpertRows.isVisible = enabled
-        binding.wgkExpertNote.isVisible = enabled
         if (!enabled) return
 
         val tunnel = Application.getTunnelManager().primaryTunnelOrNull()

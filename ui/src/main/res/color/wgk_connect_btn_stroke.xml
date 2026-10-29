@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The coloured discs carry no outline. Same hue at zero alpha, not plain
+         transparent, so the cross-fade in TunnelListFragment only fades it out
+         instead of darkening it on the way. -->
+    <!-- Connected -->
+    <item android:state_selected="true"  android:alpha="0" android:color="@color/wgk_connect_idle_outline" />
+    <!-- Connecting / Handshake -->
+    <item android:state_activated="true" android:alpha="0" android:color="@color/wgk_connect_idle_outline" />
+    <!-- Disconnected / Failed -->
+    <item android:color="@color/wgk_connect_idle_outline" />
+</selector>

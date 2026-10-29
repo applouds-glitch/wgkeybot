@@ -60,6 +60,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -87,6 +88,8 @@ class TunnelListFragment : BaseFragment() {
     private val vm: TunnelListViewModel by viewModels()
     private var pendingTunnel: ObservableTunnel? = null
     private var tvKeyboard: TvTokenKeyboard? = null
+    /** «Уже есть токен?» was tapped: keep the field open across re-renders. */
+    private var tokenSectionOpen = false
     private var refreshAnim: ObjectAnimator? = null
     private var buttonAnim: ValueAnimator? = null
     private var clearStageCompletionListener: (() -> Unit)? = null
@@ -123,6 +126,9 @@ class TunnelListFragment : BaseFragment() {
             val tunnel = pendingTunnel ?: return@registerForActivityResult
             pendingTunnel = null
             if (result.resultCode == android.app.Activity.RESULT_OK) {
+                // Before onResume runs its stale-state reset, which leaves a
+                // connecting tunnel alone only while isConnecting is set.
+                vm.notifyConnecting()
                 lifecycleScope.launch {
                     try {
                         // Use the real resulting state: an atomic connect may end DOWN
@@ -282,12 +288,23 @@ class TunnelListFragment : BaseFragment() {
                     Tunnel.State.DOWN else Tunnel.State.UP
 
                 if (newState == Tunnel.State.UP && Application.getBackend() is GoBackend) {
+                    // A consent dialog is already on its way: a second tap that lands
+                    // before it covers the screen must not launch another one.
+                    if (pendingTunnel != null) return@launch
                     val intent = GoBackend.VpnService.prepare(requireContext())
                     if (intent != null) {
+                        // Connecting is signalled only once the user agrees (see
+                        // vpnPermissionLauncher). Signalling it here lit "Bringing up
+                        // wg interface" and the tunnel stage behind the system dialog,
+                        // before anything had been allowed, let alone started.
                         pendingTunnel = tunnel
                         vm.cancelledByUser = false
-                        vm.notifyConnecting()
-                        vpnPermissionLauncher.launch(intent)
+                        try {
+                            vpnPermissionLauncher.launch(intent)
+                        } catch (e: Exception) {
+                            pendingTunnel = null
+                            throw e
+                        }
                         return@launch
                     }
                 }
@@ -471,11 +488,15 @@ class TunnelListFragment : BaseFragment() {
         tvKeyCard?.isVisible = !expired
         b.wgkTvKeyFootnote?.isVisible = !expired
         b.wgkBotLinkBtn.setOnClickListener {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/wg_key_bot")))
+            // `start=android`: the bot opens the Android screen of the only device
+            // (or the device list) instead of the home screen.
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/wg_key_bot?start=android")))
         }
 
         if (isTv()) {
             // TV: hide mobile input, show D-pad keyboard
+            b.wgkHaveTokenToggle?.isVisible = false
+            b.wgkTokenSection?.isVisible = false
             b.wgkTokenInputWrapper.isVisible = false
             b.wgkConnectWithTokenBtn.isVisible = false
             if (tvKeyboard == null) {
@@ -489,8 +510,20 @@ class TunnelListFragment : BaseFragment() {
             val keyboardHost = (b.wgkTvKeyboardHost ?: b.wgkNoConfigContainer) as? ViewGroup
             if (keyboardHost != null) tvKeyboard?.attachTo(keyboardHost)
         } else {
+            // The bot is the route; the token field is folded until asked for, so
+            // a fresh install is not invited to paste the download link into it.
             b.wgkTokenInputWrapper.isVisible = true
             b.wgkConnectWithTokenBtn.isVisible = true
+            b.wgkTokenSection?.isVisible = tokenSectionOpen
+            b.wgkHaveTokenToggle?.isVisible = !tokenSectionOpen
+            if (tokenSectionOpen) quietBotLinkButton(b)
+            b.wgkHaveTokenToggle?.setOnClickListener {
+                tokenSectionOpen = true
+                b.wgkHaveTokenToggle?.isVisible = false
+                b.wgkTokenSection?.isVisible = true
+                quietBotLinkButton(b)
+                b.wgkTokenInput.requestFocus()
+            }
             tvKeyboard?.detach()
             b.wgkPasteBtn.setOnClickListener {
                 pasteConnectionFromClipboard(b)
@@ -584,14 +617,14 @@ class TunnelListFragment : BaseFragment() {
      * Paints the connect control for [ui], cross-fading every part of it at once
      * when [animate].
      *
-     * The colours are driven by hand instead of being left to the two selectors in
+     * The colours are driven by hand instead of being left to the three selectors in
      * res/color, because a ColorStateList switches in a single frame by
      * construction and cannot be animated at all. The selectors stay the source of
      * truth for *which* colour belongs to each state — they are read here through
-     * getColorForState — while the fill, the icon and the busy arc are blended by
-     * one animator so the control moves as one object. Anything visual added to
-     * this control later has to join the animator too, or it will snap while the
-     * rest fades.
+     * getColorForState — while the fill, the outline, the icon and the busy arc are
+     * blended by one animator so the control moves as one object. Anything visual
+     * added to this control later has to join the animator too, or it will snap
+     * while the rest fades.
      *
      * The halo is not part of this: the three rings are static, as in v1.6.0, and
      * take their alphas from the Widget.WGKeyBot.ConnectRing styles in the layout.
@@ -634,6 +667,7 @@ class TunnelListFragment : BaseFragment() {
         val stateSet = buttonStateSet(ui.state)
         val targetBg = selectorColor(R.color.wgk_connect_btn_background_tint, stateSet)
         val targetIcon = selectorColor(R.color.wgk_connect_btn_icon_tint, stateSet)
+        val targetStroke = selectorColor(R.color.wgk_connect_btn_stroke, stateSet)
         val targetArc = if (busy) 1f else 0f
 
         // Cleared before the cancel, so the old animator's end callback can tell
@@ -657,8 +691,9 @@ class TunnelListFragment : BaseFragment() {
 
         val fromBg = btn.backgroundTintList?.defaultColor
         val fromIcon = btn.iconTint?.defaultColor
-        if (from == null || fromBg == null || fromIcon == null) {
-            applyConnectButtonLook(cb, targetBg, targetIcon, targetArc)
+        val fromStroke = btn.strokeColor?.defaultColor
+        if (from == null || fromBg == null || fromIcon == null || fromStroke == null) {
+            applyConnectButtonLook(cb, targetBg, targetIcon, targetStroke, targetArc)
             arc.isVisible = busy
             return
         }
@@ -674,6 +709,7 @@ class TunnelListFragment : BaseFragment() {
                     cb,
                     ColorUtils.blendARGB(fromBg, targetBg, f),
                     ColorUtils.blendARGB(fromIcon, targetIcon, f),
+                    ColorUtils.blendARGB(fromStroke, targetStroke, f),
                     lerp(fromArc, targetArc, f),
                 )
             }
@@ -693,10 +729,12 @@ class TunnelListFragment : BaseFragment() {
         cb: ViewWgkConnectButtonBinding,
         bg: Int,
         icon: Int,
+        stroke: Int,
         arcAlpha: Float,
     ) {
         cb.wgkConnectBtn.backgroundTintList = ColorStateList.valueOf(bg)
         cb.wgkConnectBtn.iconTint = ColorStateList.valueOf(icon)
+        cb.wgkConnectBtn.strokeColor = ColorStateList.valueOf(stroke)
         cb.wgkBusyArc.alpha = arcAlpha
     }
 
@@ -1329,6 +1367,29 @@ class TunnelListFragment : BaseFragment() {
         val text = cm.primaryClip?.getItemAt(0)?.coerceToText(requireContext())
             ?.toString() ?: return null
         return ConnectionLink.extractInput(text)
+    }
+
+    /**
+     * Once the token field is open, Connect is the action the user picked, and two
+     * filled buttons stacked one above the other competed for it. The bot button
+     * steps down to the outlined look of wgk_check_subscription_btn and stays, as
+     * the way back to the bot. A style can't be re-applied to a live view, so the
+     * outlined look is set piece by piece. One way only: the section never closes,
+     * and a fresh view starts filled from the layout.
+     */
+    private fun quietBotLinkButton(b: TunnelListFragmentBinding) {
+        val ctx = requireContext()
+        val primary = ContextCompat.getColor(ctx, R.color.wgk_primary)
+        b.wgkBotLinkBtn.apply {
+            backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(ctx, R.color.wgk_surface_container_low))
+            strokeColor = ColorStateList.valueOf(ContextCompat.getColor(ctx, R.color.wgk_outline))
+            strokeWidth = resources.displayMetrics.density.roundToInt().coerceAtLeast(1)
+            setTextColor(primary)
+            iconTint = ColorStateList.valueOf(primary)
+            // The filled ripple is drawn for an on-primary label and vanishes on
+            // the quiet surface.
+            rippleColor = ColorStateList.valueOf(ColorUtils.setAlphaComponent(primary, 0x29))
+        }
     }
 
     private fun pasteConnectionFromClipboard(b: TunnelListFragmentBinding) {

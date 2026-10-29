@@ -13,6 +13,8 @@ import javax.net.ssl.SSLException
 object ConnectionImportErrors {
     fun message(context: Context, error: Exception): String {
         if (error is ApiClient.HttpException) {
+            // 404 is the one status the person can act on: the bot never issued this token.
+            if (error.statusCode == 404) return context.getString(R.string.wgk_import_not_found)
             return context.getString(R.string.wgk_import_http_error, error.statusCode)
         }
         if (error is BackendException) return ErrorMessages[error]
@@ -25,6 +27,8 @@ object ConnectionImportErrors {
                 ConnectionLink.Failure.UNSUPPORTED_VERSION -> R.string.wgk_import_unsupported_version
                 ConnectionLink.Failure.INVALID_CONFIG -> R.string.wgk_import_invalid_config
                 ConnectionLink.Failure.INVALID_SERVER_CONFIG -> R.string.wgk_server_bad_config
+                ConnectionLink.Failure.APP_DOWNLOAD_LINK -> R.string.wgk_token_error_app_link
+                ConnectionLink.Failure.BOT_LINK -> R.string.wgk_token_error_bot_link
             }
             is ApiClient.InvalidTokenException -> R.string.wgk_token_error_format
             is ApiClient.UnauthorizedException -> R.string.wgk_import_unauthorized

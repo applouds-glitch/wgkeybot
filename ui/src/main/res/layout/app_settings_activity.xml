@@ -492,8 +492,9 @@
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
 
-                    <!-- Shown with the rows: when an override applies, and what
-                         switching the mode off does. -->
+                    <!-- Always shown, not only with the rows: switching the mode
+                         off is itself a change that waits for the next connection,
+                         and the switch's own line no longer repeats that. -->
                     <TextView
                         android:id="@+id/wgk_expert_note"
                         android:layout_width="match_parent"
@@ -503,8 +504,7 @@
                         android:paddingEnd="4dp"
                         android:text="@string/wgk_expert_note"
                         android:textAppearance="?attr/textAppearanceBodySmall"
-                        android:textColor="@color/wgk_on_surface_variant"
-                        android:visibility="gone" />
+                        android:textColor="@color/wgk_on_surface_variant" />
 
                 </LinearLayout>
             </androidx.constraintlayout.widget.ConstraintLayout>

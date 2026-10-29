@@ -20,28 +20,36 @@
     <color name="md_theme_light_errorContainer">#FFDAD6</color>
     <color name="md_theme_light_onError">#FFFFFF</color>
     <color name="md_theme_light_onErrorContainer">#410002</color>
-    <color name="md_theme_light_background">#F1F2ED</color>
-    <color name="md_theme_light_onBackground">#282C28</color>
-    <color name="md_theme_light_surface">#F1F2ED</color>
+    <!-- Light neutrals (background, surfaces, text, outlines) are a plain grey
+         with the faint cool cast of the primary, not the greenish M3 tones they
+         were: with the blue primary those read muddy, and the grey connect disc
+         on the grey field looked switched off. The same values as the iOS app
+         (2026-10-29, WGKTheme.swift there); the containers below have no iOS
+         counterpart and follow the same hue. Accents and the dark theme are
+         unchanged. -->
+    <color name="md_theme_light_background">#F2F3F5</color>
+    <color name="md_theme_light_onBackground">#1D2024</color>
+    <color name="md_theme_light_surface">#F2F3F5</color>
     <!-- Neutral Material surfaces keep large areas quiet; primary is reserved
          for actions and selection. Cards use surfaceContainerLowest. -->
     <color name="md_theme_light_surfaceBright">#FCFCFD</color>
     <color name="md_theme_light_surfaceDim">#DADCE0</color>
-    <color name="md_theme_light_surfaceContainerLowest">#FAFBF7</color>
-    <color name="md_theme_light_surfaceContainerLow">#EBEDE7</color>
-    <color name="md_theme_light_surfaceContainer">#E6E9E2</color>
-    <color name="md_theme_light_surfaceContainerHigh">#E0E4DC</color>
-    <color name="md_theme_light_surfaceContainerHighest">#DADFD5</color>
-    <color name="md_theme_light_onSurface">#282C28</color>
-    <color name="md_theme_light_surfaceVariant">#DADFD5</color>
-    <color name="md_theme_light_onSurfaceVariant">#565F56</color>
-    <color name="md_theme_light_outline">#727D71</color>
+    <color name="md_theme_light_surfaceContainerLowest">#FFFFFF</color>
+    <color name="md_theme_light_surfaceContainerLow">#ECEEF1</color>
+    <color name="md_theme_light_surfaceContainer">#E6E8EC</color>
+    <color name="md_theme_light_surfaceContainerHigh">#E0E3E8</color>
+    <color name="md_theme_light_surfaceContainerHighest">#DADDE3</color>
+    <color name="md_theme_light_onSurface">#1D2024</color>
+    <color name="md_theme_light_surfaceVariant">#DADDE3</color>
+    <color name="md_theme_light_onSurfaceVariant">#5C6370</color>
+    <!-- Also the captions of stages not yet reached: ≥4.5:1 on a white card. -->
+    <color name="md_theme_light_outline">#6E7581</color>
     <color name="md_theme_light_inverseOnSurface">#F2F0F4</color>
     <color name="md_theme_light_inverseSurface">#303033</color>
     <color name="md_theme_light_inversePrimary">#A8C8F0</color>
     <color name="md_theme_light_shadow">#000000</color>
     <color name="md_theme_light_surfaceTint">#2F5DA8</color>
-    <color name="md_theme_light_outlineVariant">#C5CCC0</color>
+    <color name="md_theme_light_outlineVariant">#D5D9E0</color>
     <color name="md_theme_light_scrim">#000000</color>
     <color name="md_theme_dark_primary">#A4C9FE</color>
     <color name="md_theme_dark_onPrimary">#0A305A</color>
@@ -114,26 +122,30 @@
     <color name="wgk_version_stamp">#FFC7D0DC</color>
 
     <color name="wgk_card_surface">@color/md_theme_light_surfaceContainerLowest</color>
-    <!-- Card outlines from v1.6.0, independent of input and button borders. -->
-    <color name="wgk_card_outline">#FFC4C6D0</color>
+    <!-- Card hairlines, independent of input and button borders. -->
+    <color name="wgk_card_outline">#FFE1E3E8</color>
     <color name="wgk_footer_surface">@color/wgk_card_surface</color>
     <color name="wgk_info_surface">@color/wgk_card_surface</color>
-    <color name="wgk_connect_idle_container">#E1E5DC</color>
-    <color name="wgk_connect_idle_content">#474E46</color>
+    <!-- At rest (and on Failed) the disc is white with a primary glyph and the
+         cards' hairline outline, as on iOS (2026-10-29): the former grey disc on
+         the grey field read as a switched-off button. -->
+    <color name="wgk_connect_idle_container">#FFFFFFFF</color>
+    <color name="wgk_connect_idle_content">@color/wgk_primary</color>
+    <color name="wgk_connect_idle_outline">@color/wgk_card_outline</color>
     <color name="wgk_connect_busy_content">@color/wgk_on_primary</color>
     <color name="wgk_on_surface_muted">@color/wgk_on_surface_variant</color>
     <color name="wgk_stage_idle_label">@color/wgk_on_surface_muted</color>
     <color name="wgk_text_field_surface">@android:color/transparent</color>
 
     <!-- Decorative separation is softer than input and focus outlines. -->
-    <color name="wgk_divider">#E1E5DB</color>
+    <color name="wgk_divider">#E6E8EC</color>
     <color name="wgk_icon_tile">@android:color/transparent</color>
     <color name="wgk_leading_icon">@color/wgk_on_surface_variant</color>
-    <!-- Neutral v1.6.0 stroke hue, softened progressively for the light field.
+    <!-- The neutral stroke hue, softened progressively for the light field.
          These alphas multiply the shared 42/28/18% inner-to-outer view opacity. -->
-    <color name="wgk_halo_inner">#B3C4CBC0</color>
-    <color name="wgk_halo_mid">#80C4CBC0</color>
-    <color name="wgk_halo_outer">#4DC4CBC0</color>
+    <color name="wgk_halo_inner">#B3C9CED6</color>
+    <color name="wgk_halo_mid">#80C9CED6</color>
+    <color name="wgk_halo_outer">#4DC9CED6</color>
 
     <!-- Opaque widget surfaces retain contrast on any launcher wallpaper. -->
     <color name="widget_bg">@color/wgk_surface</color>

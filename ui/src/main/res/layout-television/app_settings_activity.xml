@@ -404,12 +404,12 @@
                             android:layout_marginTop="@dimen/wgk_tv_option_view_overlap" />
                     </LinearLayout>
 
-                    <!-- When an override applies, shown with the rows, as on the phone. -->
+                    <!-- Always shown, as on the phone: switching the mode off waits for
+                         the next connection too. -->
                     <TextView
                         android:id="@+id/wgk_expert_note"
                         style="@style/Widget.WGKeyBot.Tv.PaneHelp"
-                        android:text="@string/wgk_expert_note"
-                        android:visibility="gone" />
+                        android:text="@string/wgk_expert_note" />
 
                     <Space style="@style/Widget.WGKeyBot.Tv.PaneSpace" />
 

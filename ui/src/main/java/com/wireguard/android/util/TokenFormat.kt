@@ -29,8 +29,16 @@ object TokenFormat {
     /** Unanchored on purpose: [Regex.matches] already requires the whole input. */
     private val VALID = Regex("[A-Za-z0-9_-]{$MIN_LENGTH,$MAX_LENGTH}")
 
-    /** `?token=…` / `?start=…` out of a deeplink or a bot link. */
-    private val QUERY_PARAM = Regex("[?&](?:token|start)=([^&#\\s]+)")
+    /** `?token=…` out of a deeplink. Bot links (`t.me/…?start=…`) never carry a token. */
+    private val QUERY_PARAM = Regex("[?&]token=([^&#\\s]+)")
+
+    /** Hosts whose links carry the token in the path: `/open/<t>`, `/api/v1/init/<t>`. Mirrors ApiClient.BASE_URL. */
+    private val SERVICE_HOSTS = setOf("key.shadowgate.online")
+
+    private val HTTP_URL = Regex("^https?://([^/?#\\s]+)", RegexOption.IGNORE_CASE)
+
+    /** What a pasted link that is not ours points at; the error message names it. */
+    enum class LinkKind { APP_DOWNLOAD, BOT, OTHER }
 
     private const val ZERO_WIDTH = "\u200B\u200C\u200D\uFEFF"
 
@@ -45,17 +53,43 @@ object TokenFormat {
 
     /**
      * Pull a token out of arbitrary pasted text: the token itself, a
-     * `wgkeybot://config?token=…` deeplink, a `t.me/…?start=…` bot link, or a
-     * URL whose last path segment is the token. Null if nothing valid is found.
+     * `wgkeybot://config?token=…` deeplink, or a link to our own host whose
+     * last path segment is the token. Null if nothing valid is found.
+     *
+     * Only our own links are mined: people paste the APK download page into
+     * the field, and `…/wgkeybot/releases` used to turn into a request for the
+     * token `releases` — a server round-trip ending in "token expired".
      */
     fun extract(text: String): String? {
+        val trimmed = text.trim()
         val candidates = sequence {
             yield(text)
-            QUERY_PARAM.find(text)?.let { yield(it.groupValues[1]) }
-            yield(text.trim().substringAfterLast('/'))
+            if (isServiceLink(trimmed)) {
+                QUERY_PARAM.find(trimmed)?.let { yield(it.groupValues[1]) }
+                yield(trimmed.substringBefore('?').substringBefore('#').substringAfterLast('/'))
+            }
         }
         return candidates.map { normalize(it) }.firstOrNull { isValid(it) }
     }
+
+    /**
+     * Tell the download page, the bot and any other site apart for the error
+     * message. Null for anything that is not an http(s) link, and for our own.
+     */
+    fun foreignLink(text: String): LinkKind? {
+        val host = host(text.trim()) ?: return null
+        return when {
+            host in SERVICE_HOSTS -> null
+            host == "github.com" || host.endsWith(".github.com") -> LinkKind.APP_DOWNLOAD
+            host == "t.me" || host == "telegram.me" || host.endsWith(".t.me") -> LinkKind.BOT
+            else -> LinkKind.OTHER
+        }
+    }
+
+    private fun host(text: String): String? = HTTP_URL.find(text)?.groupValues?.get(1)?.lowercase()
+
+    private fun isServiceLink(text: String): Boolean =
+        text.startsWith("wgkeybot://", ignoreCase = true) || host(text)?.let { it in SERVICE_HOSTS } == true
 
     /** True for a dashless UUID, the only shape that gets grouped with dashes. */
     fun isRawUuidHex(raw: String): Boolean =

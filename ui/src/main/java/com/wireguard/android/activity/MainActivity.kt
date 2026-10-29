@@ -29,20 +29,27 @@ import androidx.core.graphics.drawable.DrawableCompat
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
 import androidx.fragment.app.commit
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.wireguard.android.Application
 import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
 import com.wireguard.android.fragment.TunnelDetailFragment
 import com.wireguard.android.fragment.TunnelListFragment
+import com.wireguard.android.fragment.TunnelState
 import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.turn.ConnectionMode
+import com.wireguard.android.util.BatteryPromptPolicy
 import com.wireguard.android.util.ConnectionImport
 import com.wireguard.android.util.ConnectionImportErrors
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.ThemeMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -95,7 +102,14 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
         backPressedCallback = onBackPressedDispatcher.addCallback(this) { handleBackPressed() }
         onBackStackChanged()
         handleDeeplinkIntent(intent)
-        checkBatteryOptimization()
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                Application.getTunnelStateTracker().uiState
+                    .map { it.state }
+                    .distinctUntilChanged()
+                    .collect { offerBatteryExemption(it) }
+            }
+        }
         // The gear's tint depends on the config (ConnectionMode.isReserveInEffect),
         // which is not known until the tunnels have loaded.
         lifecycleScope.launch {
@@ -158,26 +172,33 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
     }
 
     /**
-     * Asks to be exempt from battery optimisation — once, ever. The tunnel wants
-     * the exemption (a doze-killed proxy is a dead VPN), but the request is a
-     * system modal that lands on top of the first frame, and asking on every cold
-     * start until the user gives in is not how to earn it. A refusal is recorded
-     * just like a grant; the exemption can still be given later from the system
-     * settings.
+     * Asks to be exempt from battery optimisation — once, ever, and only once a
+     * session is up ([BatteryPromptPolicy]). The tunnel wants the exemption (a
+     * doze-killed proxy is a dead VPN), but the system dialog alone says only
+     * "may reduce battery life", so our own dialog says what it is for first.
+     * Marked shown as soon as ours is up: "Not now", Back and a grant all count,
+     * and the exemption can still be given later from the system settings.
      */
-    private fun checkBatteryOptimization() {
+    private fun offerBatteryExemption(state: TunnelState) {
         val auth = AuthStore.getInstance(this)
-        if (auth.isBatteryPromptShown()) return
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (pm.isIgnoringBatteryOptimizations(packageName)) return
-        try {
-            batteryOptLauncher.launch(
-                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:$packageName")
-                }
-            )
-            auth.setBatteryPromptShown()
-        } catch (_: Exception) { }
+        if (!BatteryPromptPolicy.shouldOffer(state, auth.isBatteryPromptShown(),
+                pm.isIgnoringBatteryOptimizations(packageName))) return
+        auth.setBatteryPromptShown()
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.wgk_battery_prompt_title)
+            .setMessage(R.string.wgk_battery_prompt_message)
+            .setPositiveButton(R.string.wgk_battery_prompt_allow) { _, _ ->
+                try {
+                    batteryOptLauncher.launch(
+                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:$packageName")
+                        }
+                    )
+                } catch (_: Exception) { }
+            }
+            .setNegativeButton(R.string.wgk_battery_prompt_later, null)
+            .show()
     }
 
     override fun onNewIntent(intent: Intent) {

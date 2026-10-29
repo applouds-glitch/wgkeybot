@@ -19,6 +19,8 @@ object ConnectionLink {
     enum class Failure {
         EMPTY, INVALID_FORMAT, MISSING_TOKEN, INVALID_DATA, UNSUPPORTED_VERSION,
         INVALID_CONFIG, INVALID_SERVER_CONFIG,
+        /** The APK download page or the bot itself was pasted instead of a token. */
+        APP_DOWNLOAD_LINK, BOT_LINK,
     }
 
     // Keep parser details out of the exception: they can contain private keys.
@@ -45,7 +47,13 @@ object ConnectionLink {
         try {
             require(raw.length <= MAX_LINK_LENGTH)
             if (TokenFormat.normalize(raw).isEmpty()) throw InvalidLinkException(Failure.EMPTY)
-            val text = extractInput(raw) ?: throw InvalidLinkException()
+            val text = extractInput(raw) ?: throw InvalidLinkException(
+                when (TokenFormat.foreignLink(raw)) {
+                    TokenFormat.LinkKind.APP_DOWNLOAD -> Failure.APP_DOWNLOAD_LINK
+                    TokenFormat.LinkKind.BOT -> Failure.BOT_LINK
+                    else -> Failure.INVALID_FORMAT
+                }
+            )
             if (!text.startsWith("wgkeybot://")) return Input.Token(text)
             val uri = URI(text)
             require(uri.scheme == "wgkeybot" && uri.host == "config")
