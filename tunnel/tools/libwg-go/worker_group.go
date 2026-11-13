@@ -128,14 +128,11 @@ func (cfg WorkerGroupConfig) pinTransport(overTCP bool) WorkerGroupConfig {
 func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) {
 	var wg sync.WaitGroup
 
-	// cumStagger accumulates each stream's start delay so consecutive streams are
-	// spaced at least workerStagger (500ms) apart — the jitter is added on top,
-	// never subtracted, so the gap never dips below the floor. Stream 0 starts
-	// immediately (cumStagger == 0) to keep tunnel-up fast.
-	var cumStagger time.Duration
-	for _, s := range streams {
-		stagger := cumStagger
-		cumStagger += workerStagger + time.Duration(rand.Intn(200))*time.Millisecond
+	delays := workerStartDelays(len(streams), startLanes(cfg), func() time.Duration {
+		return time.Duration(rand.Intn(200)) * time.Millisecond
+	})
+	for i, s := range streams {
+		stagger := delays[i]
 
 		wg.Add(1)
 		go func(s *stream, stagger time.Duration) {
@@ -144,6 +141,58 @@ func WorkerGroup(ctx context.Context, cfg WorkerGroupConfig, streams []*stream) 
 		}(s, stagger)
 	}
 	wg.Wait()
+}
+
+// startLanes is how many streams may start at once: one per relay the streams
+// spread over from the first dial, which with extras in the config is the
+// extras (relay_extra.go: they carry, the link's own are the reserve; a TurnIP
+// pin leaves one relay). Without extras the link's own are not known until the
+// credentials come, so the streams start in one lane as before.
+func startLanes(cfg WorkerGroupConfig) int {
+	if cfg.TurnIP != "" {
+		return 1
+	}
+	seen := map[string]bool{}
+	for _, r := range cfg.ExtraRelays {
+		seen[r] = true
+	}
+	if len(seen) < 2 {
+		return 1
+	}
+	return len(seen)
+}
+
+// workerStartDelays is each stream's start delay. The streams of one lane are
+// spaced at least workerStagger (500ms) apart — the jitter is added on top,
+// never subtracted, so the gap never dips below the floor — and the first of
+// every lane starts at once, stream 0 among them, to keep tunnel-up fast.
+//
+// WHY lanes. The stagger keeps one relay from seeing a burst: Allocates pile
+// up behind their retransmits over UDP (allocSlots) and over TCP a burst of
+// SYNs to one host is what the mobile network punishes (relay_connect_pacing.go).
+// Both are per relay, and the streams spread over the relays by stream ID
+// (assignRelaysAround rotates the tier by streamID % len), so stream i and
+// stream i+lanes head for the same relay and streams i…i+lanes-1 for different
+// ones. One queue for all of them cost the start the whole spread: on the bench
+// of 2026-11-07 (Pixel, RTK LTE over TCP and the iPhone hotspot over UDP) ten
+// streams over three extras came up one every 0.6 s, the tenth at 6 s, 20
+// streams at 6.5-10 s — the tunnel ran its first seconds on a few streams at
+// ~1.6 Mbit/s each (the per-allocation cap). With a lane per relay the same
+// ten are up in ~2 s. A rest mark that empties a lane's relay sends its
+// streams to a neighbour's, where the per-relay pacing and slots space them
+// again: the lanes are a plan for the start, the pacing is the guard.
+func workerStartDelays(n, lanes int, jitter func() time.Duration) []time.Duration {
+	if lanes < 1 {
+		lanes = 1
+	}
+	cum := make([]time.Duration, lanes)
+	out := make([]time.Duration, n)
+	for i := range out {
+		lane := i % lanes
+		out[i] = cum[lane]
+		cum[lane] += workerStagger + jitter()
+	}
+	return out
 }
 
 // runWorker drives a single persistent stream: fetch creds → connect → on exit,
@@ -317,6 +366,7 @@ func (s *stream) attemptOnce(ctx context.Context, cfg WorkerGroupConfig, user, p
 	defer attempt.end()
 	s.user.Store(&user)
 	defer s.user.Store(nil)
+	s.credGroup.Store(int32(cfg.GroupID))
 	s.attempt.Store(attempt.a)
 	s.relays.Store(&addrs)
 	defer s.attempt.Store(nil)

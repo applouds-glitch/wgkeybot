@@ -89,8 +89,9 @@ func (s *stream) enqueueControl(b []byte) bool {
 
 // One reporter owns the sequence for the entire UUID, across all credential
 // groups. Check clocks locally once a second, but send only on state changes
-// and the existing 25s keepalive grid. Repeat changes on two paths and once
-// after a second to tolerate UDP loss without creating a reconnect storm.
+// and the existing keepalive grid (25s, or keepaliveEvery). Repeat changes on
+// two paths and once after a second to tolerate UDP loss without creating a
+// reconnect storm.
 type downlinkReporter struct {
 	seq      uint64
 	last     feedbackMask
@@ -122,7 +123,7 @@ func (r *downlinkReporter) update(streams []*stream, now time.Time) {
 			excluded = append(excluded, s.id)
 		}
 	}
-	grid := now.Truncate(keepaliveInterval).UnixNano()
+	grid := now.Truncate(keepaliveEvery(now)).UnixNano()
 	changed := !r.sent || mask != r.last
 	repeat := !r.repeatAt.IsZero() && !now.Before(r.repeatAt)
 	if !changed && !repeat && grid == r.lastGrid {

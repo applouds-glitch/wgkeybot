@@ -382,11 +382,11 @@ func TestALateRepeatWakeServesTheGridPointItMissed(t *testing.T) {
 	keepaliveEchoRetry = 100 * time.Millisecond
 	var waits atomic.Int32
 	prev := keepaliveWait
-	keepaliveWait = func(ctx context.Context, deadline time.Time, wake <-chan struct{}) (bool, bool) {
+	keepaliveWait = func(ctx context.Context, deadline time.Time, wake, poke <-chan struct{}) (bool, bool, bool) {
 		if waits.Add(1) == 2 { // the repeat's, after the first grid keepalive
 			deadline = deadline.Add(keepaliveInterval)
 		}
-		return prev(ctx, deadline, wake)
+		return prev(ctx, deadline, wake, poke)
 	}
 	t.Cleanup(func() { keepaliveWait = prev })
 	const lead = 300 * time.Millisecond

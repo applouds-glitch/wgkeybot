@@ -44,7 +44,7 @@ func TestAJudgeStoppedBeforeItReadsTheSessionsMovesNoneOfTheNextProxys(t *testin
 
 	liveSessions.Lock()
 	prior := liveSessions.byRelay
-	liveSessions.byRelay = map[string]map[*stream]struct{}{}
+	liveSessions.byRelay = map[string]map[*stream]*networkAttempt{}
 	var unlock sync.Once
 	release := func() { unlock.Do(liveSessions.Unlock) }
 	defer release()
@@ -69,7 +69,7 @@ func TestAJudgeStoppedBeforeItReadsTheSessionsMovesNoneOfTheNextProxys(t *testin
 	relays := []string{moveR42, moveR179}
 	s.relays.Store(&relays)
 	s.attempt.Store(h.a)
-	liveSessions.byRelay[moveR42] = map[*stream]struct{}{s: {}}
+	liveSessions.byRelay[moveR42] = map[*stream]*networkAttempt{s: s.attempt.Load()}
 	release()
 
 	var out relayMoveOut

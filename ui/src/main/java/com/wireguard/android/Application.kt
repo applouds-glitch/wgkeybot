@@ -34,6 +34,7 @@ import com.wireguard.android.widget.WidgetStateObserver
 import com.wireguard.android.widget.TunnelToggleAppWidgetProvider
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.PersistentLog
+import com.wireguard.android.util.ProcessExitLog
 import com.wireguard.android.util.UserKnobs
 import com.wireguard.android.util.applicationScope
 import kotlinx.coroutines.CompletableDeferred
@@ -79,6 +80,8 @@ class Application : android.app.Application() {
         // First, so it is running before anything worth keeping is logged. It
         // replays what this pid logged so far, the line above included.
         persistentLog = PersistentLog(File(noBackupFilesDir, "logs")).also { it.start(coroutineScope) }
+        // Why the processes before this one ended, into the journal just started.
+        coroutineScope.launch(Dispatchers.IO) { ProcessExitLog.report(this@Application) }
 
         if (BuildConfig.DEBUG) {
             WebView.setWebContentsDebuggingEnabled(true)

@@ -63,6 +63,35 @@ import (
 // marked ones were moved out of it (assignRelaysAround). Streams that did land
 // among a few ghosts drew no 486 in that run or the one before. A key's ghosts
 // all expire with the newest of them.
+//
+// And crowded is not full (2026-11-11). Half the quota was set when ten streams
+// spread over five or six relays, one or two on each. Since 2026-11-04 a config
+// with #@wgt:ExtraRelays spreads them over its extras alone (relay_extra.go) —
+// two to four relays, the bot's scripts giving an existing config two — and the
+// link's own relays wait behind them, ahead of the crowded. With two extras that
+// is five streams on each: one network left, five ghosts on each, both crowded,
+// and every stream went to the link's own for the ten minutes of the mark — the
+// relays the extras are there to keep the streams off — though each extra had
+// room for the five that had been on it; with three extras the second loss in
+// ten minutes did the same (field run of 2026-11-07, 6, 6 and 8 ghosts; the
+// order as the ordering code gives it, checked on 2026-11-11). And the ghosts
+// are counted whether or not they are there: pion sends the Refresh(0) without
+// waiting for its answer, so leaving a network that is still up — the releases
+// all sent — books as many as leaving one that is gone.
+//
+// So a crowded relay that is not one of the link's own behind the extras, and
+// where the credential holds less than its quota — live, ghosts and the
+// Allocates still running, as a move counts them (relayMoveQuota) — has a seat
+// left (seatedRelays), and is dialed with the relays losing in the window:
+// behind the clean ones, as before, and ahead of the link's own (relayTier).
+// The count is the book's, and the book counts every ghost it may have left: a
+// seat it finds is there, unless a release went out into a path that was dark
+// with no write error, which it does not count. Then the relay answers 486 —
+// in one round trip, held against nobody — and the attempt goes on to the
+// next relay, where it went straight away before. One of the link's own that
+// is crowded stays behind everything, as it was: put ahead of an extra with
+// no seat by the count, it would take the streams whenever the ghosts were
+// only assumed (noteCredsFromEarlierProcess).
 
 // orphanedAllocationLifetime is how long VK keeps an allocation whose client is
 // gone: its lifetime, counted from its last refresh. When that refresh happened
@@ -107,6 +136,7 @@ var allocationBook = struct {
 	markOf       map[relayIdentity]uint64    // the mark in force, by number (lastMark)
 	lastMark     uint64                      // the number of the newest mark on any key
 	announced    map[relayIdentity]bool      // this mark has already been logged as steering a dial
+	seatSaid     map[relayIdentity]bool      // this mark has already been logged as leaving a seat (announceSeated)
 	releasedAt   map[relayIdentity]time.Time // when our latest release there went out
 	succeeded    map[string]bool             // credentials at least one allocation was ever accepted on (quota_breaker.go)
 }{
@@ -116,6 +146,7 @@ var allocationBook = struct {
 	orphans:      map[relayIdentity]int{},
 	markOf:       map[relayIdentity]uint64{},
 	announced:    map[relayIdentity]bool{},
+	seatSaid:     map[relayIdentity]bool{},
 	releasedAt:   map[relayIdentity]time.Time{},
 	succeeded:    map[string]bool{},
 }
@@ -236,6 +267,7 @@ func orphanLocked(key relayIdentity, now time.Time, n int) bool {
 		allocationBook.markOf[key] = allocationBook.lastMark
 		allocationBook.orphans[key] = 0
 		delete(allocationBook.announced, key)
+		delete(allocationBook.seatSaid, key)
 	}
 	allocationBook.orphans[key] += n
 	// Never earlier than it was: a wall clock stepped back must not cut short
@@ -392,6 +424,7 @@ func crowdedRelays(user string, addrs []string, now time.Time) map[string]bool {
 		if ok && !now.Before(till) {
 			delete(allocationBook.orphanedTill, key)
 			delete(allocationBook.announced, key)
+			delete(allocationBook.seatSaid, key)
 			delete(allocationBook.orphans, key)
 			delete(allocationBook.markOf, key)
 			continue
@@ -404,6 +437,75 @@ func crowdedRelays(user string, addrs []string, now time.Time) map[string]bool {
 		}
 	}
 	return crowded
+}
+
+// seatedRelays is the relays of crowded where user's credential still has a
+// seat: not one of the link's own in reserve behind the extras, and holding
+// less than the quota there — its allocations live, its ghosts under the mark
+// and its Allocates still running together (see "crowded is not full" above).
+// nil if none has.
+func seatedRelays(user string, crowded, reserve map[string]bool, now time.Time) map[string]bool {
+	var relays []string
+	for relay := range crowded {
+		if !reserve[relay] {
+			relays = append(relays, relay)
+		}
+	}
+	if len(relays) == 0 {
+		return nil
+	}
+	// The running first, then the held: an Allocate leaves the one count only
+	// once booked in the other, so read in this order it is in one of them at
+	// least (relay_return.go).
+	running := make(map[string]int, len(relays))
+	for _, relay := range relays {
+		running[relay] = allocatingOn(user, relay)
+	}
+	held := credsHeldOn(user, relays, now)
+	var seated map[string]bool
+	for _, relay := range relays {
+		if held[relay]+running[relay] < relayMoveQuota {
+			if seated == nil {
+				seated = map[string]bool{}
+			}
+			seated[relay] = true
+		}
+	}
+	return seated
+}
+
+// announceSeated logs, once per mark, a crowded relay an attempt dials first
+// for the seat left on it, ahead of the link's own relays its order holds:
+// before 2026-11-11 the order was the other way round, and nothing else in
+// the journal tells the one from the other.
+func announceSeated(user string, seated, reserve map[string]bool, order []string, now time.Time) {
+	if len(order) == 0 || !seated[order[0]] {
+		return
+	}
+	var own []string
+	for _, addr := range order {
+		if reserve[addr] {
+			own = append(own, addr)
+		}
+	}
+	if len(own) == 0 {
+		return
+	}
+	key := relayIdentity{user: user, relay: order[0]}
+	running := allocatingOn(user, key.relay)
+	taken := credsHeldOn(user, []string{key.relay}, now)[key.relay] + running
+	allocationBook.Lock()
+	till, marked := allocationBook.orphanedTill[key]
+	say := marked && now.Before(till) && !allocationBook.seatSaid[key]
+	if say {
+		allocationBook.seatSaid[key] = true
+	}
+	count := allocationBook.orphans[key]
+	allocationBook.Unlock()
+	if say {
+		turnLog("[QUOTA] %s still holds %d of our orphaned allocations for creds %s (%v left), %d of the quota of %d taken there by the count — a seat left, dialed ahead of the link's own %v",
+			key.relay, count, credsTag(user), till.Sub(now).Round(time.Second), taken, relayMoveQuota, own)
+	}
 }
 
 // announceCrowded logs each crowded relay an attempt's order steered around —

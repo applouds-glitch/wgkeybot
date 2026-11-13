@@ -359,6 +359,15 @@ public final class TurnBackend {
     public static native void wgTurnProxyWake();
 
     /**
+     * Battery economy for an idle tunnel: while {@code on}, and only while the
+     * relays are reached over TCP, the native keepalive grid is 50 s instead of
+     * 25 s, so a cellular radio is woken half as often. The caller passes
+     * {@code true} while the screen is off and the user has left the setting on.
+     * May be called with no proxy running; the value keeps for the next one.
+     */
+    public static native void wgTurnProxySetEconomy(boolean on);
+
+    /**
      * Re-points the native socket binding at the current physical network.
      *
      * The only writer of that binding: neither {@link #wgTurnProxyStart} nor

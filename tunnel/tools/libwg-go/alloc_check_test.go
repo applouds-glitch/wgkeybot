@@ -56,7 +56,7 @@ func refused(code stun.ErrorCode, reason string) error {
 
 func testAllocCheck(asker permissionAsker) (*allocCheck, *permWatch) {
 	w := newPermWatch(4)
-	peer := &net.UDPAddr{IP: net.IPv4(31, 70, 79, 228), Port: 56000}
+	peer := &net.UDPAddr{IP: net.IPv4(203, 0, 113, 7), Port: 56000}
 	return &allocCheck{streamID: 4, client: asker, peer: peer, perm: w}, w
 }
 

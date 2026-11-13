@@ -139,16 +139,25 @@ func newRelayOrderUnder(mu *sync.Mutex, now time.Time) *relayOrder {
 	return &relayOrder{mu: mu, epoch: now, since: now, index: map[string]uint16{}, overtaken: map[[2]uint16]int{}}
 }
 
-// observeDownlink books one downlink datagram that arrived through relay for
-// its loss (relay_loss.go) and its order: one parse of the header, one lock.
-func observeDownlink(pkt []byte, relay string) {
+// observeDownlink books one downlink datagram that arrived through relay, on
+// the session of attempt (nil: none known), for its loss (relay_loss.go) and its
+// order: one parse of the header, one lock. Not for the loss of an attempt
+// recycled by a move, or over a transport left (networkAttempt.stale).
+func observeDownlink(pkt []byte, relay string, attempt *networkAttempt) {
 	receiver, ctr, ok := wgTransportHeader(pkt, relay)
 	if !ok {
 		return
 	}
 	now := time.Now()
 	downlinkMu.Lock()
-	downlinkRelayLoss.observeLocked(receiver, ctr, relay, now)
+	// Under the lock the loss judge lets a moved window's tail go under
+	// (dropTail): read after it, the attempt's stale is set, as it was before
+	// the judge saw the move. The order book takes the datagram all the same:
+	// it was delivered, and left out it would read as one that never came
+	// (Codex, 2026-11-06).
+	if attempt == nil || !attempt.stale.Load() {
+		downlinkRelayLoss.observeLocked(receiver, ctr, relay, now)
+	}
 	downlinkRelayOrder.observeLocked(receiver, ctr, relay, now)
 	downlinkMu.Unlock()
 }

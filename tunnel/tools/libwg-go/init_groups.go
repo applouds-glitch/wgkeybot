@@ -131,7 +131,7 @@ func StartTunnelGroups(ctx context.Context, lc net.PacketConn, cfg TunnelGroupsC
 			ctx:             gCtx,
 			id:              i,
 			in:              make(chan []byte, 512),
-			priority:        make(chan []byte, tcpPriorityQueueSize),
+			priority:        make(chan []byte, priorityQueueSize),
 			out:             lc,
 			sessionID:       cfg.SessionID,
 			cert:            cfg.Cert,
@@ -380,10 +380,10 @@ func dispatchPacket(streams []*stream, start int, now time.Time, pkt []byte) (se
 		if pass == 2 && !passedStalled {
 			break
 		}
-		// Prefer available priority queues across fresh TCP streams before
+		// Prefer available priority queues across fresh streams before
 		// falling back to their normal queues. Stale priority queues must not
 		// outrank a fresh stream's ordinary queue.
-		if len(pkt) <= tcpPriorityPacketSize {
+		if len(pkt) <= priorityPacketSize {
 			for i := 0; i < n; i++ {
 				st := streams[(start+i)%n]
 				if !st.ready.Load() || skip(st, pass) {

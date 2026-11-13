@@ -47,6 +47,7 @@ import com.wireguard.android.model.TunnelManager
 import com.wireguard.android.util.ApiClient
 import com.wireguard.android.util.AuthStore
 import com.wireguard.android.util.ErrorMessages
+import com.wireguard.android.util.SplitTunnelPreset
 import com.wireguard.android.util.QuantityFormatter
 import com.wireguard.android.util.ScreenStateMonitor
 import com.wireguard.android.viewmodel.ConfigProxy
@@ -1289,10 +1290,12 @@ class TunnelListFragment : BaseFragment() {
                     selectedApps = ArrayList(proxy.`interface`.excludedApplications)
                     if (selectedApps.isNotEmpty()) isExcluded = true
                 }
-                // Wizard entry: force the requested tab and start from an empty selection.
+                // Wizard entry: force the requested tab. "Include" starts from an empty
+                // selection, "exclude" from the apps that are better off outside a VPN;
+                // the picker ticks the ones that are installed.
                 if (forceExcluded != null) {
                     isExcluded = forceExcluded
-                    selectedApps = ArrayList()
+                    selectedApps = ArrayList(SplitTunnelPreset.forWizard(forceExcluded))
                 }
 
                 currentSplitProxy = proxy

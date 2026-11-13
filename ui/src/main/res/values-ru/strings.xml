@@ -369,7 +369,7 @@
     <!-- WGKeyBot UI strings -->
     <string name="wgk_connect_action">Подключиться</string>
     <string name="wgk_no_key_title">Подключите WGKeyBot</string>
-    <string name="wgk_no_key_subtitle">Доступ выдаёт наш Telegram-бот. Нажмите кнопку — бот покажет «Открыть в WGKey», и приложение подключится само.</string>
+    <string name="wgk_no_key_subtitle">Доступ выдаёт Telegram-бот @wg_key_bot. Кнопка ниже откроет его. Если бот спросит, выберите устройство и Android, затем нажмите «Открыть в WGKey» — в боте и ещё раз на открывшейся странице. Ключ загрузится сам, останется нажать «Подключиться».</string>
     <string name="wgk_no_key_action">Получить доступ в Telegram</string>
     <string name="wgk_have_token">Уже есть токен?</string>
     <string name="wgk_token_hint">Токен из бота</string>
@@ -377,7 +377,7 @@
     <string name="wgk_pasted_from_clipboard">Данные подключения вставлены из буфера</string>
     <string name="wgk_token_error_empty">Введите токен из бота</string>
     <string name="wgk_token_error_format">Это не похоже на токен. Токен показывает бот: «Подключить устройство» → Android.</string>
-    <string name="wgk_token_error_app_link">Это ссылка на скачивание приложения, а не токен. Приложение уже установлено — нажмите «Получить доступ в Telegram», бот подключит его сам.</string>
+    <string name="wgk_token_error_app_link">Это ссылка на скачивание приложения, а не токен. Приложение уже установлено — нажмите «Получить доступ в Telegram» и в боте «Открыть в WGKey».</string>
     <string name="wgk_token_error_bot_link">Это ссылка на бота, а не токен. Откройте её в Telegram и нажмите там «Открыть в WGKey» — вставлять ничего не нужно.</string>
     <string name="wgk_clipboard_no_token">В буфере нет токена</string>
     <string name="wgk_menu_cd">Меню</string>
@@ -386,6 +386,8 @@
     <string name="wgk_profile_loaded_on">Загружено %1$s</string>
     <string name="wgk_profile_never_loaded">—</string>
     <string name="wgk_profile_refresh_cd">Обновить конфиг</string>
+    <string name="wgk_battery_economy_label">Экономить батарею при выключенном экране</string>
+    <string name="wgk_battery_economy_desc">Проверять связь вдвое реже, пока экран выключен. Работает при подключении к релеям по TCP</string>
     <string name="wgk_auto_refresh_label">Автообновление</string>
     <string name="wgk_auto_refresh_desc">Обновлять конфигурацию раз в 12 часов</string>
     <string name="wgk_auto_refresh_cd">Авто-обновление конфига</string>

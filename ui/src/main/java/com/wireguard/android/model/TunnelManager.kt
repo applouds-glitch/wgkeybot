@@ -234,6 +234,11 @@ class TunnelManager(
         applicationScope.launch {
             ScreenStateMonitor.userPresent.collect { getTurnProxyManager().onUserPresent() }
         }
+        // The screen going off or on widens or narrows their keepalive grid
+        // (see TurnProxyManager.onEconomyChanged).
+        applicationScope.launch {
+            ScreenStateMonitor.screenOn.collect { getTurnProxyManager().onEconomyChanged() }
+        }
     }
 
     // ── Split tunneling vs. newly installed apps ───────────────────────────────

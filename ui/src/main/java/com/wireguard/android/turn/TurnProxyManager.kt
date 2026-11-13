@@ -9,8 +9,10 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.util.Log
+import com.wireguard.android.BuildConfig
 import com.wireguard.android.R
 import com.wireguard.android.backend.TurnBackend
+import com.wireguard.android.util.ScreenStateMonitor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -51,6 +53,7 @@ class TurnProxyManager(private val context: Context) {
 
     // State
     @Volatile private var activeTunnelName: String? = null
+    private val economyLock = Any()
 
     /** Name of the tunnel the TURN proxy is currently running for, or null. */
     val activeTunnel: String?
@@ -255,9 +258,6 @@ class TurnProxyManager(private val context: Context) {
     )
 
     private val instances = ConcurrentHashMap<String, Instance>()
-    // Remember the stream count that last succeeded, so the next connect
-    // can start with it instead of waiting for the primary count to time out.
-    private val lastSuccessfulStreams = ConcurrentHashMap<String, Int>()
     // Mutex to serialize start/stop operations: a stop must not interleave with a
     // start still working through its stream-count fallbacks
     private val operationMutex = kotlinx.coroutines.sync.Mutex()
@@ -356,20 +356,9 @@ class TurnProxyManager(private val context: Context) {
                 val effectiveWrapKey = if (stability) "" else settings.wrapKey
                 Log.d(TAG, "Mode: ${if (stability) "Stability (proxy_v2, 1 link, no WRAP)" else "Speed (${settings.peerType}, ${VkLinks.split(configuredVkLink).size} links, WRAP=${settings.wrapKey.isNotBlank()})"}${if (!stability && isStabilityMode()) ", reserve not offered for this peer type" else ""}")
 
-                // Build list of stream counts to try.
-                // 1. Last successful count (fast path on reconnect)
-                // 2. Primary configured count
-                // 3. Explicit fallback (if configured)
-                val streamCountsToTry = mutableListOf<Int>()
-                val remembered = lastSuccessfulStreams[tunnelName]
-                if (remembered != null && remembered != settings.streams) {
-                    streamCountsToTry.add(remembered)
-                }
-                streamCountsToTry.add(settings.streams)
-                val fallback = settings.fallbackStreams
-                if (fallback > 0 && fallback != settings.streams && fallback != remembered) {
-                    streamCountsToTry.add(fallback)
-                }
+                // The config's count, then its fallback; nothing from the start
+                // before (StreamCounts).
+                val streamCountsToTry = StreamCounts.toTry(settings.streams, settings.fallbackStreams)
 
                 val listenAddr = "127.0.0.1:${settings.localPort}"
                 var ret = -1
@@ -389,27 +378,41 @@ class TurnProxyManager(private val context: Context) {
                         break
                     }
                     if (attempt > 0) {
-                        val label = when {
-                            remembered != null && attempt == 1 && streamsToTry == settings.streams -> "remembered count failed, trying primary $streamsToTry"
-                            else -> "falling back to $streamsToTry streams"
-                        }
-                        Log.d(TAG, label)
+                        Log.d(TAG, "falling back to $streamsToTry streams")
                         appendLogLine(tunnelName, "Retrying with $streamsToTry streams...")
                         TurnBackend.wgTurnProxyStop()
                         delay(100)
                     }
 
+                    // Debug builds let a bench override the layout for this start
+                    // (BenchOverrides); a release never reads the file.
+                    val bench = if (BuildConfig.DEBUG) {
+                        java.io.File(context.filesDir, BenchOverrides.FILE_NAME).takeIf { it.isFile }
+                            ?.let { BenchOverrides.parse(it.readLines()) }
+                    } else null
+                    val streams = bench?.streams ?: streamsToTry
+                    val streamsPerCred = bench?.streamsPerCred ?: settings.streamsPerCred
+                    val turnIp = bench?.turnIp ?: settings.turnIp
+                    val extraRelays = bench?.extraRelays ?: settings.extraRelays
+                    val peer = bench?.peer ?: settings.peer
+                    if (bench != null && !bench.isEmpty) {
+                        Log.i(TAG, "Bench overrides: streams=$streams spc=$streamsPerCred turnip=[$turnIp] extra=[$extraRelays]${if (bench.peer != null) " peer=[$peer]" else ""} (config: streams=$streamsToTry spc=${settings.streamsPerCred} turnip=[${settings.turnIp}] extra=[${settings.extraRelays}])")
+                    }
+                    // Before the start, not after: a proxy started with the screen
+                    // off (always-on VPN, a reconnect at night) counts its first
+                    // keepalive on the right grid.
+                    pushEconomy()
                     ret = TurnBackend.wgTurnProxyStart(
-                        settings.peer, effectiveVkLink, settings.mode, streamsToTry,
+                        peer, effectiveVkLink, settings.mode, streams,
                         if (settings.useUdp) 1 else 0,
                         listenAddr,
-                        settings.turnIp,
+                        turnIp,
                         settings.turnPort,
                         effectivePeerType,
-                        settings.streamsPerCred,
+                        streamsPerCred,
                         settings.watchdogTimeout,
                         effectiveWrapKey,
-                        settings.extraRelays
+                        extraRelays
                     )
 
                     if (ret == START_CALL_REQUIRES_AUTH) {
@@ -464,13 +467,7 @@ class TurnProxyManager(private val context: Context) {
                             return@withContext false
                         }
                         instance.running = true
-                        lastSuccessfulStreams[tunnelName] = streamsToTry
-                        val streamInfo = when {
-                            attempt > 0 && streamsToTry == settings.streams -> " (primary after fallback)"
-                            attempt > 0 -> " (via fallback $streamsToTry streams)"
-                            remembered != null -> " (remembered)"
-                            else -> ""
-                        }
+                        val streamInfo = if (attempt > 0) " (via fallback $streamsToTry streams)" else ""
                         val msg = "TURN started for tunnel \"$tunnelName\" listening on $listenAddr$streamInfo"
                         Log.d(TAG, msg)
                         appendLogLine(tunnelName, msg)
@@ -502,9 +499,6 @@ class TurnProxyManager(private val context: Context) {
     suspend fun stopForTunnel(tunnelName: String) =
         withContext(Dispatchers.IO) {
             beginUserStop()
-
-            // Clear remembered stream count so next manual connect starts fresh
-            lastSuccessfulStreams.remove(tunnelName)
 
             // Stop the proxy BEFORE acquiring the mutex so an in-flight start
             // (which holds the mutex for the whole native call) is interrupted
@@ -542,6 +536,30 @@ class TurnProxyManager(private val context: Context) {
     fun onUserPresent() {
         if (activeTunnelName == null) return
         scope.launch { TurnBackend.wgTurnProxyWake() }
+    }
+
+    /**
+     * The screen went off or came on, or the user moved the switch: the native
+     * layer is told whether its keepalives may go out half as often
+     * ([BatteryEconomy]). Only while a proxy is running — every start tells it
+     * anew (see [pushEconomy]) — and off the main thread, as [onUserPresent].
+     */
+    fun onEconomyChanged() {
+        if (activeTunnelName == null) return
+        scope.launch { pushEconomy() }
+    }
+
+    /**
+     * Read and told under one lock: of two calls racing on the IO pool, the one
+     * that tells last has read last, so a screen that went off and on at once
+     * cannot leave the native layer with the older word.
+     */
+    private fun pushEconomy() {
+        synchronized(economyLock) {
+            TurnBackend.wgTurnProxySetEconomy(
+                BatteryEconomy.asks(BatteryEconomy.isEnabled(context), ScreenStateMonitor.screenOn.value)
+            )
+        }
     }
 
     fun isRunning(tunnelName: String): Boolean {

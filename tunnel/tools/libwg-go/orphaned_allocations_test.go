@@ -39,6 +39,7 @@ func resetAllocationBook(t *testing.T) {
 		allocationBook.orphanedTill = map[relayIdentity]time.Time{}
 		allocationBook.orphans = map[relayIdentity]int{}
 		allocationBook.announced = map[relayIdentity]bool{}
+		allocationBook.seatSaid = map[relayIdentity]bool{}
 		allocationBook.releasedAt = map[relayIdentity]time.Time{}
 		allocationBook.succeeded = map[string]bool{}
 		allocationBook.Unlock()

@@ -71,6 +71,12 @@ const (
 type relayLossSample struct {
 	relay    string
 	rx, lost int
+	// holes is how many gaps the lost came in (placeGapLocked): one gap of up
+	// to relayLossChunk-1 counters is one event however many it lost. Only
+	// the debug journal prints it (relayLossHolesNote): the judges count lost
+	// packets, and their chance bound is right only if those were lost one by
+	// one (audit, 2026-11-10).
+	holes int
 	// active is how many distinct seconds of the window had a packet through
 	// the relay: sustained traffic against a burst (relay_collapse.go).
 	active int
@@ -103,12 +109,31 @@ type relayLoss struct {
 	unplaced int    // lost in gaps placed on no relay, this window
 	lastAt   time.Time
 
+	// What time a take's numbers cover (relayLossSpan). A counter is booked
+	// once it is final, and under traffic that never pauses for
+	// relayLossIdleFlush that is a horizon of packets later: at holds when each
+	// counter in the ring arrived, settledAt when the latest of the delivered
+	// ones booked so far did — both as time since epoch, the first packet, so
+	// that a step of the wall clock does not pass for traffic — and end where
+	// the previous take's numbers ended: the first packet, before any take.
+	epoch     time.Time
+	at        [relayLossRing]time.Duration
+	settledAt time.Duration
+	end       time.Time
+
 	relays  []string
 	index   map[string]uint16
 	rx      []int
 	lost    []int
+	holes   []int
 	active  []int
 	lastSec []int64
+}
+
+// relayLossSpan is the time a take's numbers cover: over long, ending ago
+// before the take.
+type relayLossSpan struct {
+	over, ago time.Duration
 }
 
 var downlinkRelayLoss = newRelayLossUnder(&downlinkMu)
@@ -151,7 +176,8 @@ func (t *relayLoss) reset() {
 	t.lastOK, t.gap, t.unplaced = false, 0, 0
 	t.seen = [relayLossRing]uint64{}
 	t.lastAt = time.Time{}
-	t.relays, t.index, t.rx, t.lost = nil, map[string]uint16{}, nil, nil
+	t.epoch, t.settledAt, t.end = time.Time{}, 0, time.Time{}
+	t.relays, t.index, t.rx, t.lost, t.holes = nil, map[string]uint16{}, nil, nil, nil
 	t.active, t.lastSec = nil, nil
 }
 
@@ -168,6 +194,12 @@ func (t *relayLoss) observe(pkt []byte, relay string, now time.Time) {
 // observeLocked is observe with the header parsed, under mu.
 func (t *relayLoss) observeLocked(receiver uint32, ctr uint64, relay string, now time.Time) {
 	t.lastAt = now
+	if t.epoch.IsZero() {
+		t.epoch = now
+	}
+	if t.end.IsZero() {
+		t.end = now
+	}
 	if !t.have || receiver != t.receiver {
 		// A straggler of a keypair we have already left. The counter alone
 		// does not tell one: a keypair that carried fewer than
@@ -208,6 +240,7 @@ func (t *relayLoss) observeLocked(receiver uint32, ctr uint64, relay string, now
 	}
 	t.seen[slot] = ctr + 1
 	t.relayOf[slot] = idx
+	t.at[slot] = now.Sub(t.epoch)
 	if ctr+1 > t.top {
 		t.top = ctr + 1
 	}
@@ -225,6 +258,7 @@ func (t *relayLoss) relayIndexLocked(relay string) uint16 {
 	t.relays = append(t.relays, relay)
 	t.rx = append(t.rx, 0)
 	t.lost = append(t.lost, 0)
+	t.holes = append(t.holes, 0)
 	t.active = append(t.active, 0)
 	t.lastSec = append(t.lastSec, 0)
 	return i
@@ -239,6 +273,7 @@ func (t *relayLoss) finalizeLocked(upTo uint64) {
 			t.last, t.lastOK = t.relayOf[slot], true
 			t.rx[t.last]++
 			t.seen[slot] = 0
+			t.settledAt = max(t.settledAt, t.at[slot]) // the downlink arrives shuffled
 			continue
 		}
 		t.gap++
@@ -252,27 +287,72 @@ func (t *relayLoss) placeGapLocked(next uint16) {
 	case t.gap == 0:
 	case t.lastOK && t.last == next && t.gap < relayLossChunk:
 		t.lost[next] += t.gap
+		t.holes[next]++
 	default:
 		t.unplaced += t.gap
 	}
 	t.gap = 0
 }
 
+// dropTail lets go of the counters not yet final and of what was booked since
+// the last take, charged to no relay: the window they would go to is set aside
+// (relayLossWindows, a transport move), and a loss of the transport left
+// finalized in the next one would pass for one of the transport now in use
+// (Codex, 2026-11-06). The keypair is kept: counters from here on are booked as
+// ever, a late one from the tail let go is a straggler.
+func (t *relayLoss) dropTail() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.seen = [relayLossRing]uint64{}
+	t.base = t.top
+	t.gap, t.lastOK, t.unplaced = 0, false, 0
+	if t.lastAt.After(t.end) {
+		t.end = t.lastAt // what comes after the tail let go is the next take's
+	}
+	for i := range t.relays {
+		t.rx[i], t.lost[i], t.holes[i], t.active[i] = 0, 0, 0, 0
+	}
+}
+
 // take returns what each relay delivered and lost since the previous take, and
 // what was lost on no relay in particular, and starts the next window.
-func (t *relayLoss) take(now time.Time) (samples []relayLossSample, unplaced int) {
+//
+// span is the time those numbers cover, and it is the time since the previous
+// take only when the downlink paused before this one: what is booked is what
+// became final, and traffic that leaves no pause of relayLossIdleFlush keeps
+// its newest counters waiting for the horizon. The numbers then end where that
+// tail begins, and the next take's begin there. Field log, 2026-11-09, RTK
+// over TCP: three windows of 37, 137 and 30 packets printed no loss line at
+// all, and the fourth, of 2 packets, printed "last 10s" over 206 at "2/s each"
+// beside an order line of 2. At 100-300 packets a second — a bench on weak
+// LTE — the numbers run 3-10 s behind, up to a whole window. The judges take
+// them as they come; the line says what they cover.
+func (t *relayLoss) take(now time.Time) (samples []relayLossSample, unplaced int, span relayLossSpan) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.have && now.Sub(t.lastAt) >= relayLossIdleFlush {
 		t.finalizeLocked(t.top)
 	}
+	if t.end.IsZero() {
+		t.end = now // nothing has come yet
+	}
+	to := now
+	if t.base < t.top {
+		// A tail not yet final: the numbers end with the latest counter
+		// booked, or where they ended before if none was.
+		if to = t.epoch.Add(t.settledAt); to.Before(t.end) {
+			to = t.end
+		}
+	}
+	span = relayLossSpan{over: to.Sub(t.end), ago: now.Sub(to)}
+	t.end = to
 	unplaced, t.unplaced = t.unplaced, 0
 	out := make([]relayLossSample, 0, len(t.relays))
 	for i, relay := range t.relays {
 		if t.rx[i]+t.lost[i] > 0 {
-			out = append(out, relayLossSample{relay: relay, rx: t.rx[i], lost: t.lost[i], active: t.active[i]})
+			out = append(out, relayLossSample{relay: relay, rx: t.rx[i], lost: t.lost[i], holes: t.holes[i], active: t.active[i]})
 		}
-		t.rx[i], t.lost[i], t.active[i] = 0, 0, 0
+		t.rx[i], t.lost[i], t.holes[i], t.active[i] = 0, 0, 0, 0
 	}
-	return out, unplaced
+	return out, unplaced, span
 }

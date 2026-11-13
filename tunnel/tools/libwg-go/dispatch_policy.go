@@ -83,7 +83,7 @@ func (r *chunkRotor) sentWithin(now time.Time, limit int) {
 // is only a priority heuristic: WireGuard has already encrypted TCP headers.
 func (r *chunkRotor) startPacket(now time.Time, size int, overTCP bool) int {
 	if overTCP {
-		if size <= tcpPriorityPacketSize {
+		if size <= priorityPacketSize {
 			return r.smallNext
 		}
 		return r.startWithin(now, tcpChunkMaxAge)
@@ -93,7 +93,7 @@ func (r *chunkRotor) startPacket(now time.Time, size int, overTCP bool) int {
 
 func (r *chunkRotor) sentPacket(now time.Time, size int, overTCP bool) {
 	if overTCP {
-		if size <= tcpPriorityPacketSize {
+		if size <= priorityPacketSize {
 			r.smallNext = (r.smallNext + 1) % r.n
 			return
 		}

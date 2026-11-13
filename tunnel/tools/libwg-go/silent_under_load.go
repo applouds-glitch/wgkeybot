@@ -235,8 +235,9 @@ type silentUnderLoadVerdict struct {
 	index     int // in the judged streams
 	id        int
 	silent    time.Duration
-	witnesses []int // stream ids
-	packets   int   // what the witnesses heard since, together
+	rule      time.Duration // the age rule's age then (staleAfter)
+	witnesses []int         // stream ids
+	packets   int           // what the witnesses heard since, together
 }
 
 // silentUnderLoadReturn is a stream heard again after a verdict, in the same
@@ -320,7 +321,7 @@ func (j *silentUnderLoadJudge) judge(streams []*stream, now time.Time) (verdicts
 			continue
 		}
 		silent := now.Sub(time.Unix(0, j.heard[i]))
-		if silent < silentUnderLoadAfter || silent > dispatchStaleAfter {
+		if silent < silentUnderLoadAfter || silent > staleAfter(now) {
 			continue
 		}
 		var witnesses []int
@@ -343,7 +344,7 @@ func (j *silentUnderLoadJudge) judge(streams []*stream, now time.Time) (verdicts
 			continue
 		}
 		a.markSilentUnderLoad(j.heard[i])
-		verdicts = append(verdicts, silentUnderLoadVerdict{index: i, id: st.id, silent: silent, witnesses: witnesses, packets: packets})
+		verdicts = append(verdicts, silentUnderLoadVerdict{index: i, id: st.id, silent: silent, rule: staleAfter(now), witnesses: witnesses, packets: packets})
 	}
 	return verdicts, back
 }
@@ -353,7 +354,7 @@ func (j *silentUnderLoadJudge) judge(streams []*stream, now time.Time) (verdicts
 // heard silentUnderLoadPackets since prior was taken: the tunnel at rest, as
 // far as a witness of this turn is concerned (idle).
 func (j *silentUnderLoadJudge) quiet(now time.Time) bool {
-	if j.basedAt.IsZero() || now.Sub(j.basedAt) >= dispatchStaleAfter {
+	if j.basedAt.IsZero() || now.Sub(j.basedAt) >= staleAfter(now) {
 		if j.basedAt.IsZero() {
 			copy(j.base, j.count)
 			copy(j.baseAct, j.act)
@@ -384,7 +385,7 @@ func (j *silentUnderLoadJudge) quiet(now time.Time) bool {
 func (v silentUnderLoadVerdict) line() string {
 	return fmt.Sprintf("[DISPATCH] stream %d silent %v while siblings %v got %d packets — skipped %v before the %v rule",
 		v.id, v.silent.Round(100*time.Millisecond), v.witnesses, v.packets,
-		(dispatchStaleAfter - v.silent).Round(time.Second), dispatchStaleAfter)
+		(v.rule - v.silent).Round(time.Second), v.rule)
 }
 
 // runSilentUnderLoadJudge judges streams until ctx ends and logs each verdict

@@ -113,7 +113,10 @@ const (
 	// two cycles of a stream alone on such a relay — on 2026-10-21 a session
 	// there lasted 2.5-4 min from its dial to the detector — and no more:
 	// outside its two episodes the log has not one deaf session, and a longer
-	// count would only give chance ones the time to add up.
+	// count would only give chance ones the time to add up. Under load such a
+	// session now ends ~55 s sooner (the probe under load, under_load_probe.go),
+	// so the cycles are shorter and the third comes sooner; the count and the
+	// conditions are the same.
 	relayDeafStrikes = 3
 	relayDeafWindow  = 10 * time.Minute
 )
@@ -240,8 +243,11 @@ func noteDeafSession(s *stream, addr, peer string, cancelled bool, err error, st
 		return
 	}
 	how := "the detector"
-	if dead.probe {
+	switch {
+	case dead.probe:
 		how = "the post-wake probe"
+	case dead.underLoad:
+		how = "the probe under load"
 	}
 	turnLog("[RELAY DEAF] stream %d found deaf on %s by %s after %v of silence, while stream %d kept hearing %s — %d of %d in %v",
 		s.id, addr, how, dead.silent.Round(time.Second), by, d.witness, counted, relayDeafStrikes, relayDeafWindow)
@@ -296,7 +302,7 @@ func deafWitness(addr string, silentSince, now time.Time) (string, int) {
 			if a == nil || !a.start.Before(silentSince) {
 				continue
 			}
-			if heard := a.heardAge(now); heard <= dispatchStaleAfter && now.Add(-heard).After(silentSince) {
+			if heard := a.heardAge(now); heard <= staleAfter(now) && now.Add(-heard).After(silentSince) {
 				return relay, s.id
 			}
 		}

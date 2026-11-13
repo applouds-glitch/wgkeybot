@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"math/rand"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,8 +16,8 @@ func wgTransport(receiver uint32, ctr uint64) []byte {
 	return b
 }
 
-// samplesOf drops take's count of the losses placed on no relay.
-func samplesOf(samples []relayLossSample, _ int) []relayLossSample { return samples }
+// samplesOf drops take's count of the losses placed on no relay, and its span.
+func samplesOf(samples []relayLossSample, _ int, _ relayLossSpan) []relayLossSample { return samples }
 
 func lossOf(samples []relayLossSample, relay string) relayLossSample {
 	for _, s := range samples {
@@ -56,6 +57,37 @@ func TestRelayLossChargesGapsToTheChunksRelay(t *testing.T) {
 	}
 }
 
+// The book counts the gaps a relay's losses came in apart from the packets: a
+// run of three is three lost in one hole, two single drops are two in two.
+func TestRelayLossCountsHolesApartFromPackets(t *testing.T) {
+	tr := newRelayLoss()
+	now := time.Now()
+	for ctr := uint64(0); ctr < 800; ctr++ {
+		relay := "A"
+		if (ctr/8)%2 == 1 {
+			relay = "B"
+		}
+		switch {
+		case relay == "A" && ctr%8 >= 2 && ctr%8 <= 4: // one run of three per A chunk
+			continue
+		case relay == "B" && (ctr%8 == 2 || ctr%8 == 5): // two single drops per B chunk
+			continue
+		}
+		tr.observe(wgTransport(7, ctr), relay, now)
+	}
+	got := samplesOf(tr.take(now.Add(time.Second)))
+	a, b := lossOf(got, "A"), lossOf(got, "B")
+	if a.lost != 150 || a.holes != 50 {
+		t.Fatalf("A = %+v, want 150 lost in 50 holes", a)
+	}
+	if b.lost != 100 || b.holes != 100 {
+		t.Fatalf("B = %+v, want 100 lost in 100 holes", b)
+	}
+	if again := samplesOf(tr.take(now.Add(2 * time.Second))); len(again) != 0 {
+		t.Fatalf("the next window starts with %+v", again)
+	}
+}
+
 // An outage on the phone's own link loses a run of counters through every relay.
 // The relay of the chunk before it says nothing about whose they were, so the
 // run is placed on no relay — not charged whole to that relay, which made a
@@ -82,7 +114,7 @@ func TestRelayLossLeavesGapsItCannotPlaceUnplaced(t *testing.T) {
 		}
 		tr.observe(wgTransport(7, ctr), relay, now)
 	}
-	got, unplaced := tr.take(now.Add(time.Second))
+	got, unplaced, _ := tr.take(now.Add(time.Second))
 	if a := lossOf(got, "A"); a.lost != 0 {
 		t.Fatalf("A charged with %d losses", a.lost)
 	}
@@ -109,7 +141,7 @@ func TestRelayLossLeavesAChunkBoundaryUnplaced(t *testing.T) {
 		}
 		tr.observe(wgTransport(7, ctr), relay, now)
 	}
-	got, unplaced := tr.take(now.Add(time.Second))
+	got, unplaced, _ := tr.take(now.Add(time.Second))
 	if a, b := lossOf(got, "A"), lossOf(got, "B"); a.lost != 0 || b.lost != 0 || unplaced != 1 {
 		t.Fatalf("A lost %d, B lost %d, unplaced %d; want 0, 0, 1", a.lost, b.lost, unplaced)
 	}
@@ -256,5 +288,98 @@ func TestRelayLossCountsActiveSeconds(t *testing.T) {
 	}
 	if got := samplesOf(tr.take(t0.Add(12 * time.Second))); len(got) != 0 {
 		t.Fatalf("a new window carried the old one over: %+v", got)
+	}
+}
+
+// What a take returns is what became final, and its span is the time that
+// covers. The field log of 2026-11-09: a trickle that left no pause of
+// relayLossIdleFlush before three takes in a row printed no loss line for
+// them, and the fourth printed all four windows' packets as "last 10s".
+func TestRelayLossTakeSaysWhatTimeItsNumbersCover(t *testing.T) {
+	tr := newRelayLoss()
+	t0 := time.Unix(1_700_000_000, 0)
+	at := func(d time.Duration) time.Time { return t0.Add(d) }
+
+	// A packet every 400 ms for 30 s, then nothing.
+	ctr := uint64(0)
+	feed := func(upTo time.Duration) {
+		for d := time.Duration(ctr) * 400 * time.Millisecond; d <= upTo; d += 400 * time.Millisecond {
+			tr.observe(wgTransport(1, ctr), "A", at(d))
+			ctr++
+		}
+	}
+	for _, sec := range []int{10, 20, 30} {
+		now := time.Duration(sec) * time.Second
+		feed(now)
+		got, _, span := tr.take(at(now))
+		if len(got) != 0 || span.over != 0 || span.ago != now {
+			t.Fatalf("take at %v, the tail not final: %+v over %v ending %v ago; want nothing, 0 and %v", now, got, span.over, span.ago, now)
+		}
+	}
+	got, _, span := tr.take(at(40 * time.Second))
+	if a := lossOf(got, "A"); a.rx != int(ctr) || a.lost != 0 {
+		t.Fatalf("after the pause: %+v, want all %d delivered", a, ctr)
+	}
+	if span.over != 40*time.Second || span.ago != 0 {
+		t.Fatalf("after the pause: over %v ending %v ago, want 40s and 0", span.over, span.ago)
+	}
+
+	// An ordinary window after it covers itself.
+	tr.observe(wgTransport(1, ctr), "A", at(43*time.Second))
+	if _, _, span := tr.take(at(50 * time.Second)); span.over != 10*time.Second || span.ago != 0 {
+		t.Fatalf("an ordinary window: over %v ending %v ago, want 10s and 0", span.over, span.ago)
+	}
+}
+
+// Steady traffic too slow to pass the horizon within a window is booked a
+// horizon late: each take covers one window's worth, ending that far back, and
+// neither grows.
+func TestRelayLossSpanOfSteadyTrafficBehindTheHorizon(t *testing.T) {
+	tr := newRelayLoss()
+	t0 := time.Unix(1_700_000_000, 0)
+	const every = 20 * time.Millisecond // 50 packets a second: the horizon is 20.48 s
+	lag := relayLossHorizon * every
+	ctr := uint64(0)
+	for sec := 10; sec <= 100; sec += 10 {
+		now := time.Duration(sec) * time.Second
+		for d := time.Duration(ctr) * every; d <= now; d += every {
+			tr.observe(wgTransport(1, ctr), "A", t0.Add(d))
+			ctr++
+		}
+		got, _, span := tr.take(t0.Add(now))
+		if sec < 40 {
+			continue // the first windows fill the horizon
+		}
+		if a := lossOf(got, "A"); a.rx != 500 || a.lost != 0 {
+			t.Fatalf("take at %v: %+v, want 500 delivered", now, a)
+		}
+		if span.over != 10*time.Second || span.ago != lag {
+			t.Fatalf("take at %v: over %v ending %v ago, want 10s and %v", now, span.over, span.ago, lag)
+		}
+	}
+}
+
+// The line says "last 10s" for a window that is one, and what its numbers
+// cover when they are not the window's: the rates are over that time too.
+func TestRelayLossLineSaysWhatItCovers(t *testing.T) {
+	for _, c := range []struct {
+		span     relayLossSpan
+		want     string
+		wantOver time.Duration
+	}{
+		{relayLossSpan{over: 10*time.Second + 2*time.Millisecond}, "10s", 10 * time.Second},
+		// The horizon at speed: 0.7 s of a 16 Mbit/s download.
+		{relayLossSpan{over: 9990 * time.Millisecond, ago: 700 * time.Millisecond}, "10s", 10 * time.Second},
+		{relayLossSpan{over: 40 * time.Second}, "40s", 40 * time.Second},
+		{relayLossSpan{over: 10 * time.Second, ago: 20480 * time.Millisecond}, "10s (ending 20s ago)", 10 * time.Second},
+		{relayLossSpan{over: 300 * time.Millisecond}, "1s", time.Second},
+	} {
+		if got, over := relayLossLineSpan(c.span); got != c.want || over != c.wantOver {
+			t.Errorf("%+v: %q over %v, want %q over %v", c.span, got, over, c.want, c.wantOver)
+		}
+	}
+	samples := []relayLossSample{{relay: "A", rx: 240}}
+	if got := formatRelayLoss(samples, map[string]int{"A": 3}, 40*time.Second); !strings.Contains(got, "(3 streams, 2/s each)") {
+		t.Fatalf("240 packets over 40 s on 3 streams: %q", got)
 	}
 }

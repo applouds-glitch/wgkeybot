@@ -49,6 +49,7 @@ import com.wireguard.android.tether.formatRoutingDate
 import com.wireguard.android.tether.TetherState
 import com.wireguard.android.tether.TetherToggle
 import com.wireguard.android.tether.messageRes
+import com.wireguard.android.turn.BatteryEconomy
 import com.wireguard.android.turn.ConnectionMode
 import com.wireguard.android.turn.ExpertOverrides
 import com.wireguard.android.turn.ExpertSettings
@@ -122,6 +123,7 @@ class AppSettingsActivity : AppCompatActivity() {
         bindConnectionMode()
         observeConnectionModeOffer()
         bindRelayTransport()
+        bindBatteryEconomy()
         bindAutoRefresh()
         bindTheme()
         bindUpdateCheck()
@@ -319,6 +321,26 @@ class AppSettingsActivity : AppCompatActivity() {
         wgkChoiceRoot.updatePadding(top = pad, bottom = pad)
         wgkChoiceRadio.minHeight = 0
         wgkChoiceRadio.minimumHeight = 0
+    }
+
+    /**
+     * Keepalives half as often with the screen off ([BatteryEconomy]). The row
+     * is in the phone layout only. Takes effect at once, without a reconnect:
+     * see TurnProxyManager.onEconomyChanged.
+     */
+    private fun bindBatteryEconomy() {
+        binding.wgkBatteryEconomyRow?.apply {
+            wgkSwitchIcon.setImageResource(R.drawable.ic_battery)
+            wgkSwitchLabel.setText(R.string.wgk_battery_economy_label)
+            wgkSwitchValue.setText(R.string.wgk_battery_economy_desc)
+            wgkSwitch.isChecked = BatteryEconomy.isEnabled(this@AppSettingsActivity)
+            wgkSwitchRoot.setOnClickListener {
+                val enabled = !BatteryEconomy.isEnabled(this@AppSettingsActivity)
+                BatteryEconomy.setEnabled(this@AppSettingsActivity, enabled)
+                wgkSwitch.isChecked = enabled
+                Application.getTurnProxyManager().onEconomyChanged()
+            }
+        }
     }
 
     private fun bindAutoRefresh() {

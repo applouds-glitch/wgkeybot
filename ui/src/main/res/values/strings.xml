@@ -504,12 +504,14 @@
     <string name="wgk_split_selected_of">%1$d of %2$d selected</string>
     <string name="wgk_split_toggle_all">Toggle all</string>
     <string name="wgk_no_key_title">Connect WGKeyBot</string>
-    <string name="wgk_no_key_subtitle">Access comes from our Telegram bot. Tap the button: the bot shows “Open in WGKey” and the app connects on its own.</string>
+    <string name="wgk_no_key_subtitle">Access comes from the Telegram bot @wg_key_bot. The button below opens it. If the bot asks, pick your device and Android, then tap “Open in WGKey”: in the bot and once more on the page that opens. The key loads on its own; then tap “Connect”.</string>
     <string name="wgk_no_key_action">Get access in Telegram</string>
     <string name="wgk_have_token">Already have a token?</string>
     <string name="wgk_expired_title">Subscription expired</string>
     <string name="wgk_expired_subtitle">Contact the bot to renew your subscription</string>
     <string name="wgk_check_subscription_action">Check payment</string>
+    <string name="wgk_battery_economy_label">Save battery with the screen off</string>
+    <string name="wgk_battery_economy_desc">Check the connection half as often while the screen is off. Works when the relays are reached over TCP</string>
     <string name="wgk_auto_refresh_label">Auto-refresh</string>
     <string name="wgk_auto_refresh_desc">Refresh configuration every 12 hours</string>
     <string name="wgk_auto_refresh_cd">Config auto-refresh</string>
@@ -523,7 +525,7 @@
     <string name="wgk_token_hint">Token from the bot</string>
     <string name="wgk_token_error_empty">Enter the token from the bot</string>
     <string name="wgk_token_error_format">This does not look like a token. The bot shows it under “Connect device” → Android.</string>
-    <string name="wgk_token_error_app_link">This is the app download link, not a token. The app is already installed: tap “Get access in Telegram” and the bot will connect it.</string>
+    <string name="wgk_token_error_app_link">This is the app download link, not a token. The app is already installed: tap “Get access in Telegram”, then “Open in WGKey” in the bot.</string>
     <string name="wgk_token_error_bot_link">This is a link to the bot, not a token. Open it in Telegram and tap “Open in WGKey” there; nothing needs to be pasted.</string>
     <string name="wgk_paste_cd">Paste from clipboard</string>
     <string name="wgk_pasted_from_clipboard">Connection details pasted from clipboard</string>

@@ -123,6 +123,7 @@ var dialRelayTCP = func(ctx context.Context, d *net.Dialer, addr string) (net.Co
 // traffic to it is written through.
 func connectRelayTCP(ctx context.Context, d *net.Dialer, addr string) (net.Conn, error) {
 	d.Timeout = relayTCPConnectTimeout
+	d.KeepAliveConfig = relayTCPKeepAlive
 	// Before the connect: the limit has to be in the SYN for the relay to keep to
 	// it (see relayTCPMaxSegment). After whatever the dialer already does there —
 	// protecting the socket.
@@ -205,14 +206,59 @@ var maxSegmentRefused sync.Once
 // or a few. It also lands before dispatchStaleAfter: the stream is replaced
 // rather than parked.
 //
-// The kernel applies the same limit to its keepalive probes (Go turns them on,
-// 15s idle), so an idle flow that has gone dark is given up within the minute
-// too, not only one with a writer stuck in it.
+// An idle flow that has gone dark is given up within the minute too, not only
+// one with a writer stuck in it: the stream's keepalive is written into it every
+// keepaliveInterval and is then the data nobody acknowledges (on the wide grid,
+// keepalive_economy.go, every 50s: given up within 80s). The kernel's own
+// keepalive probes are under the same limit, but they are only the reserve
+// behind that (see relayTCPKeepAlive).
 //
 // A var for the host tests, which cannot wait 30s.
 var relayTCPUserTimeout = 30 * time.Second
 
 var userTimeoutRefused sync.Once
+
+// relayTCPKeepAlive is the kernel's keepalive on a connection to a relay: the
+// first probe after 60s without a packet from the relay, then every 10s.
+//
+// Go's default, which these sockets had until 2026-11-12, is a probe after 15s.
+// A ready stream hears its relay once per keepaliveInterval — the echo of its
+// own keepalive — so every idle socket was probed 15s after each burst: a
+// second burst per period, a probe and its ACK on each of the ten sockets,
+// 10s before the next one of ours. Measured on the phone that day (LTE, relays
+// over TCP, screen off, deep Doze, the tunnel idle): of 2057 packets through
+// the modem in ten minutes 65 were other apps' traffic, the rest ours in those
+// two bursts, and the modem was receiving 71% of the time — the gaps of 10s and
+// 15s are no longer than the radio's tail. The night before, the same picture
+// for 9h47m took 74% of the battery (batterystats: modem in Rx 72.5%). With
+// the probe moved past our own keepalive (to 35s then), the same ten minutes:
+// the second burst gone (29 packets at its place against 446), the modem
+// receiving 48% of the time and asleep 42% against 16%.
+//
+// 60s is the stale age of the wide grid (economyStaleAfter), and for its
+// reason: the longest gap a healthy stream has between two packets from its
+// relay is one interval of the grid plus the spread plus a round trip, so a
+// socket that reaches it is one the dispatcher has just stopped feeding — the
+// moment a probe has something to ask. A healthy idle socket is never probed,
+// on either grid. The option is set at the dial and the socket outlives a
+// change of grid, so it is the wide grid's age always: at the narrow grid's 35s
+// every socket would be probed in the middle of each wide period, the second
+// burst again. Nothing is given up later for it: a dark flow is found by our
+// keepalive going unacknowledged (see relayTCPUserTimeout), and that is under
+// way before the probe on either grid.
+//
+// The relays probe from their side too, after about 60s without a packet from
+// us (measured 2026-11-12, keepalive_economy.go): that is why no grid here is
+// wider than 50s.
+//
+// The count only matters where TCP_USER_TIMEOUT was refused; with it the kernel
+// gives a probed flow up by that limit instead.
+var relayTCPKeepAlive = net.KeepAliveConfig{
+	Enable:   true,
+	Idle:     economyStaleAfter,
+	Interval: 10 * time.Second,
+	Count:    3,
+}
 
 // relayFlowConn is the TCP connection to a relay with one thing added: it notes
 // the kernel giving the flow up. That verdict is delivered once, as ETIMEDOUT,

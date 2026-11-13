@@ -67,7 +67,13 @@ var (
 // keepaliveInterval, and their echoes come back in it, so the path's own gaps
 // are about 25s; one keepalive or its echo lost and the next, the repeat, is
 // 3s behind. dispatchStaleAfter is past both, as for a single stream.
+//
+// On the wide grid (keepalive_economy.go) the path's own gaps are about 50s,
+// and the measure is the wide grid's stale age (wholePathGapAt).
 const wholePathGap = dispatchStaleAfter
+
+// wholePathGapAt is wholePathGap on the grid in force at now.
+func wholePathGapAt(now time.Time) time.Duration { return staleAfter(now) }
 
 // noteRelayHeard records a relay heard over the transport, and the end of a
 // silence of the whole path if this is the first relay heard after one.
@@ -95,7 +101,10 @@ func noteRelayHeard(overTCP bool) {
 			return
 		}
 		if relayHeardAt[i].CompareAndSwap(prev, now) {
-			if prev != 0 && now-prev > int64(wholePathGap) {
+			// The narrow grid's measure first: every packet passes here, and
+			// one that follows another closely needs no reading of the grid.
+			if prev != 0 && now-prev > int64(wholePathGap) &&
+				now-prev > int64(wholePathGapAt(relayHeardBase.Add(time.Duration(now)))) {
 				advanceGapEnd(&relayGapEndAt[i], now)
 			}
 			return

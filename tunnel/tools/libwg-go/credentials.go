@@ -281,6 +281,22 @@ func credsReplaced(groupID int, user string) bool {
 	return cache.creds.Username != user || !time.Now().Before(cache.creds.ExpiresAt)
 }
 
+// credsServeFor reports whether the group's slot would serve user to a fetch
+// made any time before until: it holds user and expires after that. A slot whose
+// lock is taken — a fetch running — does not, as in credsReplaced.
+//
+// The return to the extras asks it before it closes a healthy session
+// (relay_return.go): the session's redial fetches its credential anew, and from
+// a slot gone empty that is a trip to VK which may end in no credential at all.
+func credsServeFor(groupID int, user string, until time.Time) bool {
+	cache := getStreamCache(groupID * streamsPerCredValue())
+	if !cache.mutex.TryRLock() {
+		return false
+	}
+	defer cache.mutex.RUnlock()
+	return user != "" && cache.creds.Username == user && until.Before(cache.creds.ExpiresAt)
+}
+
 // cacheMissReason says, for the log, why the slot's previous credential could not
 // serve link. A slot is missed not only when it expires but also when the
 // group's link has changed, and then its expiry still lies ahead — which the

@@ -19,7 +19,7 @@ func queuedStream(t *testing.T) *stream {
 	t.Helper()
 	s, _ := newNoDTLSTestStream(t)
 	s.in = make(chan []byte, 512)
-	s.priority = make(chan []byte, tcpPriorityQueueSize)
+	s.priority = make(chan []byte, priorityQueueSize)
 	return s
 }
 

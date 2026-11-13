@@ -327,6 +327,22 @@
                         </LinearLayout>
                     </com.google.android.material.card.MaterialCardView>
 
+                    <!-- Battery economy with the screen off. Under the transport
+                         card because it follows it: the keepalives go out half
+                         as often only while the relays are reached over TCP.
+                         Phone layout only: a TV has no battery to save. -->
+                    <com.google.android.material.card.MaterialCardView
+                        style="@style/Widget.WGKeyBot.InstrumentCard"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp">
+                        <include
+                            android:id="@+id/wgk_battery_economy_row"
+                            layout="@layout/view_wgk_settings_switch_row"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content" />
+                    </com.google.android.material.card.MaterialCardView>
+
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"

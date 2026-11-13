@@ -10,13 +10,13 @@ import (
 
 func TestTCPPriorityBypassesBulkWithoutStarvingIt(t *testing.T) {
 	s := dispatchStream(0, true, time.Now(), 2)
-	s.priority = make(chan []byte, tcpPriorityQueueSize)
+	s.priority = make(chan []byte, priorityQueueSize)
 	s.overTCP.Store(true)
 	bulk := make([]byte, 1200)
 	if sent, _ := dispatchPacket([]*stream{s}, 0, time.Now(), bulk); !sent {
 		t.Fatal("bulk packet was not queued")
 	}
-	for i := 0; i < tcpPriorityQueueSize; i++ {
+	for i := 0; i < priorityQueueSize; i++ {
 		if sent, _ := dispatchPacket([]*stream{s}, 0, time.Now(), make([]byte, 96)); !sent {
 			t.Fatal("small packet was not queued")
 		}
@@ -57,14 +57,23 @@ func TestTCPPriorityRespectsLivenessAndQueueFallback(t *testing.T) {
 	if sent, ready := dispatchPacket([]*stream{fresh}, 0, now, []byte{2}); sent || !ready {
 		t.Fatalf("full queues: sent=%v ready=%v", sent, ready)
 	}
+}
 
+func TestSmallPacketsSkipBulkOnUDPStreamsToo(t *testing.T) {
+	now := time.Now()
 	udp := dispatchStream(2, true, now, 2)
 	udp.priority = make(chan []byte, 1)
+	if udp.overTCP.Load() {
+		t.Fatal("the stream under test must be a UDP one")
+	}
 	dispatchPacket([]*stream{udp}, 0, now, make([]byte, 1200))
 	dispatchPacket([]*stream{udp}, 0, now, []byte{3})
 	reader := outboundReader{s: udp}
-	if pkt, ok := reader.next(context.Background()); !ok || len(pkt) != 1200 || len(udp.priority) != 0 {
-		t.Fatal("UDP no longer preserves ordinary FIFO ordering")
+	if pkt, ok := reader.next(context.Background()); !ok || len(pkt) != 1 {
+		t.Fatal("a small packet waited behind bulk on a UDP stream")
+	}
+	if pkt, ok := reader.next(context.Background()); !ok || len(pkt) != 1200 {
+		t.Fatal("the bulk packet was lost behind the small one")
 	}
 }
 

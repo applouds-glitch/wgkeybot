@@ -84,6 +84,25 @@ func runWorkersAgainstPeer(t *testing.T, group int, n int, addrs []string, peer 
 // choice; the peer has to speak it.
 func runWorkersOfType(t *testing.T, group int, n int, addrs []string, peer *net.UDPAddr, peerType string) *raceHarness {
 	t.Helper()
+	return runWorkersWithConfig(t, n, addrs, WorkerGroupConfig{GroupID: group, Link: "test", UseUDP: true, PeerType: peerType, PeerAddr: peer})
+}
+
+// runWorkersWithConfig runs n workers of cfg, the link handing out addrs.
+func runWorkersWithConfig(t *testing.T, n int, addrs []string, cfg WorkerGroupConfig) *raceHarness {
+	t.Helper()
+	// An earlier test's racers run on after it: its workers are waited for
+	// below, but a racer still in an Allocate when the session's context ends
+	// hangs until pion gives up on it, ~7.8s later — or until the test relay's
+	// socket, closed by that test's cleanup, refuses its next retransmit over
+	// ICMP, and a refusal read or written is a relay heard over the transport
+	// (relayHeardConn), one that during this test's own attempt makes the whole
+	// path's silence its relay's fault (relay_silence.go). Seen on the phone,
+	// 2026-11-07: three Allocates left by TestDarkRelayDoesNotHoldUpDialsToTheOther
+	// were refused as the head's Allocate of
+	// TestAllocatesUnansweredByEveryRelayAreHeldAgainstNone went out, and the
+	// head took a strike for a silence no relay broke. So this test's workers
+	// start only once no Allocate of any earlier one is running.
+	waitFor(t, "the Allocates of earlier tests to end", 10*time.Second, func() bool { return allocatesInFlight() == 0 })
 	resetAllocationBook(t)
 	resetNetworkSwitch(t)
 	resetNetworkAvailabilityForTest()
@@ -107,7 +126,7 @@ func runWorkersOfType(t *testing.T, group int, n int, addrs []string, peer *net.
 		h.done.Add(1)
 		go func() {
 			defer h.done.Done()
-			runWorker(ctx, WorkerGroupConfig{GroupID: group, Link: "test", UseUDP: true, PeerType: peerType, PeerAddr: peer}, s, 0)
+			runWorker(ctx, cfg, s, 0)
 		}()
 	}
 	t.Cleanup(func() {
@@ -115,6 +134,18 @@ func runWorkersOfType(t *testing.T, group int, n int, addrs []string, peer *net.
 		h.done.Wait()
 	})
 	return h
+}
+
+// allocatesInFlight is how many Allocates are running, for any credential on
+// any relay (noteAllocating).
+func allocatesInFlight() int {
+	allocating.Lock()
+	defer allocating.Unlock()
+	n := 0
+	for _, k := range allocating.n {
+		n += k
+	}
+	return n
 }
 
 func (h *raceHarness) ready() int {

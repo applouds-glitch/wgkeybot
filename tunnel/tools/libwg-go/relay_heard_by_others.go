@@ -59,8 +59,10 @@ import (
 // silent Allocate is one strike of three, not a verdict.
 var liveSessions = struct {
 	sync.Mutex
-	byRelay map[string]map[*stream]struct{}
-}{byRelay: map[string]map[*stream]struct{}{}}
+	// byRelay is the streams with a session on each relay, and the attempt
+	// the session came up in (relay_return.go: whose session it is).
+	byRelay map[string]map[*stream]*networkAttempt
+}{byRelay: map[string]map[*stream]*networkAttempt{}}
 
 // trackLiveSession books s as running a session on addr until the returned func
 // is called.
@@ -68,10 +70,10 @@ func trackLiveSession(addr string, s *stream) func() {
 	liveSessions.Lock()
 	set := liveSessions.byRelay[addr]
 	if set == nil {
-		set = map[*stream]struct{}{}
+		set = map[*stream]*networkAttempt{}
 		liveSessions.byRelay[addr] = set
 	}
-	set[s] = struct{}{}
+	set[s] = s.attempt.Load()
 	liveSessions.Unlock()
 
 	return func() {
@@ -126,7 +128,7 @@ func relayHeardByOthers(addr string, except *stream, now time.Time) bool {
 		if s == except || !s.ready.Load() {
 			continue
 		}
-		if a := s.activity.Load(); a != nil && a.heardAge(now) <= dispatchStaleAfter {
+		if a := s.activity.Load(); a != nil && a.heardAge(now) <= staleAfter(now) {
 			return true
 		}
 	}

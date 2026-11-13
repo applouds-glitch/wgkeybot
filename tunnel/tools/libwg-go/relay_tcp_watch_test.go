@@ -44,6 +44,9 @@ func newWatchHarness() *watchHarness {
 	h.w.logf = func(format string, args ...interface{}) {
 		h.lines = append(h.lines, fmt.Sprintf(format, args...))
 	}
+	// A summary every window, as a debug build prints them; the release
+	// cadence has a test of its own.
+	h.w.routineLogEvery = relaySocketLogInterval
 	return h
 }
 
@@ -163,6 +166,102 @@ func TestRelaySocketSummaryAddsUpTheWindow(t *testing.T) {
 	}
 }
 
+// A release build sums the windows in which only traffic moved into one line a
+// minute; a window with a stall in it is printed when it is ten seconds old, as
+// before, and the minute starts over from it.
+func TestRelaySocketRoutineSummaryIsOneLineAMinuteInRelease(t *testing.T) {
+	h := newWatchHarness()
+	h.w.routineLogEvery = time.Minute
+	c := h.socket(2, "relay-a")
+
+	// The window opens at the first sample and closes a minute after it.
+	var up uint64
+	for i := 0; i < 60; i++ {
+		up += 100 << 10
+		h.set(c, relaySocketSample{acked: up, rtt: 120 * time.Millisecond})
+		h.tick()
+	}
+	if len(h.lines) != 0 {
+		t.Fatalf("traffic alone printed before the minute was out:\n%s", strings.Join(h.lines, "\n"))
+	}
+	up += 100 << 10
+	h.set(c, relaySocketSample{acked: up, rtt: 120 * time.Millisecond})
+	h.tick()
+	wantParts(t, h.only(t), "[TCP] last 1m0s over 1 socket(s)", "up 6100 KB")
+
+	// A stall ends three seconds into the next minute: its window is printed
+	// at ten seconds, not at the minute.
+	for i := 1; i <= 3; i++ {
+		h.set(c, relaySocketSample{acked: up, timeouts: i})
+		h.tick()
+	}
+	h.set(c, relaySocketSample{acked: up})
+	h.tick() // the stall's own line
+	h.ticks(6)
+	if len(h.lines) != 3 {
+		t.Fatalf("printed %d line(s) after the stall, want the stall's and its window's:\n%s", len(h.lines)-1, strings.Join(h.lines, "\n"))
+	}
+	wantParts(t, h.lines[2], "[TCP] last 10s", "1 stall(s) ended")
+
+	// A stall still in progress is news too.
+	for i := 1; i <= 10; i++ {
+		h.set(c, relaySocketSample{acked: up, timeouts: i})
+		h.tick()
+	}
+	wantParts(t, h.lines[len(h.lines)-1], "[TCP] last 10s", "stalled now: stream 2 for")
+}
+
+// The other news a minute's window is printed early for: an unanswered
+// keepalive probe of an idle socket that ended, and the dispatcher's counters.
+func TestRelaySocketNewsIsPrintedAtTenSecondsInRelease(t *testing.T) {
+	h := newWatchHarness()
+	h.w.routineLogEvery = time.Minute
+	c := h.socket(5, "relay-a")
+
+	for i := 0; i < 2; i++ {
+		h.set(c, relaySocketSample{timeouts: 1, stall: stallKeepalive})
+		h.tick()
+	}
+	h.set(c, relaySocketSample{})
+	h.tick() // the silence's own line
+	h.ticks(8)
+	if len(h.lines) != 2 {
+		t.Fatalf("printed %d line(s), want the silence's and its window's:\n%s", len(h.lines), strings.Join(h.lines, "\n"))
+	}
+	wantParts(t, h.lines[1], "[TCP] last 10s", "1 idle socket(s) had a keepalive probe unanswered")
+
+	counters := []struct {
+		name string
+		c    *atomic.Uint64
+		want string
+	}{
+		{"dropped", &dispatchDropCount, "dispatcher dropped 1 packet(s)"},
+		{"steered", &dispatchSteeredCount, "1 packet(s) steered past stalled sockets"},
+		{"into stalled", &dispatchIntoStalledCount, "1 packet(s) into stalled sockets"},
+	}
+	for _, k := range counters {
+		// Package-wide counters: the shared relaySockets watch of a later test
+		// would read this one's packets as its own.
+		was := k.c.Load()
+		t.Cleanup(func() { k.c.Store(was) })
+		h.ticks(3)
+		k.c.Add(1)
+		n := len(h.lines)
+		h.ticks(7)
+		if len(h.lines) != n+1 {
+			t.Fatalf("%s: a packet %s printed %d line(s) at ten seconds, want 1:\n%s", k.name, k.name, len(h.lines)-n, strings.Join(h.lines, "\n"))
+		}
+		wantParts(t, h.lines[n], "[TCP] last 10s", k.want)
+	}
+}
+
+// Each build's own cadence reaches the watcher: the tests above set it.
+func TestRelaySocketWatchTakesTheBuildsCadence(t *testing.T) {
+	if got := newRelaySocketWatch().routineLogEvery; got != relaySocketRoutineLogEvery || got < relaySocketLogInterval {
+		t.Fatalf("routine summaries every %v, want the build's %v (not under %v)", got, relaySocketRoutineLogEvery, relaySocketLogInterval)
+	}
+}
+
 // A stall is a connection whose head segment keeps timing out with nothing
 // acknowledged. It gets a line of its own when it ends; a single timeout that is
 // over by the next sample is ordinary loss recovery and gets none.
@@ -206,12 +305,170 @@ func TestRelaySocketStallOnAClosedWindowSaysSo(t *testing.T) {
 	h := newWatchHarness()
 	c := h.socket(2, "relay-a")
 	for i := 1; i <= 3; i++ {
-		h.set(c, relaySocketSample{timeouts: i, probing: true, backlog: 40 << 10})
+		h.set(c, relaySocketSample{timeouts: i, stall: stallWindowClosed, backlog: 40 << 10})
 		h.tick()
 	}
 	h.set(c, relaySocketSample{})
 	h.tick()
 	wantParts(t, h.only(t), "the relay's receive window closed, 3 window probe(s) unanswered")
+}
+
+// The kernel counts the keepalive probes of an idle connection where it counts
+// window probes. One of those unanswered is the relay, or the path, silent with
+// nothing of ours held back: the line says so, and the summary counts it apart
+// from the stalls (field log of 2026-11-09: two idle streams on two relays read
+// as "the relay's receive window closed … up to 0 KB waiting in the socket").
+func TestRelaySocketUnansweredKeepaliveProbeIsNotAClosedWindow(t *testing.T) {
+	h := newWatchHarness()
+	c := h.socket(5, "relay-a")
+	for i := 0; i < 2; i++ {
+		h.set(c, relaySocketSample{timeouts: 1, stall: stallKeepalive})
+		h.tick()
+	}
+	h.set(c, relaySocketSample{})
+	h.tick()
+	line := h.only(t)
+	wantParts(t, line,
+		"[TCP] stream 5 (relay-a) silent while idle for ~2s",
+		"1 keepalive probe(s) of the socket unanswered",
+		"up to 0 KB waiting in the socket",
+		"moving again",
+	)
+	if strings.Contains(line, "window") || strings.Contains(line, "stalled") {
+		t.Fatalf("an unanswered keepalive probe was reported as a stall:\n%s", line)
+	}
+
+	h.ticks(10)
+	summary := h.lines[len(h.lines)-1]
+	wantParts(t, summary, "1 idle socket(s) had a keepalive probe unanswered, longest 2s")
+	if strings.Contains(summary, "stall(s) ended") {
+		t.Fatalf("the summary counted it as a stall:\n%s", summary)
+	}
+
+	// Still unanswered when the window closes: listed, and as what it is.
+	for i := 0; i < 12; i++ {
+		h.set(c, relaySocketSample{timeouts: 1, stall: stallKeepalive})
+		h.tick()
+	}
+	wantParts(t, h.lines[len(h.lines)-1], "stalled now: stream 5 for", "(idle, its keepalive probe unanswered)")
+}
+
+// A segment that never left the phone looks to the kernel's counters like one a
+// closed window holds back, and the line used to send its reader to the relay.
+// With the relay's window open it is this phone: the line says so, it is still
+// a stall of what was being sent, and the summary lists one that lasts as that
+// (live check of 2026-11-10: the app's uid firewalled for 8 s with a frame
+// queued read as "the relay's receive window closed, 4 window probe(s)
+// unanswered").
+func TestRelaySocketSegmentHeldOnThePhoneIsNotAClosedWindow(t *testing.T) {
+	h := newWatchHarness()
+	st := &stream{id: 3}
+	h.streams = append(h.streams, st)
+	c := h.socket(3, "relay-a")
+	for i := 1; i <= 4; i++ {
+		h.set(c, relaySocketSample{timeouts: i, stall: stallHeldHere, backlog: 1 << 10})
+		h.tick()
+	}
+	if !st.sendStalled.Load() {
+		t.Fatal("a socket whose segment does not leave the phone still took traffic")
+	}
+	h.set(c, relaySocketSample{})
+	h.tick()
+	line := h.only(t)
+	wantParts(t, line,
+		"[TCP] stream 3 (relay-a) held on the phone for ~4s",
+		"4 attempt(s) to send failed here with the relay's window open",
+		"up to 1 KB waiting in the socket",
+		"moving again",
+	)
+	if strings.Contains(line, "window closed") || strings.Contains(line, "probe") {
+		t.Fatalf("a segment held on the phone was reported as the relay's doing:\n%s", line)
+	}
+
+	h.ticks(10)
+	wantParts(t, h.lines[len(h.lines)-1], "1 stall(s) ended, longest 4s")
+
+	for i := 1; i <= 12; i++ {
+		h.set(c, relaySocketSample{timeouts: i, stall: stallHeldHere, backlog: 1 << 10})
+		h.tick()
+	}
+	wantParts(t, h.lines[len(h.lines)-1], "stalled now: stream 3 for", "(held on the phone)")
+}
+
+// The last sample of such a stall can catch the segment just sent and not yet
+// acknowledged, with the kernel's probe count still standing: taken alone that
+// reads as a keepalive probe under newer data. The stall keeps its name (live
+// check of 2026-11-10: one socket of ten held for 8 s was reported as "silent
+// while idle … 4 keepalive probe(s)").
+func TestRelaySocketStallIsNotRenamedOnItsWayOut(t *testing.T) {
+	h := newWatchHarness()
+	c := h.socket(1, "relay-a")
+	for i := 1; i <= 4; i++ {
+		h.set(c, relaySocketSample{timeouts: i, stall: stallHeldHere, backlog: 1 << 10})
+		h.tick()
+	}
+	h.set(c, relaySocketSample{timeouts: 4, stall: stallKeepalive, backlog: 2 << 10})
+	h.tick()
+	h.set(c, relaySocketSample{})
+	h.tick()
+	wantParts(t, h.only(t), "[TCP] stream 1 (relay-a) held on the phone for ~5s", "4 attempt(s) to send failed here")
+
+	h.ticks(10)
+	summary := h.lines[len(h.lines)-1]
+	wantParts(t, summary, "1 stall(s) ended, longest 5s")
+	if strings.Contains(summary, "idle socket(s)") {
+		t.Fatalf("the summary counted the stall as an idle socket's silence:\n%s", summary)
+	}
+
+	// The other way it does change: an idle socket's probe went unanswered, then
+	// a frame was written and did not leave the phone either.
+	h.set(c, relaySocketSample{timeouts: 1, stall: stallKeepalive})
+	h.tick()
+	for i := 2; i <= 3; i++ {
+		h.set(c, relaySocketSample{timeouts: i, stall: stallHeldHere, backlog: 1 << 10})
+		h.tick()
+	}
+	h.set(c, relaySocketSample{})
+	h.tick()
+	wantParts(t, h.lines[len(h.lines)-1], "[TCP] stream 1 (relay-a) held on the phone for ~3s")
+}
+
+// A kernel that does not report the relay's window cannot tell those two apart,
+// and the line does not pick one.
+func TestRelaySocketStallOnAKernelWithoutTheWindowSaysBoth(t *testing.T) {
+	h := newWatchHarness()
+	c := h.socket(4, "relay-a")
+	for i := 1; i <= 3; i++ {
+		h.set(c, relaySocketSample{timeouts: i, stall: stallWindowOrHeld, backlog: 1 << 10})
+		h.tick()
+	}
+	h.set(c, relaySocketSample{})
+	h.tick()
+	wantParts(t, h.only(t),
+		"[TCP] stream 4 (relay-a) stalled for ~3s",
+		"the relay's receive window closed or the packets not leaving the phone (this kernel does not say which), 3 probe(s) unanswered",
+	)
+}
+
+// What the probe count counts, by what stands beside it in tcp_info.
+func TestRelayProbeKind(t *testing.T) {
+	for _, tc := range []struct {
+		name                          string
+		inFlight, queued, relayWindow int
+		kernelSaysWindow              bool
+		want                          relayStallKind
+	}{
+		{"idle socket, nothing waiting", 0, 0, 64 << 10, true, stallKeepalive},
+		{"keepalive probe still unanswered under data sent since", 2, 2456, 64 << 10, true, stallKeepalive},
+		{"idle socket on an old kernel", 0, 0, 0, false, stallKeepalive},
+		{"bytes waiting, the relay's window at zero", 0, 1228, 0, true, stallWindowClosed},
+		{"bytes waiting, the relay's window open", 0, 1228, 64 << 10, true, stallHeldHere},
+		{"bytes waiting, a kernel that reports no window", 0, 1228, 0, false, stallWindowOrHeld},
+	} {
+		if got := relayProbeKind(tc.inFlight, tc.queued, tc.relayWindow, tc.kernelSaysWindow); got != tc.want {
+			t.Errorf("%s: kind %d, want %d", tc.name, got, tc.want)
+		}
+	}
 }
 
 // The stall that matters most is the one that never ends. While it lasts the

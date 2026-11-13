@@ -40,9 +40,13 @@ import (
 //     ever noticed;
 //   - a line per stall: a connection that went relayStallReportAfter or longer
 //     with its head segment timing out and nothing acknowledged — how long, how
-//     deep the timeouts went, how much was waiting behind it;
-//   - a summary every relaySocketLogInterval in which traffic moved or something
-//     stalled: bytes each way, retransmissions, the rtt spread across the pool,
+//     deep the timeouts went, how much was waiting behind it. An idle
+//     connection whose keepalive probe went that long unanswered gets the line
+//     too, worded as what it is, and its own count in the summary; so does one
+//     whose segment never left the phone (relayStallKind);
+//   - a summary every relaySocketLogInterval in which something stalled, and of
+//     the windows in which only traffic moved, every relaySocketRoutineLogEvery
+//     (a minute in a release build, every window in a debug one): bytes each way, retransmissions, the rtt spread across the pool,
 //     the deepest socket backlog and stream queue, how much of the sending time
 //     went on waiting for the relay's window or for our own send buffer, and
 //     how many packets the dispatcher steered past stalled sockets;
@@ -80,10 +84,11 @@ const (
 	// again. One is ordinary tail loss on a healthy path; the retransmission
 	// timing out as well is roughly a second without any acknowledgement at the
 	// rtts seen on these relays, which a flow that is merely lossy does not do.
-	// Unanswered probes count the same, and two keep a single keepalive probe
-	// caught in flight by the sample from counting. A relay that answers its
-	// window probes with the window still closed resets the count: that flow is
-	// slow, not gone, and is not marked.
+	// Unanswered probes count the same, a closed window's or an idle socket's
+	// keepalive, and so do attempts to send that failed on the phone; two keep a
+	// single keepalive probe caught in flight by the sample from counting. A
+	// relay that answers its window probes with the window still closed resets
+	// the count: that flow is slow, not gone, and is not marked.
 	relayStallSkipTimeouts = 2
 
 	// relayShrunkCalm is how long a connection whose segments were cut has to
@@ -151,6 +156,50 @@ func replaceSocketSession(s *watchedRelaySocket) bool {
 	return true
 }
 
+// relayStallKind is what a relay socket's count of unanswered timeouts counts.
+// The kernel keeps one counter for all but the first, and they send a reader of
+// the line to different places: the relay, the path, or this phone.
+type relayStallKind int
+
+const (
+	// The head segment went out and its retransmissions time out: the path, or
+	// the relay, is silent.
+	stallRetransmit relayStallKind = iota
+	// Keepalive probes of an idle connection: nothing of ours is held back.
+	stallKeepalive
+	// Window probes: the relay's receive window is closed, it is not reading.
+	stallWindowClosed
+	// The relay's window is open and the head segment still has not gone out:
+	// each attempt to send it failed on the phone, before any network. A
+	// firewall on the app does that (Android restricting its networking), and
+	// so does a network that is gone with the socket still on it. Live check
+	// of 2026-11-10, relays over TCP, the app's uid cut off for 8 s with a
+	// frame queued: the sockets read exactly as a closed window does, and the
+	// line blamed the relay, "the relay's receive window closed, 4 window
+	// probe(s) unanswered".
+	stallHeldHere
+	// One of the two above, on a kernel that does not report the relay's window
+	// (before 5.4).
+	stallWindowOrHeld
+)
+
+// relayProbeKind says what the kernel's probe count of a socket is counting,
+// from what tcp_info shows beside it: segments in flight, bytes the socket still
+// holds, the window the relay last advertised, and whether this kernel reports
+// that window at all (readRelaySocket has the reasoning).
+func relayProbeKind(inFlight, queued, relayWindow int, kernelSaysWindow bool) relayStallKind {
+	switch {
+	case inFlight != 0 || queued == 0:
+		return stallKeepalive
+	case relayWindow > 0:
+		return stallHeldHere
+	case kernelSaysWindow:
+		return stallWindowClosed
+	default:
+		return stallWindowOrHeld
+	}
+}
+
 // relaySocketSample is one look at a relay connection. The counters are
 // cumulative since the connection opened; a kernel that does not keep one
 // leaves it zero.
@@ -165,11 +214,10 @@ type relaySocketSample struct {
 	backlog int
 
 	// timeouts is how many times in a row the segment at the head has timed out
-	// unanswered; zero while the connection is moving. probing says the count is
-	// of window probes: the relay's receive window is closed, rather than the
-	// path silent.
+	// unanswered; zero while the connection is moving. stall says what the count
+	// is of.
 	timeouts int
-	probing  bool
+	stall    relayStallKind
 
 	rtt time.Duration
 
@@ -210,7 +258,7 @@ type watchedRelaySocket struct {
 	stalledSince  time.Time // zero while moving
 	stallTimeouts int
 	stallBacklog  int
-	stallProbing  bool
+	stallKind     relayStallKind
 }
 
 // relaySocketWindow is what accumulates between two summaries.
@@ -225,6 +273,8 @@ type relaySocketWindow struct {
 	queueStream             int
 	stallsEnded             int
 	longestStall            time.Duration
+	silencesEnded           int // idle sockets whose keepalive probe went unanswered
+	longestSilence          time.Duration
 	drops                   uint64
 	steered, intoStalled    uint64
 }
@@ -249,11 +299,13 @@ type relaySocketWatch struct {
 	// (relayShrunkGap).
 	lastReplaced time.Time
 
-	// Seams for the host tests: the platform sampler, the log, and what ends a
-	// session.
-	sample  func(*net.TCPConn) (relaySocketSample, bool)
-	logf    func(format string, args ...interface{})
-	replace func(*watchedRelaySocket) bool
+	// Seams for the host tests: the platform sampler, the log, what ends a
+	// session, and how long a window with nothing but traffic in it runs
+	// (relaySocketRoutineLogEvery, which differs between the builds).
+	sample          func(*net.TCPConn) (relaySocketSample, bool)
+	logf            func(format string, args ...interface{})
+	replace         func(*watchedRelaySocket) bool
+	routineLogEvery time.Duration
 }
 
 // newRelaySocketWatch counts the dispatcher's counters from now; run does the
@@ -265,6 +317,7 @@ func newRelaySocketWatch() *relaySocketWatch {
 		sample:          readRelaySocket,
 		logf:            turnLog,
 		replace:         replaceSocketSession,
+		routineLogEvery: relaySocketRoutineLogEvery,
 		lastDrops:       dispatchDropCount.Load(),
 		lastSteered:     dispatchSteeredCount.Load(),
 		lastIntoStalled: dispatchIntoStalledCount.Load(),
@@ -504,11 +557,21 @@ func (w *relaySocketWatch) observeLocked(streams []*stream, now time.Time) {
 		s.st.sendStalled.Store(cur.timeouts >= relayStallSkipTimeouts)
 
 		if cur.timeouts > 0 {
+			// The kind follows the samples, except that a stall is not turned
+			// into a keepalive probe's silence on the way out. The kernel drops
+			// its probe count at the acknowledgement, not at the send: once the
+			// held segment goes out there is, for a round trip, a segment in
+			// flight beside the old count, which is how a keepalive probe under
+			// newer data reads. Live check of 2026-11-10, ten sockets held for
+			// 8 s: the sample caught one of them there, and its line said
+			// "silent while idle … 4 keepalive probe(s)".
 			if s.stalledSince.IsZero() {
 				s.stalledSince = now
 				s.stallTimeouts, s.stallBacklog = 0, 0
+				s.stallKind = cur.stall
+			} else if cur.stall != stallKeepalive {
+				s.stallKind = cur.stall
 			}
-			s.stallProbing = cur.probing
 			if cur.timeouts > s.stallTimeouts {
 				s.stallTimeouts = cur.timeouts
 			}
@@ -524,9 +587,29 @@ func (w *relaySocketWatch) observeLocked(streams []*stream, now time.Time) {
 			w.window.queuePeak, w.window.queueCap, w.window.queueStream = n, cap(st.in)+cap(st.priority), st.id
 		}
 	}
-	if now.Sub(w.window.start) >= relaySocketLogInterval {
+	if span := now.Sub(w.window.start); span >= w.routineLogEvery || span >= relaySocketLogInterval && w.newsLocked(now) {
 		w.flushLocked(now)
 	}
+}
+
+// newsLocked reports whether the window holds more than traffic: a stall or an
+// unanswered keepalive probe that ended in it, a socket stalled now, or a packet
+// the dispatcher dropped, steered past a stalled socket or had to put into one.
+// Such a window is printed after relaySocketLogInterval, whatever the routine
+// summaries' cadence.
+func (w *relaySocketWatch) newsLocked(now time.Time) bool {
+	if w.window.stallsEnded > 0 || w.window.silencesEnded > 0 ||
+		dispatchDropCount.Load() != w.lastDrops ||
+		dispatchSteeredCount.Load() != w.lastSteered ||
+		dispatchIntoStalledCount.Load() != w.lastIntoStalled {
+		return true
+	}
+	for _, s := range w.socks {
+		if !s.stalledSince.IsZero() && now.Sub(s.stalledSince) >= relayStallReportAfter {
+			return true
+		}
+	}
+	return false
 }
 
 // endStallLocked closes a socket's stall, if it is in one, and reports it when
@@ -540,20 +623,40 @@ func (w *relaySocketWatch) endStallLocked(s *watchedRelaySocket, now time.Time, 
 	if lasted < relayStallReportAfter {
 		return
 	}
-	w.window.stallsEnded++
-	if lasted > w.window.longestStall {
-		w.window.longestStall = lasted
+	// An idle socket whose keepalive probe drew no answer held nothing back:
+	// the relay, or the path to it, was silent, and it is counted and worded
+	// apart from a stall of what was being sent.
+	if s.stallKind == stallKeepalive {
+		w.window.silencesEnded++
+		if lasted > w.window.longestSilence {
+			w.window.longestSilence = lasted
+		}
+	} else {
+		w.window.stallsEnded++
+		if lasted > w.window.longestStall {
+			w.window.longestStall = lasted
+		}
 	}
 	if w.stallLines >= relayStallLogBudget {
 		return
 	}
 	w.stallLines++
+	did := "stalled"
 	what := fmt.Sprintf("%d retransmission timeout(s) in a row unanswered", s.stallTimeouts)
-	if s.stallProbing {
+	switch s.stallKind {
+	case stallKeepalive:
+		did = "silent while idle"
+		what = fmt.Sprintf("%d keepalive probe(s) of the socket unanswered", s.stallTimeouts)
+	case stallWindowClosed:
 		what = fmt.Sprintf("the relay's receive window closed, %d window probe(s) unanswered", s.stallTimeouts)
+	case stallHeldHere:
+		did = "held on the phone"
+		what = fmt.Sprintf("%d attempt(s) to send failed here with the relay's window open", s.stallTimeouts)
+	case stallWindowOrHeld:
+		what = fmt.Sprintf("the relay's receive window closed or the packets not leaving the phone (this kernel does not say which), %d probe(s) unanswered", s.stallTimeouts)
 	}
-	w.logf("[TCP] stream %d (%s) stalled for ~%v: %s, up to %s waiting in the socket %s",
-		s.stream, s.relay, lasted.Round(time.Second), what, kilobytes(uint64(s.stallBacklog)), how)
+	w.logf("[TCP] stream %d (%s) %s for ~%v: %s, up to %s waiting in the socket %s",
+		s.stream, s.relay, did, lasted.Round(time.Second), what, kilobytes(uint64(s.stallBacklog)), how)
 	if w.stallLines == relayStallLogBudget {
 		w.logf("[TCP] %d stalls reported this session — further ones are only counted in the summaries", relayStallLogBudget)
 	}
@@ -591,11 +694,18 @@ func (w *relaySocketWatch) flushLocked(now time.Time) {
 			rtts = append(rtts, s.last.rtt)
 		}
 		if !s.stalledSince.IsZero() && now.Sub(s.stalledSince) >= relayStallReportAfter {
-			stalledNow = append(stalledNow, fmt.Sprintf("stream %d for %v", s.stream, now.Sub(s.stalledSince).Round(time.Second)))
+			how := ""
+			switch s.stallKind {
+			case stallKeepalive:
+				how = " (idle, its keepalive probe unanswered)"
+			case stallHeldHere:
+				how = " (held on the phone)"
+			}
+			stalledNow = append(stalledNow, fmt.Sprintf("stream %d for %v%s", s.stream, now.Sub(s.stalledSince).Round(time.Second), how))
 		}
 	}
 
-	if win.up+win.down < relayTrafficWorthALine && win.stallsEnded == 0 && len(stalledNow) == 0 &&
+	if win.up+win.down < relayTrafficWorthALine && win.stallsEnded == 0 && win.silencesEnded == 0 && len(stalledNow) == 0 &&
 		win.drops == 0 && win.steered == 0 && win.intoStalled == 0 {
 		return
 	}
@@ -639,6 +749,9 @@ func relaySocketSummary(win relaySocketWindow, span time.Duration, sockets int, 
 	}
 	if win.stallsEnded > 0 {
 		parts = append(parts, fmt.Sprintf("%d stall(s) ended, longest %v", win.stallsEnded, win.longestStall.Round(time.Second)))
+	}
+	if win.silencesEnded > 0 {
+		parts = append(parts, fmt.Sprintf("%d idle socket(s) had a keepalive probe unanswered, longest %v", win.silencesEnded, win.longestSilence.Round(time.Second)))
 	}
 	if len(stalledNow) > 0 {
 		parts = append(parts, "stalled now: "+strings.Join(stalledNow, ", "))

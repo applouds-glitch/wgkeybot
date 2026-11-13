@@ -73,6 +73,15 @@ var (
 	darkUpQuiet     = 30 * time.Second       // a stream that heard its relay this recently says the path is there
 )
 
+// darkUpQuietAt is darkUpQuiet on the grid in force at now. An idle tunnel
+// hears its relays once per grid interval, and darkUpQuiet is one narrow
+// interval and five seconds: on the wide grid (keepalive_economy.go) a healthy
+// path is quiet for up to fifty, and one attempt failing in the second half of
+// a period would have found a dark there and parked the workers.
+func darkUpQuietAt(now time.Time) time.Duration {
+	return darkUpQuiet + keepaliveEvery(now) - keepaliveInterval
+}
+
 // darkPath is the state of the path over one transport.
 type darkPath struct {
 	found     bool
@@ -325,7 +334,7 @@ func findsTheDark(overTCP bool, mark, epoch uint64, start time.Time, err error, 
 		}
 		return true, "a socket stalled, no relay heard for " + pathDarkQuiet.String()
 	case relayHeardMark(overTCP) == mark && now.Sub(start) >= darkEvidenceMin &&
-		!localNetworkError(err) && !heardWithin(overTCP, set, now, darkUpQuiet):
+		!localNetworkError(err) && !heardWithin(overTCP, set, now, darkUpQuietAt(now)):
 		if !noteDarkPath(overTCP, mark, epoch, start, now) {
 			return false, ""
 		}

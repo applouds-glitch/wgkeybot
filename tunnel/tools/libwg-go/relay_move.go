@@ -51,11 +51,14 @@ import (
 // its relay before the next session's — the sessions moved together, and those
 // of two relays rested in one judge turn, see one another's. Behind them all go
 // the relays full for the session's credential: crowded with its ghosts
-// (crowdedRelays), as the attempt would put them, or holding relayMoveQuota of
-// its allocations, live and ghosts, with the picks of the turn — balancing
+// (crowdedRelays) with no seat left there (seatedRelays, since 2026-11-11), as
+// the attempt would put them, or holding relayMoveQuota of its allocations,
+// live and ghosts, with the picks of the turn — balancing
 // load, two streams of one credential must not be sent where only one fits
 // (codex review 2026-10-22). The attempt dials that head first while it is
-// still in its first tier (headFirst): not crowded, resting or demoted since.
+// still in its first tier (headFirst): not crowded, resting or demoted since —
+// with the relays the move found full dialed as the move put them, with the
+// crowded (relayMove.full).
 // Ties go round by the stream's id, as the spread does.
 //
 // Losing here is a lower bar than a verdict: a relay weighed in the window
@@ -139,22 +142,70 @@ func lossyRelaysAt(now time.Time) map[string]bool {
 }
 
 // relayMove is what a stream moved off a rested relay carries into its next
-// attempt: the relays losing at the time, to be dialed last, and the relay to
-// dial first (moveHead).
+// attempt: the relays losing at the time, to be dialed last, the relay to
+// dial first (moveHead), and the relays the move found full for the session's
+// credential, user — crowded with its ghosts, or holding relayMoveQuota of its
+// allocations with the turn's picks — to be dialed with the crowded by an
+// attempt on that credential; one on another has quotas of its own (Codex,
+// 2026-11-06).
 type relayMove struct {
 	lossy map[string]bool
 	head  string
+	user  string
+	full  map[string]bool
 	at    time.Time
 }
 
 // takeMove returns, once, what the attempt after a move off a rested relay
 // dials by, unless the move is older than relayMoveLossyFresh; nil without one.
 func (s *stream) takeMove(now time.Time) *relayMove {
+	s.moveMu.Lock()
 	m := s.move.Swap(nil)
+	if m != nil {
+		s.tookMove.Store(&takenMove{move: m, attempt: s.attempt.Load()})
+	}
+	s.moveMu.Unlock()
 	if m == nil || now.Sub(m.at) > relayMoveLossyFresh {
 		return nil
 	}
 	return m
+}
+
+// giveMove gives the stream's next attempt m, over whatever was given before.
+func (s *stream) giveMove(m *relayMove) {
+	s.moveMu.Lock()
+	s.move.Store(m)
+	s.moveMu.Unlock()
+}
+
+// offerMove gives m only over no move, and only while the stream runs the
+// attempt the return weighed (relay_return.go): that one has a session up, so
+// it took its move before it dialed (attemptOnce) and is the one to end for
+// the next to take m. An attempt published since may not have taken its move
+// yet — ending it would end the one that takes m — so to a stream gone on to
+// another attempt the move is not offered (Codex, 2026-11-07).
+func (s *stream) offerMove(m *relayMove, weighed *networkAttempt) (given bool) {
+	s.moveMu.Lock()
+	defer s.moveMu.Unlock()
+	if weighed == nil || s.attempt.Load() != weighed || s.move.Load() != nil {
+		return false
+	}
+	s.move.Store(m)
+	return true
+}
+
+// moveState is the move given and not yet taken, and the last one taken, read
+// together.
+func (s *stream) moveState() (queued *relayMove, took *takenMove) {
+	s.moveMu.Lock()
+	defer s.moveMu.Unlock()
+	return s.move.Load(), s.tookMove.Load()
+}
+
+// takenMove is a move an attempt took (stream.tookMove).
+type takenMove struct {
+	move    *relayMove
+	attempt *networkAttempt
 }
 
 // relayLoad is what the moves of a judge turn weigh, charged with each pick:
@@ -202,37 +253,54 @@ func credsHeldOn(user string, relays []string, now time.Time) map[string]int {
 
 // moveHead is the relay a session of stream id on user's credential, moved off
 // left and dialing relays, goes to first: the least loaded by load of its
-// usable relays other than left — among those not full for the credential and
-// not losing in the window (lossy) when any is, then those not full, then the
-// rest — ties going round by id. load is charged with the pick. "" if there is
-// nowhere to go.
-func moveHead(relays []string, left string, id int, user string, lossy map[string]bool, load *relayLoad, now time.Time) string {
+// usable relays other than left — among those of the first tier that has any
+// (relayTier: not full for the credential, not losing in the window (lossy),
+// not the link's own in reserve behind the extras (relay_extra.go); then the
+// losing, the reserve, the full) — ties going round by id. load is charged
+// with the pick. "" if there is nowhere to go. It also returns the relays it
+// found full, for the attempt to put where the move did (relayMove.full): the
+// attempt knows the crowded ones itself, but not a relay full by the quota,
+// and the head picked because a relay was full was dropped for a relay of
+// that very tier (audit, 2026-11-06).
+//
+// A crowded relay that is not one of the link's own in reserve, and where the
+// credential's allocations with the turn's picks are short of the quota, has
+// a seat left and is not full: it goes with the losing, as the attempt puts it
+// (tierOf; orphaned_allocations.go, "crowded is not full") — a session that
+// has to leave a rested extra goes to the other extra's seat before it goes
+// to the link's own.
+func moveHead(relays []string, left string, id int, user string, lossy, reserve map[string]bool, load *relayLoad, now time.Time) (head string, full map[string]bool) {
 	sorted := append([]string(nil), relays...)
 	sort.Strings(sorted)
 	sorted = slices.Compact(sorted)
 	crowded := crowdedRelays(user, sorted, now)
 	held := credsHeldOn(user, sorted, now)
-	var clean, losing, full []string
+	var tiers [tierCount][]string
 	for _, relay := range sorted {
-		switch {
-		case relay == left || !relayUsable(relay, now):
-		case crowded[relay] || held[relay]+load.picked[relayIdentity{user: user, relay: relay}] >= relayMoveQuota:
-			full = append(full, relay)
-		case lossy[relay]:
-			losing = append(losing, relay)
-		default:
-			clean = append(clean, relay)
+		if relay == left || !relayUsable(relay, now) {
+			continue
 		}
+		atQuota := held[relay]+load.picked[relayIdentity{user: user, relay: relay}] >= relayMoveQuota
+		seated := crowded[relay] && !reserve[relay] && !atQuota
+		isFull := atQuota || (crowded[relay] && !seated)
+		if isFull {
+			if full == nil {
+				full = map[string]bool{}
+			}
+			full[relay] = true
+		}
+		t := relayTier(isFull, lossy[relay] || seated, reserve[relay])
+		tiers[t] = append(tiers[t], relay)
 	}
 	var tier []string
-	for _, t := range [][]string{clean, losing, full} {
+	for _, t := range tiers {
 		if len(t) > 0 {
 			tier = t
 			break
 		}
 	}
 	if len(tier) == 0 {
-		return ""
+		return "", full
 	}
 	least := load.sessions[tier[0]]
 	for _, relay := range tier[1:] {
@@ -244,18 +312,22 @@ func moveHead(relays []string, left string, id int, user string, lossy map[strin
 			ties = append(ties, relay)
 		}
 	}
-	head := ties[id%len(ties)]
+	head = ties[id%len(ties)]
 	load.sessions[head]++
 	load.picked[relayIdentity{user: user, relay: head}]++
-	return head
+	return head, full
 }
 
 // headFirst is order with head moved to its front, if head is still in its
-// first tier — usable, crowded as the relay in front is or not, losing as it
-// is or not (assignRelaysAround) — and order otherwise.
-func headFirst(order []string, head string, crowded, lossy map[string]bool, now time.Time) []string {
+// first tier — usable, and of the relayTier of the relay in front
+// (assignRelaysAround) — and order otherwise. The tier, not the flags it is
+// made of: among the full a losing relay is no further back (relayTier), and
+// comparing the flags kept the full relay the move had passed over for a less
+// loaded, losing one in front of it (Codex, 2026-11-06). The tier as the
+// attempt's order has it (tierOf), the crowded relays with a seat left in it.
+func headFirst(order []string, head string, crowded, seated, lossy, reserve map[string]bool, now time.Time) []string {
 	if head == "" || len(order) == 0 || !relayUsable(head, now) ||
-		crowded[head] != crowded[order[0]] || lossy[head] != lossy[order[0]] {
+		tierOf(head, crowded, seated, lossy, reserve) != tierOf(order[0], crowded, seated, lossy, reserve) {
 		return order
 	}
 	i := slices.Index(order, head)

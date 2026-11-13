@@ -8,17 +8,21 @@ package main
 import "context"
 
 const (
-	tcpPriorityPacketSize = 128
-	tcpPriorityQueueSize  = 32
-	priorityBurstLimit    = 8
+	priorityPacketSize = 128
+	priorityQueueSize  = 32
+	priorityBurstLimit = 8
 )
 
 // enqueuePriority only transfers ownership on success. A nil/full priority
 // queue leaves the caller free to try another stream or the ordinary queue.
+//
+// It used to serve TCP sessions only. Bench of 2026-11-08 on LTE, UDP relays, one
+// upload running through the tunnel: a ping took 3.1 s, against 1.8 s with small
+// packets queued here and 1.7-1.8 s with no tunnel at all. A small packet skips
+// the backlog in its stream's channel; what it cannot skip is the modem's own
+// queue, which is also why shrinking SO_SNDBUF and the channel gained nothing
+// (2.9 s).
 func (s *stream) enqueuePriority(pkt []byte) bool {
-	if !s.overTCP.Load() {
-		return false
-	}
 	select {
 	case s.priority <- pkt:
 		return true
@@ -72,7 +76,7 @@ func (s *stream) drainOutbound() int {
 
 // outboundReader belongs to one session's TX goroutine. Prefer small packets
 // already queued, but admit ordinary data after a bounded priority burst. This
-// cannot overtake bytes that have already been written into the TCP socket.
+// cannot overtake bytes that have already been written into the socket.
 type outboundReader struct {
 	s           *stream
 	priorityRun int

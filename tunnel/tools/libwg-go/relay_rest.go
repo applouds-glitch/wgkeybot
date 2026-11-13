@@ -62,10 +62,11 @@ const (
 	relayRestMax     = 4 * time.Hour
 	relayRestRelapse = 2 * time.Hour
 	relayJudgeEvery  = 10 * time.Second
-	// relayLossLogEvery: one routine line per this many windows while there is
-	// traffic over two relays or more; a window with a relay above
-	// relayLossLogAbove is logged every time.
-	relayLossLogEvery = 6
+	// relayLossLogEvery (relay_loss_log_release.go, _debug.go): one routine
+	// line per this many windows while there is traffic over two relays or
+	// more, if it booked relayLossLogMinPackets (_release.go: an idle tunnel's
+	// window is not worth a line); a window with a relay above relayLossLogAbove
+	// is logged every time.
 	relayLossLogAbove = 0.03
 	// relayRecycleGap spaces the sessions moved off a rested relay, so ten
 	// streams do not all redial the same second.
@@ -84,7 +85,13 @@ var relayRest = struct {
 	sync.Mutex
 	peer  string                   // the server of the running proxy
 	marks map[string]relayRestMark // relay+"→"+peer
-}{marks: map[string]relayRestMark{}}
+	// gen counts the rests begun, every relay's, every server's; restGen is
+	// the gen each relay's latest rest began at (relay+"→"+peer). For the loss
+	// judge's runs (relayJudge.forgetRested): unlike a mark, which goes once
+	// the relay is out of trouble, they stay.
+	gen     uint64
+	restGen map[string]uint64
+}{marks: map[string]relayRestMark{}, restGen: map[string]uint64{}}
 
 // setRelayRestPeer names the server the marks are read against from now on.
 func setRelayRestPeer(peer string) {
@@ -146,21 +153,46 @@ func noteRelayRestingFor(ctx context.Context, addr string, now time.Time) (time.
 		rest = min(2*m.rest, relayRestMax)
 	}
 	relayRest.marks[key] = relayRestMark{until: now.Add(rest), rest: rest}
+	relayRest.gen++
+	relayRest.restGen[key] = relayRest.gen
 	relayRest.Unlock()
 	saveRelayRest(now)
 	return rest, true
 }
 
+// relayRestGen is the count of rests begun so far: a moment to ask
+// relayRestedAfter about later, mark or no mark by then.
+func relayRestGen() uint64 {
+	relayRest.Lock()
+	defer relayRest.Unlock()
+	return relayRest.gen
+}
+
+// relayRestedAfter reports whether addr has begun a rest from the current
+// server's traffic since gen was read (relayRestGen).
+func relayRestedAfter(addr string, gen uint64) bool {
+	relayRest.Lock()
+	defer relayRest.Unlock()
+	return relayRest.restGen[relayRestKeyLocked(addr)] > gen
+}
+
 // runRelayLossJudge reads the downlink loss per relay every relayJudgeEvery for
-// the life of the proxy. A relay that loses alone rests and its sessions move
-// to the others (relay_judge.go); a relay whose downlink collapsed is logged
+// the life of the proxy. A relay that loses alone — two windows in a row, or
+// twenty packets over the minute (relay_judge.go) — rests and its sessions move
+// to the others; a relay whose downlink collapsed is logged
 // (relay_collapse.go). Every relayLossLogEvery windows it logs the order the
 // downlink came in (relay_order.go).
 func runRelayLossJudge(ctx context.Context) {
+	// The rests begun as the window being booked began, read before it opens:
+	// a run that begins in it is a run since then (judgeLossTurn).
+	moves, _ := relayTransportState()
+	windows := relayLossWindows{gen: relayRestGen(), moves: moves}
 	downlinkRelayLoss.reset()
 	downlinkRelayOrder.reset(time.Now())
 	noteLossyRelays(nil, time.Time{})
 	var judge relayJudge
+	var ledger relayLedger
+	var returns relayReturns
 	var collapse relayCollapseJudge
 	collapseLogged := map[string]time.Time{}
 	tick := time.NewTicker(relayJudgeEvery)
@@ -172,21 +204,34 @@ func runRelayLossJudge(ctx context.Context) {
 			return
 		case now = <-tick.C:
 		}
-		samples, unplaced := downlinkRelayLoss.take(now)
+		window := windows.next(downlinkRelayLoss, now, relayRestGen, relayTransportState)
+		samples, unplaced := window.samples, window.unplaced
 		streams := liveSessionCounts()
-		if len(samples) > 0 && (n%relayLossLogEvery == 0 || anyRelayLossAbove(samples, relayLossLogAbove)) {
-			turnLog("[RELAY LOSS] last %v: %s; %d lost on no relay in particular",
-				relayJudgeEvery, formatRelayLoss(samples, streams), unplaced)
+		if len(samples) > 0 && (n%relayLossLogEvery == 0 && relayLossPackets(samples) >= relayLossLogMinPackets ||
+			anyRelayLossAbove(samples, relayLossLogAbove)) {
+			// Over the time the numbers cover, which is not always the window
+			// (relayLoss.take).
+			span, over := relayLossLineSpan(window.span)
+			turnLog("[RELAY LOSS] last %s: %s; %d lost on no relay in particular",
+				span, formatRelayLoss(samples, streams, over), unplaced)
 		}
 		if n%relayLossLogEvery == 0 {
-			if order := downlinkRelayOrder.take(now); order.got > 0 {
+			if order := downlinkRelayOrder.take(now); order.got >= relayLossLogMinPackets {
+				if !relayOrderLogPairs {
+					order.pairs = nil
+				}
 				turnLog("[RELAY ORDER] %s", order)
 			}
 		}
 		// Before the verdicts: the sessions they move dial the relays losing in
 		// this same window last (relay_move.go).
 		noteLossyRelays(lossyRelays(samples), now)
-		restJudgedRelays(ctx, judge.step(samples), now)
+		verdicts := judgeLossTurn(&judge, &ledger, samples, window.overTCP, window.moved, window.began, relayRestedAfter)
+		restJudgedRelays(ctx, verdicts, now)
+		// After the verdicts: a session they move is not one to return (relay_return.go).
+		if set := activeStreams.Load(); set != nil {
+			returns.returnPass(ctx, now, liveSessionList, func() bool { return pathSilence(*set, window.overTCP, now) > 0 })
+		}
 		for _, relay := range collapse.step(samples, streams, relayJudgeEvery) {
 			if now.Sub(collapseLogged[relay]) < relayCollapseLogEvery {
 				continue
@@ -194,18 +239,94 @@ func runRelayLossJudge(ctx context.Context) {
 			collapseLogged[relay] = now
 			s := sampleFor(samples, relay)
 			turnLog("[RELAY LOSS] %s looks collapsed: %.1f%% lost at %.0f packets/s per stream, %d windows running — logged only",
-				relay, 100*s.rate(), perStreamRate(s, streams[relay]), relayCollapseStrikes)
+				relay, 100*s.rate(), perStreamRate(s, streams[relay], relayJudgeEvery), relayCollapseStrikes)
 		}
 	}
 }
 
-// restJudgedRelays rests the relays of one window's verdicts and moves the
-// sessions off them. Every relay is rested before any session moves: a session
-// moves only if its link has another usable relay, and a relay judged in the
-// same window is none — rested one by one, the sessions on the first went to
-// the second, which was rested next, and redialed straight back onto a resting
-// relay (iOS review, 2026-10-11: two relays of one link judged against a third
-// of another link, or an extra relay).
+// relayLossWindows hands the loss judge its windows (take), each with the rests
+// begun as it began (relayRestGen), the transport as it closed and whether the
+// transport moved while it was booked (relayTransportState). What the next
+// window begins at is read before the take that opens it: read after, a rest
+// begun in between — the window open, booking traffic from before the rest —
+// would count as before the window, and a strike from that traffic outlive the
+// rest (Codex, 2026-11-06). Whether the transport moved is read after the take
+// that closes the window as well, with the transport it closed on: read before
+// only, a move in the gap went to the next window, and the one it was booked in
+// passed under the transport moved to (Codex, the same day). A window it moved
+// in takes the tail not yet final with it (dropTail).
+type relayLossWindows struct {
+	gen, moves uint64
+}
+
+// relayLossWindow is one window for the loss judge.
+type relayLossWindow struct {
+	samples  []relayLossSample
+	unplaced int
+	span     relayLossSpan // the time the samples cover (relayLoss.take)
+	began    uint64        // the rests begun as it began (relayRestGen)
+	overTCP  bool          // the transport as it closed
+	moved    bool          // the transport moved while it was booked
+}
+
+func (w *relayLossWindows) next(loss *relayLoss, now time.Time, restGen func() uint64, transport func() (uint64, bool)) relayLossWindow {
+	out := relayLossWindow{began: w.gen}
+	startMoves := w.moves
+	w.gen = restGen()
+	w.moves, _ = transport()
+	out.samples, out.unplaced, out.span = loss.take(now)
+	endMoves, overTCP := transport()
+	out.overTCP, out.moved = overTCP, endMoves != startMoves
+	if out.moved {
+		loss.dropTail()
+		w.moves = endMoves // the move is this window's; the next begins after it
+	}
+	return out
+}
+
+// judgeLossTurn weighs one window by both loss judges and returns their
+// verdicts. A relay rested starts its counts over in both: by either judge in
+// this turn — the ledger forgot its windows, and the windows' judge kept a
+// strike through the rest the ledger gave, so that one bad window half an hour
+// later came out as two running and a rest doubled for a relapse (audit,
+// 2026-11-06) — or by anything else since its run began, the deaf judge
+// included (restedAfter, relayRestedAfter). A run begins with the window it was
+// first counted in, and that window began at samplesGen — the rests begun as it
+// did: a rest that began while it was being booked is after the run's first
+// window began, and the loss before the rest no window running after it
+// (Codex, 2026-11-06). By the count of rests begun, not by the mark: a judge
+// that did not tick through a rest — the process frozen — found the mark gone
+// and the strike standing (Codex, the same day).
+//
+// A window the transport moved in is not booked: its traffic came over both,
+// and booked under the one now in use it passed the softer bars of TCP with
+// loss taken over UDP (Codex, 2026-11-06). The book starts over with the next.
+// The windows' judge weighs it as it is — its bars are the same either way,
+// and its relays were weighed against each other in the same window.
+func judgeLossTurn(judge *relayJudge, ledger *relayLedger, samples []relayLossSample, overTCP, transportMoved bool, samplesGen uint64, restedAfter func(string, uint64) bool) []relayVerdict {
+	judge.forgetRested(restedAfter)
+	verdicts := judge.step(samples)
+	judge.noteRuns(samplesGen)
+	if transportMoved {
+		*ledger = relayLedger{}
+	} else {
+		verdicts = append(verdicts, ledger.step(samples, overTCP)...)
+	}
+	for _, v := range verdicts {
+		ledger.forget(v.relay)
+		judge.forget(v.relay)
+	}
+	return verdicts
+}
+
+// restJudgedRelays rests the relays of one turn's verdicts — the windows' and
+// the ledger's (relay_judge.go) — and moves the sessions off them. Every relay
+// is rested before any session moves: a session moves only if its link has
+// another usable relay, and a relay judged in the same window is none — rested
+// one by one, the sessions on the first went to the second, which was rested
+// next, and redialed straight back onto a resting relay (iOS review,
+// 2026-10-11: two relays of one link judged against a third of another link, or
+// an extra relay).
 func restJudgedRelays(ctx context.Context, verdicts []relayVerdict, now time.Time) {
 	if ctx.Err() != nil {
 		return // the proxy has stopped: its verdicts with it
@@ -231,8 +352,8 @@ func restJudgedRelays(ctx context.Context, verdicts []relayVerdict, now time.Tim
 	load := liveRelayLoad()
 	for _, r := range resting {
 		out := recycleRelaySessions(ctx, r.relay, now, load)
-		turnLog("[RELAY LOSS] %s lost %.1f%% of the downlink against %.1f%% through the best relay, %d windows running — resting it for %v, %d session(s) moved off, %d left on it with no other relay of their link to go to%s",
-			r.relay, 100*r.rate, 100*r.best, relayJudgeStrikes, r.rest, out.moved, out.stayed, out.note())
+		turnLog("[RELAY LOSS] %s lost %.1f%% of the downlink against %.1f%% %s — resting it for %v, %d session(s) moved off, %d left on it with no other relay of their link to go to%s",
+			r.relay, 100*r.rate, 100*r.best, r.evidence, r.rest, out.moved, out.stayed, out.note())
 	}
 }
 
@@ -246,12 +367,29 @@ func sampleFor(samples []relayLossSample, relay string) relayLossSample {
 }
 
 // perStreamRate is the packets per second each stream on the relay delivered
-// in one window.
-func perStreamRate(s relayLossSample, streams int) float64 {
-	if streams <= 0 {
+// over the time the sample covers.
+func perStreamRate(s relayLossSample, streams int, over time.Duration) float64 {
+	if streams <= 0 || over <= 0 {
 		return 0
 	}
-	return float64(s.rx) / relayJudgeEvery.Seconds() / float64(streams)
+	return float64(s.rx) / over.Seconds() / float64(streams)
+}
+
+// relayLossLagWorthSaying is how far behind the take a loss line's numbers have
+// to end for the line to say so. Under a second or so is the horizon at speed —
+// 1024 packets are 0.7 s of a 16 Mbit/s download — and the window is still the
+// last ten seconds to anyone reading it.
+const relayLossLagWorthSaying = 2 * time.Second
+
+// relayLossLineSpan words the time a loss line's numbers cover, after "last",
+// and returns it for the rates: to the second — the judge's ticks do not land
+// on one — and a second at the least.
+func relayLossLineSpan(span relayLossSpan) (string, time.Duration) {
+	over := max(span.over.Round(time.Second), time.Second)
+	if span.ago < relayLossLagWorthSaying {
+		return over.String(), over
+	}
+	return fmt.Sprintf("%v (ending %v ago)", over, span.ago.Round(time.Second)), over
 }
 
 // liveSessionCounts is how many sessions run on each relay now.
@@ -265,6 +403,15 @@ func liveSessionCounts() map[string]int {
 	return out
 }
 
+// relayLossPackets is how many downlink packets the window booked over all relays.
+func relayLossPackets(samples []relayLossSample) int {
+	n := 0
+	for _, s := range samples {
+		n += s.rx + s.lost
+	}
+	return n
+}
+
 func anyRelayLossAbove(samples []relayLossSample, limit float64) bool {
 	for _, s := range samples {
 		if s.rx+s.lost >= relayJudgeMinPackets && s.rate() > limit {
@@ -274,11 +421,11 @@ func anyRelayLossAbove(samples []relayLossSample, limit float64) bool {
 	return false
 }
 
-func formatRelayLoss(samples []relayLossSample, streams map[string]int) string {
+func formatRelayLoss(samples []relayLossSample, streams map[string]int, over time.Duration) string {
 	parts := make([]string, 0, len(samples))
 	for _, s := range samples {
-		parts = append(parts, fmt.Sprintf("%s %.1f%% of %d (%d streams, %.0f/s each)",
-			s.relay, 100*s.rate(), s.rx+s.lost, streams[s.relay], perStreamRate(s, streams[s.relay])))
+		parts = append(parts, fmt.Sprintf("%s %.1f%% of %d (%d streams, %.0f/s each%s)",
+			s.relay, 100*s.rate(), s.rx+s.lost, streams[s.relay], perStreamRate(s, streams[s.relay], over), relayLossHolesNote(s)))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -336,8 +483,8 @@ func recycleRelaySessions(ctx context.Context, addr string, now time.Time, load 
 	var attempts []*networkAttempt
 	for _, s := range sessions {
 		if s.relays != nil && hasOtherUsableRelay(*s.relays, addr, now) {
-			head := moveHead(*s.relays, addr, s.stream.id, s.user, lossy, load, now)
-			s.stream.move.Store(&relayMove{lossy: lossy, head: head, at: now})
+			head, full := moveHead(*s.relays, addr, s.stream.id, s.user, lossy, reserveRelays(*s.relays, configuredExtraRelays()), load, now)
+			s.stream.giveMove(&relayMove{lossy: lossy, head: head, user: s.user, full: full, at: now})
 			out.heads = append(out.heads, movedHead{id: s.stream.id, relay: head})
 			attempts = append(attempts, s.attempt)
 		} else {

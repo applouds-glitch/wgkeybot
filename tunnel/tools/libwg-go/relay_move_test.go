@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"testing"
@@ -113,7 +114,7 @@ func TestAssignRelaysAroundDialsLosingRelaysAfterTheClean(t *testing.T) {
 	losing := []string{moveR21, moveR252, moveR92}
 	heads := map[string]int{}
 	for id := 0; id < 8; id++ {
-		got := assignRelaysAround(moveRelays, id, now, nil, lossy)
+		got := assignRelaysAround(moveRelays, id, now, nil, nil, lossy, nil)
 		if len(got) != 7 || slices.Contains(got, moveR42) {
 			t.Fatalf("stream %d → %v: want the seven relays not resting", id, got)
 		}
@@ -132,7 +133,7 @@ func TestAssignRelaysAroundDialsLosingRelaysAfterTheClean(t *testing.T) {
 
 	// Nothing losing: the spread as before.
 	for id := 0; id < 8; id++ {
-		if got, want := assignRelaysAround(moveRelays, id, now, nil, nil), assignRelays(moveRelays, id, now); !slices.Equal(got, want) {
+		if got, want := assignRelaysAround(moveRelays, id, now, nil, nil, nil, nil), assignRelays(moveRelays, id, now); !slices.Equal(got, want) {
 			t.Fatalf("stream %d: %v with no losing relays, want %v", id, got, want)
 		}
 	}
@@ -142,13 +143,13 @@ func TestAssignRelaysAroundDialsLosingRelaysAfterTheClean(t *testing.T) {
 		all[relay] = true
 	}
 	for id := 0; id < 8; id++ {
-		if got, want := assignRelaysAround(moveRelays, id, now, nil, all), assignRelays(moveRelays, id, now); !slices.Equal(got, want) {
+		if got, want := assignRelaysAround(moveRelays, id, now, nil, nil, all, nil), assignRelays(moveRelays, id, now); !slices.Equal(got, want) {
 			t.Fatalf("stream %d: %v with every relay losing, want %v", id, got, want)
 		}
 	}
 	// Crowded and losing: crowded, last.
 	crowded := map[string]bool{moveR144: true, moveR252: true}
-	got := assignRelaysAround(moveRelays, 0, now, crowded, lossy)
+	got := assignRelaysAround(moveRelays, 0, now, crowded, nil, lossy, nil)
 	want := []string{moveR179, moveR190, moveR48, moveR21, moveR92, moveR252, moveR144}
 	if !slices.Equal(got, want) {
 		t.Fatalf("crowded %v, losing %v → %v, want %v", slices.Sorted(maps.Keys(crowded)), slices.Sorted(maps.Keys(lossy)), got, want)
@@ -394,30 +395,125 @@ func TestAMoveLeavesRelaysFullForTheCredentialLast(t *testing.T) {
 	})
 }
 
+// A move that finds an extra full for the credential by its quota — five live
+// allocations and four ghosts, too few ghosts for the attempt to call it
+// crowded — sends the second session to the link's own relay; the attempt
+// after it dials that relay first, and the full extra behind it, as the move
+// put them. It used to dial the full extra first: headFirst saw the head in
+// the reserve and the extra not crowded, and kept the order (audit,
+// 2026-11-06). Without extras the second goes to the clean relay beside the
+// eight sessions, as before.
+func TestAMovesHeadPickedForTheQuotaGoesFirst(t *testing.T) {
+	const user = "1761234567:move-test"
+	for _, extras := range [][]string{{moveR42, moveR144}, nil} {
+		t.Run(fmt.Sprintf("extras %v", extras), func(t *testing.T) {
+			withCleanRelayRest(t)
+			withCleanRelayLossy(t)
+			resetAllocationBook(t)
+			setExtraRelaysConfigured(extras)
+			t.Cleanup(func() { setExtraRelaysConfigured(nil) })
+			now := time.Now()
+			link := []string{moveR42, moveR144, moveR179}
+			s0, _ := movingSessionOn(t, moveR42, link)
+			s1, _ := movingSessionOn(t, moveR42, link)
+			s0.id, s1.id = 0, 1
+			for _, s := range []*stream{s0, s1} {
+				u := user
+				s.user.Store(&u)
+			}
+			// .144: five sessions of the credential and four of its ghosts —
+			// room for one; .179: eight sessions of other groups.
+			loseOn(user, moveR144, orphanSteerAt-1, now)
+			for i := 0; i < 5; i++ {
+				trackAllocation(&countingConn{}, user, moveR144)
+				t.Cleanup(trackLiveSession(moveR144, &stream{id: 10 + i}))
+			}
+			for i := 0; i < 8; i++ {
+				t.Cleanup(trackLiveSession(moveR179, &stream{id: 20 + i}))
+			}
+			noteRelayResting(moveR42, now)
+			out := recycleRelaySessions(context.Background(), moveR42, now, nil)
+			if want := []movedHead{{0, moveR144}, {1, moveR179}}; !slices.Equal(out.heads, want) {
+				t.Fatalf("heads %v, want %v: the room for one on .144, then .179", out.heads, want)
+			}
+			cfg := WorkerGroupConfig{UseUDP: true, ExtraRelays: extras}
+			for i, s := range []*stream{s0, s1} {
+				move := s.takeMove(now)
+				if move == nil || move.head != out.heads[i].relay || move.user != user {
+					t.Fatalf("stream %d carries %+v, want the head %s on %s", s.id, move, out.heads[i].relay, user)
+				}
+				if move.full[moveR144] != (i == 1) {
+					t.Fatalf("stream %d: the move found %v full, want .144 full for the second only", s.id, move.full)
+				}
+				order := s.attemptOrder(user, link, cfg, now, move)
+				if order[0] != move.head {
+					t.Fatalf("stream %d: the move picked %s, the attempt dials %v", s.id, move.head, order)
+				}
+			}
+		})
+	}
+}
+
+// What a move found full is the credential's: an attempt on another one — the
+// group's credential replaced meanwhile — orders as any other (Codex,
+// 2026-11-06).
+func TestAMovesFullRelaysAreTheCredentials(t *testing.T) {
+	withCleanRelayRest(t)
+	resetAllocationBook(t)
+	now := time.Now()
+	link := []string{moveR144, moveR179}
+	cfg := WorkerGroupConfig{UseUDP: true, ExtraRelays: []string{moveR144}}
+	move := &relayMove{head: moveR179, user: "u1", full: map[string]bool{moveR144: true}, at: now}
+	s := &stream{id: 0}
+	if got := s.attemptOrder("u1", link, cfg, now, move); !slices.Equal(got, []string{moveR179, moveR144}) {
+		t.Fatalf("on the move's credential: %v, want the head and the full extra behind it", got)
+	}
+	if got := s.attemptOrder("u2", link, cfg, now, move); !slices.Equal(got, []string{moveR144, moveR179}) {
+		t.Fatalf("on another credential: %v, want the extra first, the link's own behind it", got)
+	}
+}
+
+// Among the full a losing relay is no further back, and the move's head — the
+// less loaded of two crowded relays, losing — goes first (Codex, 2026-11-06).
+func TestTheMovesHeadGoesFirstAmongTheFull(t *testing.T) {
+	withCleanRelayRest(t)
+	now := time.Now()
+	relays := []string{moveR144, moveR179}
+	crowded := map[string]bool{moveR144: true, moveR179: true}
+	lossy := map[string]bool{moveR179: true}
+	order := assignRelaysAround(relays, 0, now, crowded, nil, lossy, nil)
+	if order[0] != moveR144 {
+		t.Fatalf("the order %v: the test wants .144 in front", order)
+	}
+	if got := headFirst(slices.Clone(order), moveR179, crowded, nil, lossy, nil, now); got[0] != moveR179 {
+		t.Fatalf("head .179, crowded and losing as .144 is crowded → %v: want it first", got)
+	}
+}
+
 // The head goes first only while it is in the attempt's first tier: crowded
 // with the credential's ghosts since the move, resting since, or gone from the
 // relays the attempt has, it leaves the order as the spread has it.
 func TestTheMovesHeadGoesFirstOnlyFromTheFirstTier(t *testing.T) {
 	withCleanRelayRest(t)
 	now := time.Now()
-	order := assignRelaysAround(moveRelays, 0, now, nil, nil)
-	if got := headFirst(slices.Clone(order), moveR179, nil, nil, now); got[0] != moveR179 || len(got) != len(order) {
+	order := assignRelaysAround(moveRelays, 0, now, nil, nil, nil, nil)
+	if got := headFirst(slices.Clone(order), moveR179, nil, nil, nil, nil, now); got[0] != moveR179 || len(got) != len(order) {
 		t.Fatalf("head %s → %v: want it first and nothing lost", moveR179, got)
 	}
 	crowded := map[string]bool{moveR179: true}
-	if got := headFirst(slices.Clone(order), moveR179, crowded, nil, now); got[0] != order[0] {
+	if got := headFirst(slices.Clone(order), moveR179, crowded, nil, nil, nil, now); got[0] != order[0] {
 		t.Fatalf("crowded head %s → %v: want the order as it was", moveR179, got)
 	}
 	lossy := map[string]bool{moveR179: true}
-	if got := headFirst(slices.Clone(order), moveR179, nil, lossy, now); got[0] != order[0] {
+	if got := headFirst(slices.Clone(order), moveR179, nil, nil, lossy, nil, now); got[0] != order[0] {
 		t.Fatalf("losing head %s → %v: want the order as it was", moveR179, got)
 	}
-	if got := headFirst(slices.Clone(order), "203.0.113.1:19302", nil, nil, now); !slices.Equal(got, order) {
+	if got := headFirst(slices.Clone(order), "203.0.113.1:19302", nil, nil, nil, nil, now); !slices.Equal(got, order) {
 		t.Fatalf("a head not among the relays → %v: want the order as it was", got)
 	}
 	noteRelayResting(moveR179, now)
-	rested := assignRelaysAround(moveRelays, 0, now, nil, nil)
-	if got := headFirst(slices.Clone(rested), moveR179, nil, nil, now); !slices.Equal(got, rested) {
+	rested := assignRelaysAround(moveRelays, 0, now, nil, nil, nil, nil)
+	if got := headFirst(slices.Clone(rested), moveR179, nil, nil, nil, nil, now); !slices.Equal(got, rested) {
 		t.Fatalf("a head resting since → %v: want the order as it was", got)
 	}
 }

@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -47,6 +48,9 @@ var networkSwitch = struct {
 	leftAt   time.Time // when a network we were bound to was last lost or left
 	nextID   uint64
 	attempts map[uint64]*networkAttempt
+	// transportMoves counts the moves of the dials to the other transport
+	// (relayTransportState).
+	transportMoves uint64
 }{attempts: map[uint64]*networkAttempt{}}
 
 // networkStamp is the network our dials bind to, when one was last lost or
@@ -79,11 +83,18 @@ func (s networkStamp) same(o networkStamp) bool {
 // follows and the wait after it — tagged with the network it was started on and
 // the relay transport it runs over.
 type networkAttempt struct {
+	seq     uint64 // in the order the attempts began
 	network int64
 	overTCP bool // the transport this attempt dials with, decided once, here
 	useUDP  bool // its group's #@wgt:UseUDP, for what "as configured" means to it
 	cancel  context.CancelFunc
 	moved   bool // recycled by a move to another network or transport
+	// stale is moved, or over a transport left, for the session's downlink to
+	// read without the lock: such an attempt books no more loss
+	// (observeDownlink), as its session may run on for a while — over a
+	// transport left, after the loss judge has let the window of the move go
+	// (relayLoss.dropTail; Codex, 2026-11-06).
+	stale atomic.Bool
 }
 
 // attemptHandle is a worker's hold on its registered attempt.
@@ -106,6 +117,7 @@ func beginAttempt(parent context.Context, cfg WorkerGroupConfig) *attemptHandle 
 	id := networkSwitch.nextID
 	networkSwitch.nextID++
 	a := &networkAttempt{
+		seq:     id,
 		network: networkSwitch.current,
 		overTCP: transportOverTCP(relayTransportChoice.Load(), cfg.UseUDP),
 		useUDP:  cfg.UseUDP,
@@ -126,6 +138,7 @@ func recycleAttempt(a *networkAttempt) {
 		return
 	}
 	a.moved = true
+	a.stale.Store(true)
 	networkSwitch.Unlock()
 	a.cancel()
 }
@@ -206,6 +219,9 @@ func noteNetworkState(handle int64, choice int32) {
 	// screen said silent over a transport that worked (Codex review, 19.10).
 	useUDP := activeUseUDP.Load()
 	transportMoved := transportOverTCP(prevChoice, useUDP) != transportOverTCP(choice, useUDP)
+	if transportMoved {
+		networkSwitch.transportMoves++
+	}
 
 	var recycled []*networkAttempt
 	overTransport := 0
@@ -215,13 +231,25 @@ func noteNetworkState(handle int64, choice int32) {
 			case a.moved:
 			case networkMoved && a.network != handle:
 				a.moved = true
+				a.stale.Store(true)
 				recycled = append(recycled, a)
 			case a.overTCP != transportOverTCP(choice, a.useUDP):
 				a.moved = true
+				a.stale.Store(true)
 				recycled = append(recycled, a)
 				overTransport++
 			}
 		}
+	}
+	// With no network the attempts wait to be recycled until one is back, but
+	// those over the transport left book no more loss from now on: the loss
+	// judge lets this window go at the move it sees now, and their downlink
+	// queued meanwhile filled the next one, the move done by the time the
+	// network was back (Codex, 2026-11-06). One that the transport comes back
+	// to before it was recycled books again: kept stale, a session that rode
+	// out the outage was left out of the judges for good (Codex, the same day).
+	for _, a := range networkSwitch.attempts {
+		a.stale.Store(a.moved || a.overTCP != transportOverTCP(choice, a.useUDP))
 	}
 	networkSwitch.Unlock()
 
@@ -247,6 +275,17 @@ func noteNetworkState(handle int64, choice int32) {
 	for _, a := range recycled {
 		a.cancel()
 	}
+}
+
+// relayTransportState is how many times the running proxy's dials have moved
+// from one transport to the other, and the transport they go over now, read
+// together under the lock both change under (setNetworkState) — for the loss
+// judge's windows (relayLossWindows): a window booked across a move is not one
+// path, and two moves between two of its reads leave the transport as it was.
+func relayTransportState() (moves uint64, overTCP bool) {
+	networkSwitch.Lock()
+	defer networkSwitch.Unlock()
+	return networkSwitch.transportMoves, transportOverTCP(relayTransportChoice.Load(), activeUseUDP.Load())
 }
 
 // setNetworkState is everything a report from wgSetNetwork does, in order: the

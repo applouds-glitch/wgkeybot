@@ -70,19 +70,22 @@ const (
 // Thresholds are per failure class because pion retries each class on a
 // different cadence, and one missed refresh is not equally fatal in each.
 const (
-	// ChannelBind: re-checked every 30s, and PerformTransaction already
+	// ChannelBind: re-checked every 30s (at every 25s keepalive tick on the
+	// grid, refresh_grid.go), and PerformTransaction already
 	// retransmits ~7 times (~7.8s) inside a single attempt. Two consecutive
 	// failures ≈ 60s of a server that will not renew the binding.
 	bindFailThreshold = 2
 
 	// Allocation refresh: pion fires it at lifetime/2 — 300s for the 600s VK
-	// grants. Waiting for a second failure is pointless because the allocation
+	// grants (275s on the keepalive grid, refresh_grid.go). Waiting for a
+	// second failure is pointless because the allocation
 	// expires before it happens, so one hard failure (already 7 retransmits
 	// deep) recycles the stream ~5 minutes before it would have died anyway.
 	allocFailThreshold = 1
 
-	// Permission refresh: every 4 minutes (PermissionRefreshInterval, raised
-	// from pion's 120s default in dialAndAllocate — see the rationale there).
+	// Permission refresh: every 4 minutes at most (PermissionRefreshInterval,
+	// raised from pion's 120s default in dialAndAllocate — see the rationale
+	// there; on the keepalive grid it goes out at 225s, refresh_grid.go).
 	// Losing the permission is exactly the blackhole we are hunting — the relay
 	// stops accepting peer data — but a single miss is cheap to ride out, and
 	// the 60s of margin left under the 300s permission lifetime means one miss

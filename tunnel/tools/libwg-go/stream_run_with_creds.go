@@ -208,6 +208,16 @@ type winner struct {
 // session while the others are cancelled/closed. The assignment is per attempt,
 // so the next reconnect goes back to the stream's own server. Retry and
 // credential rotation are managed by the calling WorkerGroup.
+//
+// With #@wgt:ExtraRelays and an extra at the head, the candidates are raced in
+// two stages: the other extras first, and the link's own relays — the reserve
+// behind them (relay_extra.go), with whatever the order has behind those — only
+// once every extra raced has failed, or none has won relayHeadStart after the
+// last step one of them took on the network, or relayReserveCap after they were
+// raced at the latest. Raced at once, the link's own won as often as the extras
+// did whenever the head failed or was slow, and a session that wins a relay
+// keeps it: the weak relay of 2026-11-04 that the extras are there to keep the
+// streams off got them back on every failed head (audit, 2026-11-06).
 func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []string, cfg WorkerGroupConfig) error {
 	s.ready.Store(false)
 	// Not ready first, so the dispatcher stops adding; then what it had added for
@@ -241,15 +251,30 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 	// headStartExpired.
 	var headConnected atomic.Bool
 
-	launch := func(addr string) {
+	// The extras raced after the head, and the link's own behind them
+	// (reserveSplit): extras is raced when the head fails or its head start
+	// runs out, behind once the extras have had their chance.
+	split := reserveSplit(addrs, reserveRelays(addrs, cfg.ExtraRelays))
+	extras, behind := addrs[1:split], addrs[split:]
+	// extraSteps carries a step an extra's dial takes on the network — its TCP
+	// connect leaving, its Allocate going out — to the loop below: the reserve's
+	// wait runs from the extras' steps, not through their queues. Two a dial at
+	// most, so a send never blocks.
+	extraSteps := make(chan extraStep, 2*len(addrs))
+
+	launch := func(addr string, extra bool) {
 		wg.Add(1)
 		go func(addr string) {
 			defer wg.Done()
 			opts := dialOpts{session: ctx}
-			if addr == addrs[0] {
+			switch {
+			case addr == addrs[0]:
 				opts.allocating = func(slot *allocSlot) { allocating <- slot }
 				opts.connecting = func() { connecting <- struct{}{} }
 				opts.connected = headConnected.Store
+			case extra:
+				opts.allocating = func(*allocSlot) { extraSteps <- extraStep{addr, time.Now()} }
+				opts.connecting = func() { extraSteps <- extraStep{addr, time.Now()} }
 			}
 			client, raw, relay, rtt, perm, err := dialAndAllocate(raceCtx, s, user, pass, addr, cfg, opts)
 			if err != nil {
@@ -274,19 +299,89 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 		}(addr)
 	}
 
-	launch(addrs[0])
+	launch(addrs[0], false)
 	launchedCount := 1
-	fannedOut := len(addrs) == 1
+	fannedOut := len(addrs) == 1 // past the head: the extras raced
+	behindRaced := len(behind) == 0
+	extrasFailed := 0
 
-	fanOut := func() {
-		if fannedOut {
-			return
+	var behindTimer *time.Timer
+	var behindDue <-chan time.Time
+	var behindCap time.Time
+	lastStep := map[string]time.Time{} // the extras raced, by their last step on the network
+	extraFailed := map[string]bool{}
+	defer func() {
+		if behindTimer != nil {
+			behindTimer.Stop()
 		}
-		for _, a := range addrs[1:] {
-			launch(a)
+	}()
+	// behindAt is when the link's own are raced unless an extra wins first:
+	// each extra still in the race has relayReserveStep from its last step, or
+	// until behindCap while it has taken none — queued — and the reserve waits
+	// for the last of them. Zero once every extra has failed.
+	behindAt := func() (at time.Time, queued bool) {
+		for _, a := range extras {
+			if extraFailed[a] {
+				continue
+			}
+			due := behindCap
+			if step, ok := lastStep[a]; ok {
+				due = minTime(behindCap, step.Add(relayReserveStep))
+			} else {
+				queued = true
+			}
+			if due.After(at) {
+				at = due
+			}
+		}
+		return at, queued
+	}
+	waitBehind := func() {
+		if behindTimer != nil {
+			behindTimer.Stop()
+		}
+		at, _ := behindAt()
+		behindTimer = time.NewTimer(time.Until(at))
+		behindDue = behindTimer.C
+	}
+	noteStep := func(step extraStep) {
+		if step.at.After(lastStep[step.addr]) {
+			lastStep[step.addr] = step.at
+		}
+	}
+	raceBehind := func(cause reserveCause) {
+		behindRaced = true
+		if behindTimer != nil {
+			behindTimer.Stop()
+		}
+		behindDue = nil
+		for _, a := range behind {
+			launch(a, false)
 			launchedCount++
 		}
+		reserveRaced(s.id, cause)
+	}
+	// fanOut races what comes after the head: the extras, with the link's own
+	// held back behind them — or, with no other extra to race, the link's own
+	// at once. It returns the words for the caller's line.
+	fanOut := func() string {
 		fannedOut = true
+		if len(extras) == 0 {
+			if len(behind) > 0 {
+				raceBehind(reserveAtOnce)
+			}
+			return fmt.Sprint(behind)
+		}
+		for _, a := range extras {
+			launch(a, true)
+			launchedCount++
+		}
+		if behindRaced {
+			return fmt.Sprint(extras)
+		}
+		behindCap = time.Now().Add(relayReserveCap)
+		waitBehind()
+		return fmt.Sprintf("%v, the link's own %v behind them", extras, behind)
 	}
 
 	var headSlot *allocSlot
@@ -330,10 +425,47 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 			// this relay's queue start its own clock. The Allocate itself runs
 			// on — see relayHeadStart. A TCP connect that is still hanging holds
 			// no slot yet; it runs on as well, and is closed if it loses.
-			turnLog("[STREAM %d] %s — racing %v (group %d)",
-				s.id, headStartExpired(addrs[0], headSlot != nil, headConnected.Load()), addrs[1:], cfg.GroupID)
 			headSlot.release()
-			fanOut()
+			racing := fanOut()
+			turnLog("[STREAM %d] %s — racing %s (group %d)",
+				s.id, headStartExpired(addrs[0], headSlot != nil, headConnected.Load()), racing, cfg.GroupID)
+		case step := <-extraSteps:
+			noteStep(step)
+			if !behindRaced {
+				waitBehind()
+			}
+		case <-behindDue:
+			behindDue = nil
+			if behindRaced {
+				continue
+			}
+			// A step already sent counts, though the timer was ready first in
+			// this select (Codex, 2026-11-06).
+			for drained := false; !drained; {
+				select {
+				case step := <-extraSteps:
+					noteStep(step)
+				default:
+					drained = true
+				}
+			}
+			at, queued := behindAt()
+			if time.Now().Before(at) {
+				waitBehind()
+				continue
+			}
+			var why string
+			cause := reserveAfterSteps
+			switch {
+			case queued:
+				why, cause = fmt.Sprintf("an extra of %v is still queued %v after they were raced", extras, relayReserveCap), reserveAfterCap
+			case !at.Before(behindCap):
+				why, cause = fmt.Sprintf("no extra of %v has won %v after they were raced", extras, relayReserveCap), reserveAfterCap
+			default:
+				why = fmt.Sprintf("no extra of %v has won %v after its last step on the network", extras, relayReserveStep)
+			}
+			raceBehind(cause)
+			turnLog("[STREAM %d] %s — racing the link's own %v (group %d)", s.id, why, behind, cfg.GroupID)
 		case attempt := <-errCh:
 			failed = append(failed, attempt)
 			err := attempt.err
@@ -343,10 +475,24 @@ func (s *stream) runWithCreds(ctx context.Context, user, pass string, addrs []st
 				// error otherwise (only "all servers failed" ever surfaces it),
 				// and an elected server refusing Allocate on every reconnect was
 				// invisible in the log except as a second Dial line one RTT later.
-				turnLog("[STREAM %d] %s failed (%v) — fanning out to %v (group %d)",
-					s.id, addrs[0], err, addrs[1:], cfg.GroupID)
-				fanOut()
-			} else if len(failed) == launchedCount {
+				racing := fanOut()
+				turnLog("[STREAM %d] %s failed (%v) — fanning out to %s (group %d)",
+					s.id, addrs[0], err, racing, cfg.GroupID)
+				continue
+			}
+			if !behindRaced && slices.Contains(extras, attempt.addr) {
+				extraFailed[attempt.addr] = true
+				if extrasFailed++; extrasFailed == len(extras) {
+					raceBehind(reserveAfterFailures)
+					turnLog("[STREAM %d] every extra of %v has failed — racing the link's own %v (group %d)",
+						s.id, extras, behind, cfg.GroupID)
+					continue
+				}
+				// Its steps no longer hold the reserve back; the queued ones
+				// still have their time (Codex, 2026-11-06).
+				waitBehind()
+			}
+			if len(failed) == launchedCount {
 				raced := newRaceError(failed)
 				if spoke := raced.spokesman(); raced.overrulesLast() {
 					turnLog("[STREAM %d] all %d servers failed; acting on what %s answered (%v), not on the last to fail, %s (%v) (group %d)",
@@ -508,6 +654,49 @@ func quotaGraceApplies(err error, user, used string, replaced bool) (quota, sile
 // loser path below releases that allocation properly.
 const relayHeadStart = 1200 * time.Millisecond
 
+// relayReserveCap is the longest the link's own relays wait behind the extras
+// raced after a failed head (runWithCreds) while no extra has taken a step on
+// the network — queued for an Allocate slot, or over TCP behind the connects
+// already paced to its relay (relay_connect_pacing.go, half a second and more
+// apart). The wait runs from the extras' steps so that their queues do not
+// hand the race to the link's own, whose queues are empty — nothing else dials
+// them; but a queue can be long, and four head starts is three or four
+// connects paced to one relay before the reserve is raced anyway.
+//
+// A var for the tests, which set it out of the way of a slow host or short.
+var relayReserveCap = 4 * relayHeadStart
+
+// relayReserveStep is how long the link's own wait after an extra's last step
+// on the network: the head start the head had. A var for the tests, as above.
+var relayReserveStep = relayHeadStart
+
+// extraStep is a step an extra's dial took on the network, and when.
+type extraStep struct {
+	addr string
+	at   time.Time
+}
+
+// reserveCause is why the link's own relays were raced behind the extras.
+type reserveCause int
+
+const (
+	reserveAtOnce        reserveCause = iota // no other extra to race
+	reserveAfterFailures                     // every extra raced failed
+	reserveAfterSteps                        // none won relayHeadStart after its last step
+	reserveAfterCap                          // relayReserveCap ran out, an extra queued or not
+)
+
+// reserveRaced is called as the link's own are raced behind the extras. A seam
+// for the tests, which have to know why without timing it.
+var reserveRaced = func(stream int, cause reserveCause) {}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
 // headStartExpired says what the first relay had not done when its head start
 // ran out.
 //
@@ -653,16 +842,20 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		// twice as often as it needs to be: the permission's lifetime is a
 		// fixed 300s (RFC 8656 section 9), so 240s renews it with a full 60s of
 		// margin while halving the radio wake-ups this costs — on mobile each
-		// refresh drags the radio into RRC-connected for the tail timer, and
-		// these transactions are per stream and never coalesced with the 25s
-		// keepalive grid.
+		// refresh drags the radio into RRC-connected for the tail timer.
+		//
+		// Since 2026-11-10 these transactions go out in the stream's keepalive
+		// burst (refresh_grid.go): pion's timer for them is stopped, and its
+		// 240s is the ceiling the grid sends them under — at the ninth tick,
+		// 225s — and the backstop's interval when no tick came.
 		//
 		// Not disabled outright (free-turn-proxy sets 24h) because after the
 		// first WriteTo the data path never re-sends CreatePermission —
 		// createPermission short-circuits on permStatePermitted
 		// (internal/client/udp_conn.go:169) — leaving ChannelBind refresh as
 		// the only thing that reinstalls the permission. pion fires that at
-		// 300-330s (bindingRefreshInterval 5m, checked every 30s, condition is
+		// 300-330s (bindingRefreshInterval 5m, checked every 30s — every 25s
+		// tick on the grid, so 300-325s — condition is
 		// a strict >, and refreshedAt is stamped after the transaction), i.e.
 		// *after* the 300s permission has already lapsed. That would open a
 		// ~30s window every 5 minutes in which the relay may drop inbound —
@@ -671,7 +864,7 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		// bindingRefreshInterval is unexported in ClientConfig, so the window
 		// cannot be closed from here.
 		//
-		// permWatch still sees this class of failure, just at 2x240s instead of
+		// permWatch still sees this class of failure, just at 2x225s instead of
 		// 2x120s (~8 min). The faster detectors are unaffected: ChannelBind
 		// latches in ~60s and allocation refresh on a single failure.
 		PermissionRefreshInterval: 240 * time.Second,
@@ -706,10 +899,14 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 		heard = relayHeardMark(false)
 	}
 	allocStart := time.Now()
+	// Counted while it runs, and on success till it is booked live below —
+	// never in neither count (relay_return.go).
+	allocated := noteAllocating(user, addr)
 	relay, err := client.Allocate()
 	err = responses.allocationError(err)
 	slot.release()
 	if err != nil {
+		allocated()
 		client.Close()
 		raw.Close()
 		// Only a genuine refusal or silence counts against the server, and only
@@ -744,7 +941,11 @@ func dialAndAllocate(ctx context.Context, s *stream, user, pass, addr string, cf
 	}
 	// Counted live until closed, so that losing it without a release marks this
 	// relay as still holding our quota (orphaned_allocations.go).
-	relay = trackAllocation(relay, user, addr)
+	//
+	// Beneath it, the allocation's periodic transactions pass from pion's
+	// timers to the keepalive grid (refresh_grid.go).
+	relay = trackAllocation(refreshOnGrid(relay, s.id), user, addr)
+	allocated()
 	if overTCP {
 		// Outermost, so the deadline is on the socket before the release is
 		// written; trackedRelay beneath it books a release that timed out.
@@ -832,6 +1033,11 @@ func (s *stream) runSession(ctx context.Context, w winner, cfg WorkerGroupConfig
 	// permission is asked for is the one every transport sends to.
 	s.allocCheck.Store(newAllocCheck(s.id, w.client, cfg.PeerAddr, w.perm))
 	defer s.allocCheck.Store(nil)
+
+	// And its periodic transactions, for the keepalive loop to send in its
+	// burst (refresh_grid.go).
+	s.refreshGrid.Store(relayRefreshGrid(w.relay))
+	defer s.refreshGrid.Store(nil)
 
 	started := time.Now()
 	var err error

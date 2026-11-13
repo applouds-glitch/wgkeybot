@@ -60,7 +60,13 @@ func (c *initialAllocateRefuser) count() int {
 
 func startInitialRefusalServer(t *testing.T, n int, code stun.ErrorCode) (*initialAllocateRefuser, *turn.Server) {
 	t.Helper()
-	pc := &initialAllocateRefuser{PacketConn: listenFakeRelay(t), addresses: make(map[string]bool), refuse: n, code: code}
+	return startRefusalServerOn(t, listenFakeRelay(t), n, code)
+}
+
+// startRefusalServerOn is startInitialRefusalServer on a socket of the test's.
+func startRefusalServerOn(t *testing.T, conn net.PacketConn, n int, code stun.ErrorCode) (*initialAllocateRefuser, *turn.Server) {
+	t.Helper()
+	pc := &initialAllocateRefuser{PacketConn: conn, addresses: make(map[string]bool), refuse: n, code: code}
 	server, err := turn.NewServer(turn.ServerConfig{
 		Realm: "initial-refusal-test",
 		AuthHandler: func(a *turn.RequestAttributes) (string, []byte, bool) {

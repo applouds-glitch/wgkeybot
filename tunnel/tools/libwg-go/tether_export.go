@@ -94,6 +94,18 @@ var (
 	tetherCurrent *tetherProxy
 )
 
+// tetherListenConfig is the listener the hotspot's clients connect to: plain
+// TCP. Since Go 1.24 a net.ListenConfig asks the kernel for an MPTCP socket
+// unless told otherwise, and this port is open to every device on the hotspot,
+// while nothing here gains from MPTCP — a client has the one Wi-Fi path to the
+// phone. So the kernel's MPTCP code is kept out of strangers' reach
+// (free-turn-proxy 4.1.2 did the same to its listeners, citing CVE-2026-98432).
+func tetherListenConfig() net.ListenConfig {
+	lc := net.ListenConfig{Control: tetherProtectControl}
+	lc.SetMultipathTCP(false)
+	return lc
+}
+
 // startTetherProxy is the Go half of wgTetherStart; it is kept separate from the
 // cgo entry point so the whole start/stop cycle is testable on the host.
 //
@@ -125,7 +137,7 @@ func startTetherProxy(bindIP string, port int, dnsCsv, tunnelAddrsCsv, routingDi
 		overrideDomesticDNS(router, directDNSCsv)
 	}
 
-	lc := net.ListenConfig{Control: tetherProtectControl}
+	lc := tetherListenConfig()
 	var ln net.Listener
 	for i := 0; i < tetherPortSpan; i++ {
 		ln, err = lc.Listen(context.Background(), "tcp", net.JoinHostPort(bindIP, strconv.Itoa(port+i)))

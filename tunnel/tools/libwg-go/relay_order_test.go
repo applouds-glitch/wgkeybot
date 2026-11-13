@@ -292,11 +292,11 @@ func TestObserveDownlinkBooksBothUnderOneLock(t *testing.T) {
 		downlinkRelayOrder.reset(time.Now())
 	})
 	for ctr := uint64(0); ctr < 10; ctr++ {
-		observeDownlink(wgTransport(7, ctr), "A")
+		observeDownlink(wgTransport(7, ctr), "A", nil)
 	}
-	observeDownlink([]byte{1, 2, 3}, "A")
-	observeDownlink(wgTransport(7, 10), "")
-	samples, _ := downlinkRelayLoss.take(now.Add(time.Minute))
+	observeDownlink([]byte{1, 2, 3}, "A", nil)
+	observeDownlink(wgTransport(7, 10), "", nil)
+	samples, _, _ := downlinkRelayLoss.take(now.Add(time.Minute))
 	if len(samples) != 1 || samples[0].relay != "A" || samples[0].rx != 10 || samples[0].lost != 0 {
 		t.Fatalf("loss book: %+v, want 10 through A and nothing lost", samples)
 	}
@@ -318,7 +318,7 @@ func TestACounterPastTheLimitBooksNothing(t *testing.T) {
 	for _, ctr := range []uint64{0, ^uint64(0), 1} {
 		loss.observe(wgTransport(7, ctr), "relay-a:3478", now)
 	}
-	samples, _ := loss.take(now.Add(time.Second))
+	samples, _, _ := loss.take(now.Add(time.Second))
 	if len(samples) != 1 || samples[0].rx != 2 || samples[0].lost != 0 {
 		t.Fatalf("samples %+v, want relay-a with the two ordinary packets and none lost", samples)
 	}

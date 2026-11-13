@@ -18,7 +18,7 @@ import (
 // sendStalled — the field case: the direction up dead, the one down alive.
 func stalledStream(id int, stalled bool, now time.Time) *stream {
 	s := dispatchStream(id, true, now, 8)
-	s.priority = make(chan []byte, tcpPriorityQueueSize)
+	s.priority = make(chan []byte, priorityQueueSize)
 	s.overTCP.Store(true)
 	s.sendStalled.Store(stalled)
 	return s
@@ -122,7 +122,7 @@ func TestWatcherMarksAStreamWhoseSocketStopped(t *testing.T) {
 
 	// Unanswered probes count the same: a keepalive or window probe going
 	// unanswered twice is a flow nothing gets through.
-	h.set(c, relaySocketSample{timeouts: 2, probing: true})
+	h.set(c, relaySocketSample{timeouts: 2, stall: stallWindowClosed})
 	h.tick()
 	if !s0.sendStalled.Load() {
 		t.Fatal("two unanswered probes did not mark the stream")

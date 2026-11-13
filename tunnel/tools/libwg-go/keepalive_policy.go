@@ -17,6 +17,11 @@ const (
 	// stream uses the same wall-clock grid, entering it at its own phase;
 	// authenticated inbound traffic updates the independent liveness clock but
 	// never shifts the keepalive phase.
+	//
+	// The grid in force is keepaliveEvery: twice this while the screen is off
+	// and the relays are reached over TCP (keepalive_economy.go). The ages
+	// below that are counted in intervals move with it (staleAfter,
+	// deadStreamAfter).
 	keepaliveInterval = 25 * time.Second
 
 	// keepaliveSpread is the width of the window the per-stream keepalives are
@@ -145,7 +150,7 @@ func sendWireGuardKeepaliveOnSharedGrid(now time.Time) bool {
 	if sender == nil {
 		return false
 	}
-	grid := now.Truncate(keepaliveInterval).UnixNano()
+	grid := now.Truncate(keepaliveEvery(now)).UnixNano()
 
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
@@ -217,10 +222,15 @@ type streamActivity struct {
 	// stream is stale (stale) for as long as lastHeard stays there, and the
 	// next packet lifts the verdict without a turn of the judge. Zero: none.
 	silentUnderLoad atomic.Int64
+	// underLoad wakes the session's keepalive loop when that verdict is given,
+	// for the probe under load (under_load_probe.go): one token, offered and
+	// never waited for. A token left by a verdict since lifted wakes the loop
+	// for nothing — it asks whether the verdict stands before it probes.
+	underLoad chan struct{}
 }
 
 func newStreamActivity(now time.Time, phase time.Duration) *streamActivity {
-	a := &streamActivity{phase: phase, start: now}
+	a := &streamActivity{phase: phase, start: now, underLoad: make(chan struct{}, 1)}
 	a.lastRx.Store(now.UnixNano())
 	a.lastHeard.Store(now.UnixNano())
 	return a
@@ -241,8 +251,15 @@ func (a *streamActivity) noteRx(now time.Time) {
 func (a *streamActivity) heardCount() uint64 { return a.rxCount.Load() }
 
 // markSilentUnderLoad records the verdict of silence under load for the
-// silence that began at heard (a lastHeard value).
-func (a *streamActivity) markSilentUnderLoad(heard int64) { a.silentUnderLoad.Store(heard) }
+// silence that began at heard (a lastHeard value), and wakes the session's
+// keepalive loop to ask the relay about it (under_load_probe.go).
+func (a *streamActivity) markSilentUnderLoad(heard int64) {
+	a.silentUnderLoad.Store(heard)
+	select {
+	case a.underLoad <- struct{}{}:
+	default:
+	}
+}
 
 // foundSilentUnderLoad reports whether that verdict stands: given for the
 // present silence, and nothing heard since.
@@ -256,7 +273,7 @@ func (a *streamActivity) foundSilentUnderLoad() bool {
 // so a packet arriving between them cannot leave a lifted verdict in force.
 func (a *streamActivity) stale(now time.Time) bool {
 	heard := a.lastHeard.Load()
-	return now.Sub(time.Unix(0, heard)) > dispatchStaleAfter || a.silentUnderLoad.Load() == heard
+	return now.Sub(time.Unix(0, heard)) > staleAfter(now) || a.silentUnderLoad.Load() == heard
 }
 
 // frozeSinceHeard reports whether the liveness clock has been reset for a
@@ -325,10 +342,17 @@ func atomicTimestamp(v *atomic.Int64) time.Time {
 // once ready their keepalives land in one short radio-active window every 25
 // seconds, spread across that window by phase. The per-stream gap stays exactly
 // keepaliveInterval — phase is constant — so the NAT-hold budget is unchanged.
+//
+// The grid is the one in force at now (keepaliveEvery). The wide grid's points
+// are every other point of the narrow one, so a change of grid moves no
+// stream's phase: going wide, the gap after the last narrow point is one or two
+// narrow intervals; going narrow, the wait already armed ends at a point that
+// is on both.
 func nextKeepaliveGrid(now time.Time, phase time.Duration) time.Time {
-	next := now.Truncate(keepaliveInterval).Add(phase)
+	every := keepaliveEvery(now)
+	next := now.Truncate(every).Add(phase)
 	if !next.After(now) {
-		next = next.Add(keepaliveInterval)
+		next = next.Add(every)
 	}
 	return next
 }
@@ -359,7 +383,7 @@ func (a *streamActivity) nextDeadline(now, retryAt, echoAt time.Time) (time.Time
 	// Liveness checks must not be postponed by the normal probe cadence. This
 	// keeps the advertised 90s dead-stream threshold exact even though normal
 	// keepalives wait for the shared wall-clock grid.
-	deadDeadline := atomicTimestamp(&a.lastRx).Add(deadStreamTimeout)
+	deadDeadline := atomicTimestamp(&a.lastRx).Add(deadStreamAfter(now))
 	if deadDeadline.Before(next) {
 		next = deadDeadline
 		reason = keepaliveDeadCheckWake
@@ -391,24 +415,29 @@ func waitUntil(ctx context.Context, deadline time.Time) bool {
 }
 
 // waitUntilOrWake is waitUntil that also returns, with woke = true, when a
-// host wake is broadcast (hostWakeChannel). ok = false means ctx is done.
+// host wake is broadcast (hostWakeChannel), and with poked = true when the
+// judge of silence under load has left its token (streamActivity.underLoad). A
+// deadline already past takes neither: the token keeps for the next wait.
+// ok = false means ctx is done.
 // keepaliveWait is the keepalive loop's wait: waitUntilOrWake, a var for the
 // host tests to hold a wake up past the grid point it was due before.
 var keepaliveWait = waitUntilOrWake
 
-func waitUntilOrWake(ctx context.Context, deadline time.Time, wake <-chan struct{}) (woke, ok bool) {
+func waitUntilOrWake(ctx context.Context, deadline time.Time, wake, poke <-chan struct{}) (woke, poked, ok bool) {
 	delay := time.Until(deadline)
 	if delay <= 0 {
-		return false, ctx.Err() == nil
+		return false, false, ctx.Err() == nil
 	}
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return false, false
+		return false, false, false
 	case <-timer.C:
-		return false, true
+		return false, false, true
 	case <-wake:
-		return true, true
+		return true, false, true
+	case <-poke:
+		return false, true, true
 	}
 }

@@ -148,3 +148,19 @@ func TestRetireTetherProxyTellsAndroid(t *testing.T) {
 		t.Fatalf("the retired proxy is still installed on port %d", got)
 	}
 }
+
+// A zero net.ListenConfig reports MPTCP on since Go 1.24, so this fails the day
+// the listener is built without the switch.
+func TestTheTetherListenerDoesNotAskForMPTCP(t *testing.T) {
+	var stock net.ListenConfig
+	if !stock.MultipathTCP() {
+		t.Skip("this Go does not turn MPTCP on for listeners by itself")
+	}
+	lc := tetherListenConfig()
+	if lc.MultipathTCP() {
+		t.Fatal("the tether listener would open an MPTCP socket")
+	}
+	if lc.Control == nil {
+		t.Fatal("the tether listener lost its protect hook")
+	}
+}
