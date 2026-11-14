@@ -213,7 +213,13 @@ func TestNarrowingTheGridDoesNotBenchTheStreamsAtOnce(t *testing.T) {
 	if !a.stale(heard.Add(economyStaleAfter + time.Second)) {
 		t.Fatal("a stream past the wide grid's own age is not stale during the grace")
 	}
+	if got := darkUpQuietAt(screenOn.Add(time.Second)); got <= economyKeepaliveInterval {
+		t.Fatalf("the dark path's quiet a second after the grid narrowed is %v: an idle path is dark between two wide bursts", got)
+	}
 	past := screenOn.Add(economyStaleAfter + time.Second)
+	if darkUpQuietAt(past) != darkUpQuiet {
+		t.Fatalf("after the grace the dark path's quiet is %v, want %v", darkUpQuietAt(past), darkUpQuiet)
+	}
 	if staleAfter(past) != dispatchStaleAfter || deadStreamAfter(past) != deadStreamTimeout {
 		t.Fatalf("after the grace: stale after %v, dead after %v — the wide grid's ages stayed", staleAfter(past), deadStreamAfter(past))
 	}
@@ -350,5 +356,61 @@ func TestFeedbackReportsOncePerWideGridWhileNothingChanges(t *testing.T) {
 	r.update(streams, next)
 	if drain() == 0 {
 		t.Fatal("no report at the wide grid's next point")
+	}
+}
+
+// The grid's width changes with the screen: in the second half of a wide period
+// the 25 s point is past the 50 s one. Neither change is a new grid point, and
+// neither sends a report (codex review of the iOS port, 2026-11-13). A clock
+// set back by more than a wide interval is a new point.
+func TestFeedbackIsNotResentWhenTheGridWidthChanges(t *testing.T) {
+	economyTest(t, true)
+	wide := time.Unix(1_800_000_000, 0).Truncate(economyKeepaliveInterval)
+	start := wide.Add(keepaliveInterval + 12*time.Second) // second half of the wide period
+	a, b := feedbackTestStream(0, start), feedbackTestStream(1, start)
+	streams := []*stream{a, b}
+	var r downlinkReporter
+	drain := func() (n int) {
+		for _, s := range streams {
+			for {
+				select {
+				case p := <-s.in:
+					packetPool.Put(p[:cap(p)])
+					n++
+					continue
+				default:
+				}
+				break
+			}
+		}
+		return n
+	}
+
+	r.update(streams, start)
+	r.update(streams, start.Add(time.Second)) // the repeat of a change
+	if drain() == 0 {
+		t.Fatal("no first report")
+	}
+	for i, at := range []time.Duration{2, 3, 4, 5, 6, 7} {
+		setKeepaliveEconomyAsked(i%2 == 0) // sleep, wake, sleep…
+		r.update(streams, start.Add(at*time.Second))
+		if n := drain(); n != 0 {
+			t.Fatalf("%d report(s) at +%ds after the grid went %v wide, nothing changed", n, at, keepaliveEvery(start.Add(at*time.Second)))
+		}
+	}
+	setKeepaliveEconomyAsked(false)
+	next := wide.Add(economyKeepaliveInterval)
+	a.activity.Load().noteRx(next)
+	b.activity.Load().noteRx(next)
+	r.update(streams, next)
+	if drain() == 0 {
+		t.Fatal("no report at the next grid point")
+	}
+	back := next.Add(-2 * time.Hour)
+	a.activity.Load().noteRx(back)
+	b.activity.Load().noteRx(back)
+	r.update(streams, back)
+	if drain() == 0 {
+		t.Fatal("no report after the clock was set back: the routine reports stopped")
 	}
 }

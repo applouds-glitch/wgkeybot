@@ -53,6 +53,7 @@ type TunnelHandle struct {
 	uapi            net.Listener
 	tag             *C.char
 	keepaliveSender *wireGuardKeepaliveSender
+	conflict        *peerConflict
 }
 
 var tunnelHandles map[int32]TunnelHandle
@@ -87,6 +88,8 @@ func wgTurnOn(interfaceName string, tunFd int32, settings string) int32 {
 		AndroidLogger{level: C.ANDROID_LOG_DEBUG, tag: tag}.write,
 		AndroidLogger{level: C.ANDROID_LOG_ERROR, tag: tag}.write,
 	)
+	// Before the device exists, so its first handshake lines are read too.
+	thinned.watch = newPeerConflict(turnLog)
 	logger := &device.Logger{Verbosef: thinned.Verbosef, Errorf: thinned.Errorf}
 
 	tun, name, err := tun.CreateUnmonitoredTUNFromFD(int(tunFd))
@@ -166,7 +169,8 @@ func wgTurnOn(interfaceName string, tunFd int32, settings string) int32 {
 	sendWireGuardKeepalive := newWireGuardKeepaliveSendFunc(device, settings)
 	keepaliveSender := installWireGuardKeepaliveSender(sendWireGuardKeepalive)
 	sendWireGuardKeepalive()
-	tunnelHandles[i] = TunnelHandle{device: device, uapi: uapi, tag: tag, keepaliveSender: keepaliveSender}
+	tunnelHandles[i] = TunnelHandle{device: device, uapi: uapi, tag: tag, keepaliveSender: keepaliveSender, conflict: thinned.watch}
+	setActivePeerConflict(thinned.watch)
 	return i
 }
 
@@ -178,6 +182,7 @@ func wgTurnOff(tunnelHandle int32) {
 	}
 	delete(tunnelHandles, tunnelHandle)
 	clearWireGuardKeepaliveSender(handle.keepaliveSender)
+	clearActivePeerConflict(handle.conflict)
 	if handle.uapi != nil {
 		handle.uapi.Close()
 	}

@@ -58,10 +58,23 @@
                     app:layout_constraintTop_toTopOf="parent"
                     app:layout_constraintWidth_max="@dimen/wgk_settings_content_max">
 
+                    <!-- The subscription and the config's age, ahead of everything:
+                         the date the subscription runs to is shown nowhere else on
+                         a phone. One card, short enough to leave the update row
+                         below it on the first screen. Gone without a key, and the
+                         gap below it with it. -->
+                    <include
+                        android:id="@+id/wgk_settings_summary"
+                        layout="@layout/view_wgk_settings_summary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="@dimen/wgk_settings_section_gap" />
+
                     <!-- The installed version, and the check for a newer one made
-                         by hand. First: when something is wrong with the build in
-                         hand, this is what one comes here for, and it should not
-                         take a scroll past everything else to find. Absent
+                         by hand. Right under the summary: when something is wrong
+                         with the build in hand, this is what one comes here for,
+                         and it should not take a scroll past everything else to
+                         find. Absent
                          altogether in a build that has no releases to ask about
                          (no repository configured, or the Play build, which is
                          updated by the store and may not update itself) — so the

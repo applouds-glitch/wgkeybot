@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <!-- The summary at the top of the settings: how long the subscription runs
+         and when the config was last loaded, the same card as iOS's
+         SettingsSummaryCard. Nothing to tap: the config is refreshed from the
+         connect screen. TalkBack reads it as one item, from the card's content
+         description (set in code), so the lines inside are hidden from it. -->
+    <com.google.android.material.card.MaterialCardView
+        style="@style/Widget.WGKeyBot.InstrumentCard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:baselineAligned="false"
+            android:gravity="center_vertical"
+            android:importantForAccessibility="noHideDescendants"
+            android:orientation="horizontal"
+            android:padding="18dp">
+
+            <!-- The key in the ring of the first-run screen's: the subscription
+                 is what the key stands for. -->
+            <FrameLayout
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:background="@drawable/wgk_no_key_icon_bg">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_key"
+                    app:tint="@color/wgk_primary" />
+            </FrameLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <!-- Green while paid for, amber once expired; the dot carries the
+                     colour too, for whoever reads the words in another one. -->
+                <LinearLayout
+                    android:id="@+id/wgk_summary_subscription"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <View
+                        android:id="@+id/wgk_summary_dot"
+                        android:layout_width="7dp"
+                        android:layout_height="7dp"
+                        android:background="@drawable/wgk_stage_dot" />
+
+                    <TextView
+                        android:id="@+id/wgk_summary_subscription_text"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:layout_weight="1"
+                        android:textAppearance="@style/TextAppearance.WGKeyBot.SettingTitle" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/wgk_summary_config"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textAppearance="@style/TextAppearance.WGKeyBot.InstrumentValue" />
+            </LinearLayout>
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+</layout>

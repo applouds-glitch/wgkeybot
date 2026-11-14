@@ -126,7 +126,7 @@ func (r *downlinkReporter) update(streams []*stream, now time.Time) {
 	grid := now.Truncate(keepaliveEvery(now)).UnixNano()
 	changed := !r.sent || mask != r.last
 	repeat := !r.repeatAt.IsZero() && !now.Before(r.repeatAt)
-	if !changed && !repeat && grid == r.lastGrid {
+	if !changed && !repeat && !gridMovedOn(grid, r.lastGrid) {
 		return
 	}
 	r.seq++
@@ -157,7 +157,10 @@ func (r *downlinkReporter) update(streams []*stream, now time.Time) {
 		return
 	}
 	r.logTransition(excluded, ready)
-	r.sent, r.last, r.lastGrid = true, mask, grid
+	r.sent, r.last = true, mask
+	if gridMovedOn(grid, r.lastGrid) {
+		r.lastGrid = grid
+	}
 	if changed {
 		r.repeatAt = now.Add(time.Second)
 	} else {
@@ -205,4 +208,18 @@ func runDownlinkFeedback(ctx context.Context, streams []*stream) {
 			r.update(streams, now)
 		}
 	}
+}
+
+// gridMovedOn reports whether the grid point grid is a new one after last, the
+// point of the last report: the routine report goes once per grid point.
+//
+// Not grid != last: the width changes under the reporter (keepalive_economy.go)
+// and with it the truncation — going 25 → 50 s in the second half of a wide
+// period moves the point back by 25 s, going 50 → 25 s forward again, and each
+// sent a report with nothing changed (codex review of the iOS port,
+// 2026-11-13). A point back by more than one wide interval is the wall clock
+// set back, not a change of width: taken as a new point, or the routine reports
+// would stop until the clock caught up.
+func gridMovedOn(grid, last int64) bool {
+	return grid > last || last-grid > int64(economyKeepaliveInterval)
 }

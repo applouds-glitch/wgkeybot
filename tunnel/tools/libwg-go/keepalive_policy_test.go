@@ -398,3 +398,54 @@ func TestALateRepeatWakeServesTheGridPointItMissed(t *testing.T) {
 		t.Fatalf("the next keepalive went out %v after the first: want the grid point the late wake missed, about %v", gap, keepaliveInterval)
 	}
 }
+
+// A poke or a wake that ends the wait at the grid point it was armed against —
+// the timer fired with it, and the select took the other — serves that grid
+// point at once, not a whole interval later (codex review of the iOS port,
+// 2026-11-13). Here the poke has no probe to run (none in this loop, as for a
+// TCP stream), and the wake none due.
+func TestAPokeOrWakeAtTheGridPointServesIt(t *testing.T) {
+	const lead = 300 * time.Millisecond
+	for _, tc := range []struct {
+		name        string
+		woke, poked bool
+	}{
+		{"poke", false, true},
+		{"wake", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var waits atomic.Int32
+			prev := keepaliveWait
+			keepaliveWait = func(ctx context.Context, deadline time.Time, wake, poke <-chan struct{}) (bool, bool, bool) {
+				_, _, ok := prev(ctx, deadline, wake, nil)
+				if waits.Add(1) == 1 && ok {
+					return tc.woke, tc.poked, true
+				}
+				return false, false, ok
+			}
+			t.Cleanup(func() { keepaliveWait = prev })
+			sends, stop := keepaliveLoop(t, true, lead, nil)
+			sendWithin(t, sends, lead+time.Second, "the grid keepalive the "+tc.name+" came with")
+			stop()
+		})
+	}
+}
+
+// A poke with nothing to do that comes before the grid point sends nothing early:
+// the grid keepalive goes at its point.
+func TestAPokeBeforeTheGridPointSendsNothingEarly(t *testing.T) {
+	const lead = 600 * time.Millisecond
+	var waits atomic.Int32
+	prev := keepaliveWait
+	keepaliveWait = func(ctx context.Context, deadline time.Time, wake, poke <-chan struct{}) (bool, bool, bool) {
+		if waits.Add(1) == 1 {
+			return false, true, ctx.Err() == nil // at once, well before the point
+		}
+		return prev(ctx, deadline, wake, nil)
+	}
+	t.Cleanup(func() { keepaliveWait = prev })
+	sends, stop := keepaliveLoop(t, true, lead, nil)
+	noSendFor(t, sends, lead/2, "a keepalive before the grid point")
+	sendWithin(t, sends, lead+time.Second, "the grid keepalive at its point")
+	stop()
+}

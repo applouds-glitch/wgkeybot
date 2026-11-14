@@ -514,10 +514,19 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 			}
 			continue
 		}
-		if woke {
+		// A wake or a poke that ended the wait at or past the grid point it was
+		// armed against, the timer having fired with it, serves that grid point
+		// before anything else gets the turn: left to the next turn, the grid is
+		// counted again from now and the next point is a whole interval away —
+		// the same miss as the late repeat below (codex review of the iOS port,
+		// 2026-11-13). The wake is served at the top of the next turn all the
+		// same, its epoch still unserved; a poke whose probe is due runs it now
+		// (the probe keeps the grid itself).
+		gridDue := !now.Before(gridAt)
+		if woke && !gridDue {
 			continue // a wake ended the wait early; the top of the loop serves it
 		}
-		if poked {
+		if poked && probe != nil && s.underLoadProbeDue(activity) {
 			// The judge of silence under load has just found this stream
 			// silent: ask the relay now, a ping a second, instead of sitting out
 			// deadStreamTimeout with a stream that carries nothing
@@ -525,9 +534,6 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 			// stream's end, the turn goes back to the top: a repeat pending
 			// from before it is void — the probe has asked many times over —
 			// and the detector's deadline is where it was.
-			if probe == nil || !s.underLoadProbeDue(activity) {
-				continue
-			}
 			end, listened, err := s.runUnderLoadProbe(ctx, activity, &probeSeq, probe, func() error {
 				err := send(tick)
 				tick++
@@ -554,6 +560,11 @@ func (s *stream) runKeepalive(ctx context.Context, activity *streamActivity, rep
 				}
 			}
 			echoAt = time.Time{}
+			continue
+		}
+		if poked && !gridDue {
+			// A token with no probe due — a verdict lifted since, a TCP stream
+			// (the probe is UDP's) — and nothing else due yet: wait again.
 			continue
 		}
 
@@ -1670,6 +1681,17 @@ func wgTurnPathSilentSeconds() C.int {
 		return -1
 	}
 	return C.int(pathSilence(*set, relayTransportInUse(), time.Now()) / time.Second)
+}
+
+// wgPeerConflictSeconds is how long the tunnel's config has looked to be in use
+// on another device at the same time, in whole seconds; 0 if it has not, or no
+// tunnel is up (peer_conflict.go). For the alert to the user
+// (TunnelManager's watchdog): nothing here can win the session back, only the
+// user can take the other device off the config.
+//
+//export wgPeerConflictSeconds
+func wgPeerConflictSeconds() C.int {
+	return C.int(peerConflictSeconds(time.Now()))
 }
 
 // wgTurnProxyWake tells every keepalive loop that the host is back: the user

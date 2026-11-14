@@ -73,10 +73,12 @@ import com.wireguard.android.util.ConnectionLink
 import com.wireguard.android.updater.UpdateActivity
 import com.wireguard.android.updater.UpdatePolicy
 import com.wireguard.android.activity.AppSettingsActivity
+import com.wireguard.android.util.SubscriptionStatus
+import com.wireguard.android.util.formatConfigLoadedAt
+import com.wireguard.android.util.formatSubscriptionDay
 import com.wireguard.android.util.isTv
 import com.wireguard.android.widget.TvTokenKeyboard
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
 import java.util.Locale
 
 private const val PREFS_CONFIG_LOAD = "config_load_prefs"          // legacy (migration only)
@@ -1251,20 +1253,8 @@ class TunnelListFragment : BaseFragment() {
         legacy.edit().clear().apply()
     }
 
-    private fun formatLoadedAt(ts: Long, compact: Boolean = false): String {
-        if (ts == 0L) return getString(R.string.wgk_profile_never_loaded)
-        val date = Date(ts)
-        if (compact) return SimpleDateFormat("dd.MM '·' HH:mm", Locale.getDefault()).format(date)
-        val today = Date()
-        val sdf = SimpleDateFormat("yyyyMMdd", Locale.getDefault())
-        return if (sdf.format(date) == sdf.format(today)) {
-            getString(R.string.wgk_profile_loaded_at,
-                SimpleDateFormat("HH:mm", Locale.getDefault()).format(date))
-        } else {
-            getString(R.string.wgk_profile_loaded_on,
-                SimpleDateFormat("dd.MM HH:mm", Locale.getDefault()).format(date))
-        }
-    }
+    private fun formatLoadedAt(ts: Long, compact: Boolean = false): String =
+        requireContext().formatConfigLoadedAt(ts, compact)
 
     private fun formatUptime(seconds: Long): String {
         val hours = seconds / 3600
@@ -1493,31 +1483,18 @@ class TunnelListFragment : BaseFragment() {
         b.wgkTvNetPill?.isVisible = authed
         if (authed) renderTvNetworkPill(b)
         val subPill = b.wgkTvSubPill ?: return
-        val until = if (authed) subscriptionUntil() else null
-        subPill.isVisible = until != null
-        if (until != null) b.wgkTvSubLabel?.text = getString(R.string.wgk_tv_subscription_until, until)
-    }
-
-    /**
-     * The day the subscription runs to, as the user's locale writes a day and a
-     * month ("12 ноября", "November 12"), with the year only when it is not this
-     * one. Null without a date, or with the epoch the refresh writes to mark a
-     * rejected key.
-     */
-    private fun subscriptionUntil(): String? {
-        val raw = AuthStore.getInstance(requireContext()).getSubscriptionExpiresAt() ?: return null
-        val expires = try {
-            java.time.Instant.parse(raw)
-        } catch (_: Exception) {
-            return null
+        // Only a date still ahead: an expired key never gets here (the expired
+        // screen renders this header unauthed), and the epoch a rejected key
+        // leaves behind is not a date to show.
+        val status = if (authed) {
+            SubscriptionStatus.of(AuthStore.getInstance(requireContext()).getSubscriptionExpiresAt(), Instant.now())
+        } else {
+            SubscriptionStatus.Unknown
         }
-        if (expires.epochSecond <= 0L) return null
-        val locale = resources.configuration.locales[0]
-        val date = Date(expires.toEpochMilli())
-        val year = SimpleDateFormat("yyyy", locale)
-        val skeleton = if (year.format(date) == year.format(Date())) "dMMMM" else "dMMMMyyyy"
-        return SimpleDateFormat(android.text.format.DateFormat.getBestDateTimePattern(locale, skeleton), locale)
-            .format(date)
+        subPill.isVisible = status is SubscriptionStatus.Active
+        if (status is SubscriptionStatus.Active) {
+            b.wgkTvSubLabel?.text = getString(R.string.wgk_subscription_until, requireContext().formatSubscriptionDay(status.until))
+        }
     }
 
     /**

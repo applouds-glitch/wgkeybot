@@ -59,8 +59,11 @@ import com.wireguard.android.turn.RelayTransport
 import com.wireguard.android.updater.GithubReleases
 import com.wireguard.android.updater.UpdateActivity
 import com.wireguard.android.util.AuthStore
+import com.wireguard.android.util.SubscriptionStatus
 import com.wireguard.android.util.ThemeMode
 import com.wireguard.android.util.applicationScope
+import com.wireguard.android.util.formatConfigLoadedAt
+import com.wireguard.android.util.formatSubscriptionDay
 import com.wireguard.android.util.localeWrapped
 import com.wireguard.android.util.isTv
 import com.wireguard.android.util.lockPortraitOnPhone
@@ -72,6 +75,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Instant
 
 /**
  * The app's own settings screen: everything that belongs to this fork and not to
@@ -120,6 +124,7 @@ class AppSettingsActivity : AppCompatActivity() {
         // not lazily on the first tap of the switch.
         tether = TetherToggle(this, this) { renderTether(Application.getTetherManager().state.value) }
 
+        observeSummary()
         bindConnectionMode()
         observeConnectionModeOffer()
         bindRelayTransport()
@@ -178,6 +183,69 @@ class AppSettingsActivity : AppCompatActivity() {
             binding.wgkSettingsScroll.updatePadding(left = bars.left, right = bars.right, bottom = bars.bottom)
             WindowInsetsCompat.CONSUMED
         }
+    }
+
+    // ── Summary ────────────────────────────────────────────────────────────────
+
+    /**
+     * The card at the top: the date the subscription runs to and when the config
+     * was last loaded, as on iOS (SettingsSummaryCard). Phone layout only: the TV
+     * has the date in its header pill and the config's age in its config row.
+     *
+     * Rendered on every start of the screen and again whenever the config is
+     * stamped as loaded while it is open; a refresh saves the new date before it
+     * stamps the config, so the two lines move together.
+     */
+    private fun observeSummary() {
+        if (binding.wgkSettingsSummary == null) return
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                Application.getTunnelStateTracker().uiState
+                    .map { it.configLoadedAt }
+                    .distinctUntilChanged()
+                    .collect(::renderSummary)
+            }
+        }
+    }
+
+    private fun renderSummary(configLoadedAt: Long) {
+        val card = binding.wgkSettingsSummary ?: return
+        val auth = AuthStore.getInstance(this)
+        val status = SubscriptionStatus.of(auth.getSubscriptionExpiresAt(), Instant.now())
+        val subscription = when (status) {
+            is SubscriptionStatus.Active -> getString(R.string.wgk_subscription_until, formatSubscriptionDay(status.until))
+            SubscriptionStatus.Expired -> getString(R.string.wgk_expired_title)
+            SubscriptionStatus.Unknown -> null
+        }
+        // Zero is "not known here", not "never loaded": the stamp is read from
+        // storage by the connect screen, and a process the tether notification
+        // started straight into this screen has not read it yet. A dash would
+        // say the config never came, so the line goes instead.
+        val loaded = configLoadedAt != 0L
+        card.root.isVisible = auth.hasAuth() && (subscription != null || loaded)
+        if (!card.root.isVisible) return
+
+        card.wgkSummarySubscription.isVisible = subscription != null
+        if (subscription != null) {
+            val tint = ContextCompat.getColor(
+                this,
+                if (status is SubscriptionStatus.Active) R.color.wgk_success else R.color.wgk_warning,
+            )
+            card.wgkSummaryDot.backgroundTintList = ColorStateList.valueOf(tint)
+            card.wgkSummarySubscriptionText.text = subscription
+            card.wgkSummarySubscriptionText.setTextColor(tint)
+        }
+        card.wgkSummaryConfig.isVisible = loaded
+        card.wgkSummaryConfig.text = getString(
+            R.string.wgk_settings_summary_config,
+            formatConfigLoadedAt(configLoadedAt, compact = true),
+        )
+        // "13.11 · 14:32" is read out as a string of numbers; TalkBack gets the
+        // phrase the TV shows instead ("Загружено 13.11 14:32").
+        card.root.contentDescription = listOfNotNull(
+            subscription,
+            if (loaded) "${getString(R.string.wgk_profile_name)}, ${formatConfigLoadedAt(configLoadedAt)}" else null,
+        ).joinToString(". ")
     }
 
     // ── Connection mode ────────────────────────────────────────────────────────

@@ -78,8 +78,16 @@ var (
 // interval and five seconds: on the wide grid (keepalive_economy.go) a healthy
 // path is quiet for up to fifty, and one attempt failing in the second half of
 // a period would have found a dark there and parked the workers.
+//
+// Keyed on the wide grid's ages (economyAges), not on the grid alone — they
+// outlive it by the grace after the screen comes on, as staleAfter does, while
+// the streams have still to be heard at a point of the narrow grid (codex
+// review of the iOS port, 2026-11-13).
 func darkUpQuietAt(now time.Time) time.Duration {
-	return darkUpQuiet + keepaliveEvery(now) - keepaliveInterval
+	if economyAges(now) {
+		return darkUpQuiet + economyKeepaliveInterval - keepaliveInterval
+	}
+	return darkUpQuiet
 }
 
 // darkPath is the state of the path over one transport.

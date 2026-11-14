@@ -368,6 +368,15 @@ public final class TurnBackend {
     public static native void wgTurnProxySetEconomy(boolean on);
 
     /**
+     * How long the tunnel's config has looked to be in use on another device
+     * at the same time, in seconds; 0 if it has not or no tunnel is up. Read
+     * off WireGuard's own handshake lines: the server answers a handshake at
+     * once and goes quiet again within seconds, over and over, while the
+     * relays are fine.
+     */
+    public static native int wgPeerConflictSeconds();
+
+    /**
      * Re-points the native socket binding at the current physical network.
      *
      * The only writer of that binding: neither {@link #wgTurnProxyStart} nor

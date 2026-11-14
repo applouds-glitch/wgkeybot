@@ -510,6 +510,8 @@
     <string name="wgk_expired_title">Subscription expired</string>
     <string name="wgk_expired_subtitle">Contact the bot to renew your subscription</string>
     <string name="wgk_check_subscription_action">Check payment</string>
+    <string name="wgk_peer_conflict_title">This config is connected on another device</string>
+    <string name="wgk_peer_conflict_text">The same config is up on another device right now, so both keep losing the connection: one config serves one device at a time. Turn the VPN off on the other device, or get it a config of its own from the bot.</string>
     <string name="wgk_battery_economy_label">Save battery with the screen off</string>
     <string name="wgk_battery_economy_desc">Check the connection half as often while the screen is off. Works when the relays are reached over TCP</string>
     <string name="wgk_auto_refresh_label">Auto-refresh</string>
@@ -685,7 +687,8 @@
     <string name="wgk_tv_hint_left_connect">to the connect button</string>
     <string name="wgk_tv_net_mobile">Mobile data</string>
     <string name="wgk_tv_net_none">No network</string>
-    <string name="wgk_tv_subscription_until">Subscription until %1$s</string>
+    <string name="wgk_subscription_until">Subscription until %1$s</string>
+    <string name="wgk_settings_summary_config">Configuration · %1$s</string>
     <string name="wgk_tv_config_value_auto">%1$s · auto-refresh</string>
     <string name="wgk_tv_config_refreshing">Refreshing…</string>
     <string name="wgk_tv_config_refresh_now">Refresh now</string>

@@ -36,6 +36,10 @@ type wgLogThinner struct {
 	errorf  func(string)
 	now     func() time.Time
 	runs    []wgLogRun
+
+	// watch reads the handshake lines for a second device on the same config
+	// (peer_conflict.go); nil when nothing watches.
+	watch *peerConflict
 }
 
 type wgLogRun struct {
@@ -72,6 +76,7 @@ func newWGLogThinner(verbose, errorf func(string)) *wgLogThinner {
 }
 
 func (l *wgLogThinner) Verbosef(format string, args ...any) {
+	l.watch.note(format, l.now())
 	if wgDroppedFormats[format] {
 		return
 	}

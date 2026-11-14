@@ -386,6 +386,8 @@
     <string name="wgk_profile_loaded_on">Загружено %1$s</string>
     <string name="wgk_profile_never_loaded">—</string>
     <string name="wgk_profile_refresh_cd">Обновить конфиг</string>
+    <string name="wgk_peer_conflict_title">Конфиг подключён на другом устройстве</string>
+    <string name="wgk_peer_conflict_text">Этот же конфиг сейчас подключён на другом устройстве, поэтому соединение обрывается у обоих: один конфиг работает только на одном устройстве. Отключите VPN на другом устройстве или получите для него отдельный конфиг в боте.</string>
     <string name="wgk_battery_economy_label">Экономить батарею при выключенном экране</string>
     <string name="wgk_battery_economy_desc">Проверять связь вдвое реже, пока экран выключен. Работает при подключении к релеям по TCP</string>
     <string name="wgk_auto_refresh_label">Автообновление</string>
@@ -685,7 +687,8 @@
     <string name="wgk_tv_hint_left_connect">к кнопке подключения</string>
     <string name="wgk_tv_net_mobile">Мобильная сеть</string>
     <string name="wgk_tv_net_none">Нет сети</string>
-    <string name="wgk_tv_subscription_until">Подписка до %1$s</string>
+    <string name="wgk_subscription_until">Подписка до %1$s</string>
+    <string name="wgk_settings_summary_config">Конфигурация · %1$s</string>
     <string name="wgk_tv_config_value_auto">%1$s · автообновление</string>
     <string name="wgk_tv_config_refreshing">Обновляем…</string>
     <string name="wgk_tv_config_refresh_now">Обновить сейчас</string>

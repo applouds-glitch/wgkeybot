@@ -873,8 +873,10 @@ class TunnelManager(
         handshakeWatchdogs.remove(tunnel.name)?.cancel()
         handshakeWatchdogs[tunnel.name] = applicationScope.launch(Dispatchers.IO) {
             val course = WatchdogCourse(System.currentTimeMillis())
+            val conflict = PeerConflictAlert()
             var waitingForNetwork = false
-            while (isActive) {
+            // A notice about another device must not outlive the tunnel it was about.
+            try { while (isActive) {
                 awaitNextWatchdogPoll()
                 if (getBackend().getState(tunnel) != Tunnel.State.UP)
                     return@launch
@@ -898,6 +900,24 @@ class TunnelManager(
                         "Handshake watchdog: ${tunnel.name} has no physical network — waiting, not counting it as dead"
                     else
                         "Handshake watchdog: physical network is back for ${tunnel.name} — counting again")
+                }
+                // The config up on another device too (PeerConflictAlert): told, not
+                // acted on — the watchdog's own course is left as it is, and it does
+                // not fire anyway, the handshakes completing every few seconds.
+                when (conflict.poll(TurnBackend.wgPeerConflictSeconds())) {
+                    PeerConflictAlert.Step.ALERT -> {
+                        Log.w(TAG, "Handshake watchdog: ${tunnel.name}'s config looks to be in use on another device — telling the user")
+                        notifyAlert(
+                            context.getString(R.string.wgk_peer_conflict_title),
+                            context.getString(R.string.wgk_peer_conflict_text),
+                            PEER_CONFLICT_NOTIFICATION_ID,
+                        )
+                    }
+                    PeerConflictAlert.Step.CLEAR -> {
+                        Log.i(TAG, "Handshake watchdog: ${tunnel.name} has the session to itself again")
+                        cancelAlert(PEER_CONFLICT_NOTIFICATION_ID)
+                    }
+                    PeerConflictAlert.Step.NONE -> Unit
                 }
                 // No relay answering over the network holds the rebuilds (see
                 // WatchdogCourse): asked only of the proxy running for this tunnel.
@@ -936,6 +956,8 @@ class TunnelManager(
                         return@launch
                     }
                 }
+            } } finally {
+                if (conflict.alerted) cancelAlert(PEER_CONFLICT_NOTIFICATION_ID)
             }
         }
     }
@@ -1031,7 +1053,7 @@ class TunnelManager(
     )
 
     /** Posts a VPN-alert notification with the given title and text. */
-    private fun notifyAlert(title: String, text: String) {
+    private fun notifyAlert(title: String, text: String, id: Int = ALERT_NOTIFICATION_ID) {
         try {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1056,9 +1078,17 @@ class TunnelManager(
                 .setAutoCancel(true)
                 .setContentIntent(contentIntent)
                 .build()
-            nm.notify(ALERT_NOTIFICATION_ID, notification)
+            nm.notify(id, notification)
         } catch (e: Throwable) {
             Log.w(TAG, "Failed to post connection-lost notification: $e")
+        }
+    }
+
+    private fun cancelAlert(id: Int) {
+        try {
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)?.cancel(id)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed to cancel notification $id: $e")
         }
     }
 
@@ -1148,5 +1178,9 @@ class TunnelManager(
 
         private const val ALERT_CHANNEL_ID = "vpn_alerts"
         private const val ALERT_NOTIFICATION_ID = 2
+
+        // Its own id: the notice about another device must not replace a
+        // "connection lost", nor be cancelled with it.
+        private const val PEER_CONFLICT_NOTIFICATION_ID = 3
     }
 }
